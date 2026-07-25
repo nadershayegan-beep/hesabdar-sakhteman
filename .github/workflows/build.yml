@@ -8,39 +8,38 @@ on:
 permissions:
   contents: write
 
+# اول مک Release را می‌سازد، سپس ویندوز به همان Release اضافه می‌شود
+# (سریالی تا از ساختِ دو Release تکراری جلوگیری شود).
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-latest
-            cmd: --mac
-          - os: windows-latest
-            cmd: --win
-    runs-on: ${{ matrix.os }}
+  mac:
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: package-lock.json
-
       - run: npm ci
-
-      - name: Build
-        run: npx electron-builder ${{ matrix.cmd }} --publish always
+      - name: Build macOS
+        run: npx electron-builder --mac --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
 
-      - uses: actions/upload-artifact@v4
+  win:
+    needs: mac
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          name: installer-${{ matrix.os }}
-          path: |
-            dist/*.dmg
-            dist/*.exe
-            dist/*.yml
-          if-no-files-found: warn
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      - name: Build Windows
+        run: npx electron-builder --win --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: false
