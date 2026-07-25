@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.DS_Store
+._*
+# ⚠️ srv/ (کد همگام‌شده) عمداً ignore نشده — GitHub Actions به آن نیاز دارد
+srv/data/
+srv/uploads/

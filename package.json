@@ -1,0 +1,65 @@
+{
+  "name": "hesabdar-sakhteman-desktop",
+  "productName": "Hesabdar Sakhteman ToyeDid",
+  "version": "1.0.9",
+  "private": true,
+  "description": "حسابدار مدیر ساختمان توی‌دید — مدیریت مالی ساختمان‌های مسکونی",
+  "author": { "name": "ToyeDid", "email": "info@toyedid.com" },
+  "homepage": "https://toyedid.com",
+  "main": "main.js",
+  "scripts": {
+    "sync": "node sync.mjs",
+    "icon": "node build/make-icon.mjs",
+    "start": "npm run sync && electron .",
+    "dist:mac": "npm run sync && electron-builder --mac",
+    "dist:win": "npm run sync && electron-builder --win",
+    "dist:all": "npm run sync && electron-builder -mw"
+  },
+  "devDependencies": {
+    "electron": "^43.0.0",
+    "electron-builder": "^26.0.0"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9"
+  },
+  "build": {
+    "appId": "com.toyedid.hesabdar-sakhteman",
+    "productName": "Hesabdar Sakhteman ToyeDid",
+    "artifactName": "HesabdarSakhteman-${version}-${os}-${arch}.${ext}",
+    "asar": false,
+    "directories": { "output": "dist", "buildResources": "build" },
+    "files": [
+      "main.js",
+      "srv/**/*",
+      "!srv/data/**",
+      "!srv/uploads/**",
+      "!srv/**/._*",
+      "!srv/**/.DS_Store"
+    ],
+    "win": {
+      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "حسابدار ساختمان توی‌دید",
+      "deleteAppDataOnUninstall": false
+    },
+    "mac": {
+      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "category": "public.app-category.finance",
+      "icon": "build/icon.png",
+      "identity": null,
+      "extendInfo": { "LSApplicationCategoryType": "public.app-category.finance" }
+    },
+    "dmg": { "title": "حسابدار ساختمان توی‌دید ${version}" },
+    "linux": { "target": ["AppImage"], "category": "Office" },
+    "publish": [
+      { "provider": "github", "owner": "nadershayegan-beep", "repo": "hesabdar-sakhteman" }
+    ]
+  }
+}

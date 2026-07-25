@@ -1,0 +1,10 @@
+{
+  "name": "hesabdar-sakhteman",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "حسابدار مدیر ساختمان توی دید — مدیریت مالی ساختمان‌های مسکونی",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

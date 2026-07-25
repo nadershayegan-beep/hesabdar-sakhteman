@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>حسابدار مدیر ساختمان توی دید</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏢</text></svg>">
+</head>
+<body>
+
+<!-- ورود / ساخت حساب مدیر -->
+<div class="auth hidden" id="auth">
+  <div class="authcard">
+    <div class="authbrand">
+      <div class="logo">🏢</div>
+      <div><div class="bn">حسابدار مدیر ساختمان</div><div class="bt">توی دید</div></div>
+    </div>
+    <form class="authform" id="authForm">
+      <h2 id="authTitle">ورود</h2>
+      <p class="authsub" id="authSub">برای ادامه وارد شوید</p>
+      <label class="f" id="authNameWrap" hidden>نام و نام خانوادگی
+        <input class="inp" id="authName" autocomplete="name"></label>
+      <label class="f" id="authBuildingWrap" hidden>نام ساختمان
+        <input class="inp" id="authBuilding" placeholder="مثلاً: مجتمع نگین"></label>
+      <label class="f">نام کاربری
+        <input class="inp" id="authUser" autocomplete="username" required></label>
+      <label class="f">رمز عبور
+        <input class="inp" id="authPass" type="password" autocomplete="current-password" required></label>
+      <div class="autherr" id="authErr"></div>
+      <button class="btn primary" id="authBtn" type="submit">ورود</button>
+    </form>
+    <a class="adbox" href="https://toyedid.com" target="_blank" rel="noopener">
+      <div class="adtitle">توی‌دید</div>
+      <div class="adtext">پلتفرم جامع خرید و فروش تک و عمده‌ی محصولات — هر کالایی، توی‌دیده.</div>
+      <div class="adsite">toyedid.com ↗</div>
+    </a>
+  </div>
+</div>
+
+<div class="shell hidden" id="shell">
+  <aside class="side printhide">
+    <div class="brand">
+      <div class="logo">🏢</div>
+      <div><div class="bn" id="brandName">حسابدار ساختمان</div><div class="bt">مدیریت مالی · توی دید</div></div>
+    </div>
+    <nav class="nav" id="nav">
+      <button class="nav-i on" data-view="dashboard"><span class="g">📊</span> داشبورد</button>
+      <button class="nav-i" data-view="invoices"><span class="g">🧾</span> فاکتورها</button>
+      <button class="nav-i" data-view="payments"><span class="g">💰</span> دریافتی‌ها</button>
+      <button class="nav-i" data-view="units"><span class="g">🚪</span> واحدها</button>
+      <button class="nav-i" data-view="funds"><span class="g">🏦</span> صندوق‌ها</button>
+      <button class="nav-i" data-view="reports"><span class="g">📑</span> گزارش‌ها</button>
+      <button class="nav-i" data-view="settings"><span class="g">⚙️</span> تنظیمات</button>
+      <button class="nav-i" data-view="help"><span class="g">📱</span> راهنما و موبایل</button>
+    </nav>
+    <a class="adbox printhide" href="https://toyedid.com" target="_blank" rel="noopener">
+      <div class="adtitle">توی‌دید</div>
+      <div class="adtext">پلتفرم جامع خرید و فروش تک و عمده‌ی محصولات — هر کالایی، توی‌دیده.</div>
+      <div class="adsite">toyedid.com ↗</div>
+    </a>
+    <div class="side-foot">
+      <div class="whoami"><b id="meName">—</b><span id="meRole">—</span></div>
+      <button class="theme-btn" id="themeBtn">🌗 تغییر تم</button>
+      <button class="theme-btn" id="logoutBtn">خروج از حساب</button>
+      <div class="ver" id="verLbl"></div>
+    </div>
+  </aside>
+  <main class="main" id="view"></main>
+</div>
+
+<div class="toast" id="toast"></div>
+<div class="modal hidden" id="modal">
+  <div class="mbox">
+    <div class="mhead"><span id="modalTitle">—</span><button class="mx" id="modalX">✕</button></div>
+    <div class="mbody" id="modalBody"></div>
+    <div class="mfoot hidden" id="modalFoot"></div>
+  </div>
+</div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>
