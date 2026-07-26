@@ -21,6 +21,32 @@ const curFa = () => MONEY_UNIT === 'toman' ? 'تومان' : 'ریال'
 const moneyU = r => money(r) + ' ' + curFa()
 const signed = r => (r < 0 ? '−' : '') + money(Math.abs(r))
 
+// ---------- واتساپ ----------
+const IS_DESKTOP = !!(window.hesabdar && window.hesabdar.isDesktop)
+// شماره‌ی ایرانی را به قالب بین‌المللی واتساپ تبدیل می‌کند (بهترین حدس)
+function waPhone(p) {
+  let d = String(p || '').replace(/[^\d]/g, '')
+  if (!d) return ''
+  if (d.startsWith('0098')) d = d.slice(2)
+  else if (d.startsWith('98')) { /* آماده است */ }
+  else if (d.startsWith('0')) d = '98' + d.slice(1)
+  else if (d.length === 10 && d.startsWith('9')) d = '98' + d
+  return d
+}
+function debtorWaText(u) {
+  const b = (typeof META !== 'undefined' && META && META.buildingName) || 'ساختمان'
+  return `سلام ${u.resident_name || 'ساکن گرامی'} عزیز 🌱\n`
+    + `صورت‌حساب واحد ${faDigit(u.number)} — ${b}\n`
+    + `بدهی فعلی شما: ${moneyU(u.debt)}\n`
+    + (u.aging && u.aging.days > 0 && u.aging.days < 9000 ? `قدمت بدهی: ${faDigit(u.aging.days)} روز\n` : '')
+    + `لطفاً در اولین فرصت نسبت به تسویه اقدام بفرمایید. سپاس فراوان 🙏`
+}
+function openWhatsApp(u) {
+  const ph = waPhone(u.phone)
+  const url = `https://wa.me/${ph}?text=${encodeURIComponent(debtorWaText(u))}`
+  window.open(url, '_blank', 'noopener')
+}
+
 const api = (u, o) => fetch(u, o).then(async r => {
   const d = await r.json().catch(() => ({}))
   if (r.status === 401) { location.reload(); throw new Error('نیاز به ورود') }
@@ -134,7 +160,7 @@ $('#themeBtn').onclick = () => {
 }
 
 // ==================== وضعیت ====================
-let ME = null, META = null, VIEW = 'dashboard', setupMode = false, LAN_URL = '', APP_VER = ''
+let ME = null, META = null, VIEW = 'dashboard', setupMode = false, LAN_URL = '', APP_VER = '', NEEDS_RC = false
 const isAdmin = () => ME && ME.role === 'admin'
 const adminOnly = html => isAdmin() ? html : ''
 const unitById = id => (META.units || []).find(u => u.id === +id)
@@ -147,7 +173,7 @@ async function loadMeta() { META = await api('/api/meta'); MONEY_UNIT = META.dis
 async function boot() {
   const st = await api('/api/auth/status')
   $('#verLbl').textContent = st.version || ''
-  LAN_URL = st.lanUrl || ''; APP_VER = st.version || ''
+  LAN_URL = st.lanUrl || ''; APP_VER = st.version || ''; NEEDS_RC = !!st.needsRecoveryCode
   if (st.needsSetup) { setupMode = true; showAuth(true); return }
   if (!st.user) { showAuth(false); return }
   ME = st.user
@@ -164,20 +190,92 @@ function showAuth(setup) {
   $('#authBtn').textContent = setup ? 'ساخت حساب' : 'ورود'
   $('#authNameWrap').hidden = !setup; $('#authBuildingWrap').hidden = !setup
   $('#authPass').autocomplete = setup ? 'new-password' : 'current-password'
+  const extra = $('#authExtra'); if (extra) extra.hidden = setup
+  if (!setup && extra) {
+    $('#forgotBtn').onclick = () => forgotForm()
+    const lr = $('#localResetBtn'); lr.hidden = true
+    api('/api/auth/local-reset/available').then(d => { if (d.available) { lr.hidden = false; lr.onclick = () => localResetForm() } }).catch(() => { })
+  }
 }
 $('#authForm').onsubmit = async e => {
   e.preventDefault(); $('#authErr').textContent = ''
   const username = $('#authUser').value.trim(), password = $('#authPass').value
   try {
     if (setupMode) {
-      await post('/api/auth/setup', { username, password, displayName: $('#authName').value.trim(), buildingName: $('#authBuilding').value.trim() })
+      const r = await post('/api/auth/setup', { username, password, displayName: $('#authName').value.trim(), buildingName: $('#authBuilding').value.trim() })
       setupMode = false
+      await post('/api/auth/login', { username, password })
+      showRecoveryCode(r.recoveryCode, { onDone: () => location.reload() })
+      return
     }
     await post('/api/auth/login', { username, password })
     location.reload()
   } catch (err) { $('#authErr').textContent = err.message }
 }
 $('#logoutBtn').onclick = guard(async () => { await post('/api/auth/logout'); location.reload() })
+
+// ---------- بازیابی رمز ----------
+function showRecoveryCode(code, opts = {}) {
+  openModal('🔑 کد بازیابی شما', `
+    <div style="text-align:center">
+      <p class="sub">${opts.isNew ? 'کد بازیابیِ جدید — کدِ قبلی دیگر کار نمی‌کند:' : 'این کد را در جای امنی نگه دارید:'}</p>
+      <div style="font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace;font-size:25px;font-weight:800;letter-spacing:2px;
+        background:var(--panel-2);border:2px dashed var(--accent);border-radius:12px;padding:18px 10px;margin:12px 0;user-select:all;direction:ltr">${esc(code)}</div>
+      <div class="notice" style="text-align:right;margin:0">⚠️ این کد فقط <b>همین یک‌بار</b> نمایش داده می‌شود. اگر رمزتان را فراموش کنید، تنها راهِ ورود همین کد است. اگر گمش کنید، فقط از روی همین کامپیوتر می‌توانید ریست کنید.</div>
+      <div class="fbtns" style="justify-content:center;margin-top:12px">
+        <button class="btn" id="rcCopy">📋 کپی</button><button class="btn" id="rcPrint">🖨 چاپ</button><button class="btn" id="rcSave">⬇️ ذخیره فایل</button>
+      </div>
+      <label class="check" style="justify-content:center;margin-top:12px"><input type="checkbox" id="rcAck"> کد را در جای امنی ذخیره کردم</label>
+    </div>`,
+    `<button class="btn primary" id="rcDone" disabled>ادامه</button>`)
+  const bn = (META && META.buildingName) || ($('#authBuilding') && $('#authBuilding').value.trim()) || 'ساختمان'
+  const t = todayJ()
+  const fileText = `کد بازیابیِ حسابدار مدیر ساختمان\nساختمان: ${bn}\nکد بازیابی: ${code}\nتاریخ: ${t.jy}/${t.jm}/${t.jd}\n\n⚠️ این کد را محرمانه و در جای امن نگه دارید.`
+  $('#rcCopy').onclick = () => { (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(() => toast('کپی شد')).catch(() => toast('کد را دستی کپی کنید', true)) }
+  $('#rcSave').onclick = () => { const b = new Blob([fileText], { type: 'text/plain;charset=utf-8' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'کد-بازیابی-' + bn + '.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000) }
+  $('#rcPrint').onclick = () => { const w = window.open('', '_blank'); if (w) { w.document.write('<pre style="font:20px monospace;direction:rtl;padding:30px;white-space:pre-wrap">' + esc(fileText) + '</pre>'); w.document.close(); w.focus(); w.print() } }
+  $('#rcAck').onchange = e => { $('#rcDone').disabled = !e.target.checked }
+  $('#rcDone').onclick = () => { closeModal(); if (opts.onDone) opts.onDone() }
+}
+function forgotForm() {
+  openModal('بازیابی رمز', `<div class="form">
+    <p class="sub">نام کاربری، کد بازیابی و رمز جدید را وارد کنید.</p>
+    <label class="f">نام کاربری<input class="inp" id="fgUser"></label>
+    <label class="f">کد بازیابی<input class="inp" id="fgCode" placeholder="XXXX-XXXX-XXXX-XXXX" style="font-family:monospace;letter-spacing:1px;direction:ltr;text-align:left"></label>
+    <div class="frow"><label class="f">رمز جدید<input class="inp" id="fgPass" type="password"></label>
+      <label class="f">تکرار رمز<input class="inp" id="fgPass2" type="password"></label></div>
+    <div class="autherr" id="fgErr"></div></div>`,
+    `<button class="btn primary" id="fgSave">تغییر رمز</button><button class="btn" id="fgCancel">انصراف</button>`)
+  $('#fgCancel').onclick = closeModal
+  $('#fgSave').onclick = async () => {
+    const p = $('#fgPass').value; $('#fgErr').textContent = ''
+    if (p.length < 4) return void ($('#fgErr').textContent = 'رمز حداقل ۴ کاراکتر')
+    if (p !== $('#fgPass2').value) return void ($('#fgErr').textContent = 'تکرار رمز یکسان نیست')
+    try {
+      const r = await post('/api/auth/recover', { username: $('#fgUser').value.trim(), code: $('#fgCode').value.trim(), newPassword: p })
+      showRecoveryCode(r.newRecoveryCode, { isNew: true, onDone: () => location.reload() })
+    } catch (e) { $('#fgErr').textContent = e.message }
+  }
+}
+function localResetForm() {
+  openModal('🖥 ریست رمز از این کامپیوتر', `<div class="form">
+    <div class="notice" style="margin:0">این ریست فقط از روی همین کامپیوتر مجاز است. رمز جدیدِ مدیر را بگذارید.</div>
+    <label class="f">نام کاربریِ مدیر<input class="inp" id="lrUser"></label>
+    <div class="frow"><label class="f">رمز جدید<input class="inp" id="lrPass" type="password"></label>
+      <label class="f">تکرار رمز<input class="inp" id="lrPass2" type="password"></label></div>
+    <div class="autherr" id="lrErr"></div></div>`,
+    `<button class="btn primary" id="lrSave">ریست رمز</button><button class="btn" id="lrCancel">انصراف</button>`)
+  $('#lrCancel').onclick = closeModal
+  $('#lrSave').onclick = async () => {
+    const p = $('#lrPass').value; $('#lrErr').textContent = ''
+    if (p.length < 4) return void ($('#lrErr').textContent = 'رمز حداقل ۴ کاراکتر')
+    if (p !== $('#lrPass2').value) return void ($('#lrErr').textContent = 'تکرار رمز یکسان نیست')
+    try {
+      const r = await post('/api/auth/local-reset', { username: $('#lrUser').value.trim(), newPassword: p })
+      showRecoveryCode(r.newRecoveryCode, { isNew: true, onDone: () => location.reload() })
+    } catch (e) { $('#lrErr').textContent = e.message }
+  }
+}
 
 // ==================== مسیریابی ====================
 $('#nav').onclick = e => {
@@ -204,8 +302,11 @@ VIEWS.dashboard = async () => {
   const notice = missing.length && isAdmin()
     ? `<div class="notice printhide"><span>⚠️ شارژ ${missing.length === 1 ? 'ماه' : missing.length + ' ماه'} صادر نشده است: ${missing.map(m => escFa(m.fa)).join('، ')}</span>
        <button class="btn small primary" id="issueAll">صدور شارژ این ماه‌ها</button></div>` : ''
+  const rcBanner = (NEEDS_RC && isAdmin())
+    ? `<div class="notice printhide" style="border-color:var(--out);background:var(--out-soft)"><span>⚠️ برای حساب شما <b>کد بازیابی</b> تنظیم نشده. اگر رمزتان را فراموش کنید، دسترسی به دفاتر مالی از دست می‌رود.</span>
+       <button class="btn small primary" id="getRc">🔑 الان کد بازیابی بگیر</button></div>` : ''
   $('#view').innerHTML = head('داشبورد', `${esc(META.buildingName)} · ${escFa(d.monthFa)} · ${faDigit(d.unitCount)} واحد فعال`,
-    adminOnly(`<button class="btn primary" id="qInvoice">＋ فاکتور</button><button class="btn" id="qPayment">＋ دریافتی</button>`)) + notice +
+    adminOnly(`<button class="btn primary" id="qInvoice">＋ فاکتور</button><button class="btn" id="qPayment">＋ دریافتی</button>`)) + rcBanner + notice +
     `<div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', money(d.fundTotal), d.funds.map(f => `${esc(f.name)}: ${money(f.balance)}`).join(' · '), 'hero')}
       ${kpi('کل بدهی ساکنین', money(d.totalDebt), '', 'bad')}
@@ -239,6 +340,11 @@ VIEWS.dashboard = async () => {
   })
   if ($('#qInvoice')) $('#qInvoice').onclick = () => invoiceForm()
   if ($('#qPayment')) $('#qPayment').onclick = () => paymentForm()
+  if ($('#getRc')) $('#getRc').onclick = guard(async () => {
+    const r = await post('/api/auth/recovery/regenerate', {})
+    NEEDS_RC = false
+    showRecoveryCode(r.code, { isNew: false, onDone: () => refresh() })
+  })
 }
 function wireCommon() {
   document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
@@ -598,7 +704,7 @@ const showUnitCard = guard(async id => {
     `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
     head(`کارت واحد ${faDigit(u.number)}`, `${u.resident_name || 'بدون ساکن'} · ${faDigit(u.area || 0)} متر · ${faDigit(u.occupants || 0)} نفر${u.occupied ? '' : ' · خالی'}`,
       adminOnly(`<button class="btn" id="ucEdit">✏️ ویرایش واحد</button><button class="btn primary" id="ucPay">＋ ثبت دریافتی</button>`) +
-      `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ CSV</a>`) +
+      `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><button class="btn" id="ucPdf">📄 PDF</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ CSV</a>`) +
     `<div class="kpis printhide">
       ${kpi(d.debt >= 0 ? 'بدهی کل' : 'بستانکاری', money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
       ${kpi('جمع سهم‌ها', money(d.totalShares))}
@@ -627,6 +733,21 @@ const showUnitCard = guard(async id => {
   if ($('#ucEdit')) $('#ucEdit').onclick = () => unitForm(unitById(u.id))
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
   $('#ucStmt').onclick = () => { $('#stmtArea').innerHTML = statementHtml(d); print() }
+  $('#ucPdf').onclick = () => saveUnitPdf(u)
+})
+
+// خروجی PDF صورت‌حساب واحد: در اپ نصبی مستقیم فایل ذخیره می‌شود؛ در مرورگر صفحه‌ی چاپی باز می‌شود.
+const saveUnitPdf = guard(async u => {
+  const rel = `/print/unit/${u.id}`
+  const fname = `صورت‌حساب واحد ${faDigit(u.number)}${u.resident_name ? ' - ' + u.resident_name : ''}`
+  if (window.hesabdar && window.hesabdar.savePdf) {
+    toast('در حال ساخت PDF…')
+    const r = await window.hesabdar.savePdf(rel, fname)
+    if (r && r.ok) toast('PDF در پوشه‌ی «اسناد صادرشده» ذخیره شد')
+    else toast((r && r.error) || 'ساخت PDF ناموفق بود', true)
+  } else {
+    window.open(rel, '_blank')   // مرورگر: کاربر با Ctrl+P خروجی PDF می‌گیرد
+  }
 })
 
 function statementHtml(d) {
@@ -746,6 +867,8 @@ REPORTS.manager = async () => {
         <option value="custom" ${repRange.custom ? 'selected' : ''}>بازه‌ی دلخواه…</option></select>
       <a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ CSV</a>
       <button class="btn small" onclick="print()">🖨 چاپ</button>
+      <button class="btn small" id="repSummary">📄 خلاصه‌ی هیئت‌مدیره${IS_DESKTOP ? ' (PDF)' : ''}</button>
+      <label class="chkline"><input type="checkbox" id="repNames"> نمایش نام بدهکاران</label>
     </div>
     <div class="filters printhide" id="repCustom" ${repRange.custom ? '' : 'hidden'}>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">از تاریخ ${dateBoxHtml('rf', repRange.jf)}</label>
@@ -781,8 +904,12 @@ REPORTS.manager = async () => {
       ${r.invoices.length ? r.invoices.map(i => `<tr class="clickable" data-inv="${i.id}"><td>${esc(i.title)}</td><td><span class="catpill">${esc(i.category || '—')}</span></td>
         <td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td><td class="num amt-in">${money(i.collected)}</td>
         <td class="num ${i.remaining > 0 ? 'amt-out' : ''}">${money(i.remaining)}</td></tr>`).join('') : emptyRow(6, 'فاکتوری در این دوره نبوده')}
-      </tbody></table></div></div>`
+      </tbody></table></div></div>
+    <div class="panel printhide" id="boardBook"></div>`
   wireCommon(); wireToday($('#repBody'))
+  LAST_MANAGER = r
+  $('#repSummary').onclick = () => openSummary($('#repNames') && $('#repNames').checked)
+  renderBoardBook()
   $('#repPeriod').onchange = () => {
     const v = $('#repPeriod').value
     if (v === 'custom') { $('#repCustom').hidden = false; return }
@@ -799,21 +926,105 @@ REPORTS.manager = async () => {
     render()
   })
 }
+
+// خلاصه‌ی ماهانه‌ی هیئت‌مدیره (ماه جاری): اپ نصبی → PDF، مرورگر → صفحه‌ی چاپی
+let LAST_MANAGER = null
+const openSummary = guard(async showNames => {
+  const rel = '/print/summary' + (showNames ? '?names=1' : '')
+  if (IS_DESKTOP && window.hesabdar.savePdf) {
+    toast('در حال ساخت خلاصه…')
+    const r = await window.hesabdar.savePdf(rel, `خلاصه ماهانه هیئت‌مدیره ${META.buildingName || ''}`.trim())
+    toast(r && r.ok ? 'خلاصه در پوشه‌ی «اسناد صادرشده» ذخیره شد' : (r && r.error) || 'ناموفق', !(r && r.ok))
+  } else window.open(rel, '_blank')
+})
+
+// متن واتساپ خلاصه برای اعضای هیئت‌مدیره
+function boardWaText(c) {
+  const r = LAST_MANAGER, b = (META && META.buildingName) || 'ساختمان'
+  if (!r) return `سلام ${c.name || ''}`
+  const net = r.payments.total - r.expenses.total
+  const fundTotal = r.fundFlow.reduce((s, f) => s + f.close, 0)
+  return `📊 خلاصه‌ی مالی ${b}\n`
+    + `دوره: ${repRange.label}\n`
+    + `— دریافتی: ${moneyU(r.payments.total)}\n`
+    + `— هزینه: ${moneyU(r.expenses.total)}\n`
+    + `— خالص دوره: ${signed(net)} ${curFa()}\n`
+    + `— موجودی صندوق‌ها: ${moneyU(fundTotal)}\n`
+    + `— طلب مدیر از صندوق: ${moneyU(r.managerDebt)}\n`
+    + `گزارش کامل به‌صورت فایل PDF پیوست می‌شود. 🙏`
+}
+function boardWa(c) {
+  window.open(`https://wa.me/${waPhone(c.phone)}?text=${encodeURIComponent(boardWaText(c))}`, '_blank', 'noopener')
+}
+let LAST_CONTACTS = []
+async function renderBoardBook() {
+  const box = $('#boardBook'); if (!box) return
+  LAST_CONTACTS = await api('/api/report-contacts')
+  box.innerHTML = `<div class="phead"><b>📇 دفترچه‌ی هیئت‌مدیره</b><span class="hint">ارسال خلاصه به اعضا از طریق واتساپ</span></div>
+    ${adminOnly(`<div class="filters" style="padding:0 0 10px">
+      <input class="inp" id="bcName" placeholder="نام" style="max-width:160px">
+      <input class="inp" id="bcPhone" placeholder="موبایل (۰۹…)" style="max-width:150px">
+      <input class="inp" id="bcRole" placeholder="سمت (اختیاری)" style="max-width:150px">
+      <button class="btn small primary" id="bcAdd">＋ افزودن</button></div>`)}
+    <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>سمت</th><th>موبایل</th><th>اقدام</th></tr></thead><tbody>
+    ${LAST_CONTACTS.length ? LAST_CONTACTS.map((c, i) => `<tr><td><b>${esc(c.name)}</b></td><td>${esc(c.role || '—')}</td>
+      <td class="num">${faDigit(c.phone || '—')}</td>
+      <td class="rowact"><button class="btn tiny" data-bcwa="${i}" title="ارسال خلاصه در واتساپ">💬</button>
+        ${adminOnly(`<button class="btn tiny" data-bcdel="${c.id}" title="حذف">🗑</button>`)}</td></tr>`).join('')
+    : emptyRow(4, 'هنوز مخاطبی ثبت نشده')}
+    </tbody></table></div>
+    <div class="hint" style="margin-top:8px">💡 اول با «📄 خلاصه‌ی هیئت‌مدیره» فایل PDF را بسازید، سپس پیام واتساپ را بفرستید و فایل را دستی پیوست کنید.</div>`
+  if ($('#bcAdd')) $('#bcAdd').onclick = guard(async () => {
+    const name = $('#bcName').value.trim(); if (!name) return toast('نام لازم است', true)
+    await post('/api/report-contacts', { name, phone: $('#bcPhone').value.trim(), role: $('#bcRole').value.trim() })
+    toast('مخاطب افزوده شد'); renderBoardBook()
+  })
+  box.querySelectorAll('[data-bcwa]').forEach(b => b.onclick = () => boardWa(LAST_CONTACTS[+b.dataset.bcwa]))
+  box.querySelectorAll('[data-bcdel]').forEach(b => b.onclick = guard(async () => {
+    await api('/api/report-contacts/' + b.dataset.bcdel, { method: 'DELETE' }); toast('حذف شد'); renderBoardBook()
+  }))
+}
+
+let LAST_DEBTORS = []
 REPORTS.debtors = async () => {
   const r = await api('/api/report/debtors')
+  LAST_DEBTORS = r.rows
+  const batchBtn = IS_DESKTOP && r.rows.length
+    ? `<button class="btn small" id="dbBatchPdf">📄 صورت‌حساب همه (PDF)</button>` : ''
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="print()">🖨 چاپ</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
-      ${r.rows.length ? r.rows.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
+      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th><th>قدمت</th><th class="printhide">اقدام</th></tr></thead><tbody>
+      ${r.rows.length ? r.rows.map((u, i) => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num">${faDigit(u.phone || '—')}</td><td class="num amt-out">${money(u.debt)}</td>
-        <td>${u.aging ? `<span class="badge b-open">${u.aging.bucket}</span> <span class="hint">${u.aging.days > 9000 ? 'انتقالی' : faDigit(u.aging.days) + ' روز'}</span>` : '—'}</td></tr>`).join('')
-      : emptyRow(5, 'هیچ واحدی بدهکار نیست 🎉')}
-      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td><td></td></tr></tfoot></table></div></div>`
+        <td>${u.aging ? `<span class="badge b-open">${u.aging.bucket}</span> <span class="hint">${u.aging.days > 9000 ? 'انتقالی' : faDigit(u.aging.days) + ' روز'}</span>` : '—'}</td>
+        <td class="printhide rowact"><button class="btn tiny" data-wa="${i}" title="پیام واتساپ">💬</button><button class="btn tiny" data-pdf="${i}" title="صورت‌حساب PDF">📄</button></td></tr>`).join('')
+      : emptyRow(6, 'هیچ واحدی بدهکار نیست 🎉')}
+      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td><td colspan="2"></td></tr></tfoot></table></div>
+      <div class="hint printhide" style="margin-top:8px">💡 واتساپ فقط متن پیام را آماده می‌کند؛ فایل PDF به‌صورت خودکار پیوست نمی‌شود. اگر می‌خواهید صورت‌حساب را بفرستید، اول با «📄» فایل را بسازید و در واتساپ دستی پیوست کنید.</div>
+    </div>`
   wireCommon()
+  if ($('#dbBatchPdf')) $('#dbBatchPdf').onclick = () => saveDebtorsBatchPdf(LAST_DEBTORS)
+  document.querySelectorAll('[data-wa]').forEach(b => b.onclick = e => { e.stopPropagation(); openWhatsApp(LAST_DEBTORS[+b.dataset.wa]) })
+  document.querySelectorAll('[data-pdf]').forEach(b => b.onclick = e => { e.stopPropagation(); saveUnitPdf(LAST_DEBTORS[+b.dataset.pdf]) })
 }
+
+// ساخت گروهی صورت‌حساب همه‌ی بدهکاران (فقط اپ نصبی)
+const saveDebtorsBatchPdf = guard(async rows => {
+  if (!IS_DESKTOP || !window.hesabdar.savePdfBatch) return toast('این قابلیت فقط در اپ نصبی فعال است', true)
+  if (!rows.length) return toast('بدهکاری وجود ندارد')
+  toast(`در حال ساخت ${faDigit(rows.length)} صورت‌حساب…`)
+  const items = rows.map(u => ({
+    path: `/print/unit/${u.id}`,
+    filename: `صورت‌حساب واحد ${faDigit(u.number)}${u.resident_name ? ' - ' + u.resident_name : ''}`
+  }))
+  const r = await window.hesabdar.savePdfBatch(items)
+  const okN = (r.results || []).filter(x => x.ok).length
+  const badN = (r.results || []).length - okN
+  toast(`${faDigit(okN)} صورت‌حساب در پوشه‌ی «اسناد صادرشده» ذخیره شد${badN ? ` (${faDigit(badN)} ناموفق)` : ''}`, badN > 0)
+})
 REPORTS.invoices = async () => {
   const rows = await api('/api/invoices')
   const t = rows.reduce((a, i) => ({ a: a.a + i.amount, c: a.c + i.collected, r: a.r + i.remaining }), { a: 0, c: 0, r: 0 })
@@ -1160,18 +1371,28 @@ SETTINGS.handover = async () => {
 }
 SETTINGS.users = async () => {
   const users = await api('/api/users')
+  const seclog = await api('/api/security-log').catch(() => [])
   $('#setBody').innerHTML = `
     <div class="panel"><div class="phead"><b>کاربران</b><button class="btn small primary" id="newUser">＋ کاربر جدید</button></div>
       <p class="sub">رئیس هیئت مدیره و بازرس فقط مشاهده می‌کنند — امکان ثبت، ویرایش یا حذف ندارند (هم در رابط و هم در سرور).</p>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>نام کاربری</th><th>نقش</th><th>وضعیت</th><th></th></tr></thead><tbody>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>نام کاربری</th><th>نقش</th><th>وضعیت</th><th>کد بازیابی</th><th></th></tr></thead><tbody>
       ${users.map(u => `<tr><td><b>${esc(u.display_name)}</b></td><td class="num">${esc(u.username)}</td>
         <td><span class="catpill">${esc(u.roleFa)}</span></td>
         <td>${u.active ? '<span class="badge b-settled">فعال</span>' : '<span class="badge b-vacant">معلق</span>'}</td>
+        <td>${u.hasRecovery ? '<span class="badge b-settled">دارد</span>' : '<span class="badge b-open">ندارد</span>'} <button class="mini-btn" data-genrc="${u.id}">تولید کد</button></td>
         <td><button class="mini-btn" data-tog="${u.id}" data-act="${u.active ? 0 : 1}">${u.active ? 'تعلیق' : 'فعال‌سازی'}</button>
           <button class="mini-btn" data-pw="${u.id}">تغییر رمز</button>
           ${u.id === ME.id ? '' : `<button class="del" data-deluser="${u.id}">🗑</button>`}</td></tr>`).join('')}
-      </tbody></table></div></div>`
+      </tbody></table></div></div>
+    <div class="panel"><div class="phead"><b>رویدادهای امنیتی</b><span class="hint">۲۰ رویداد آخر</span></div>
+      ${seclog.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>رویداد</th><th>کاربر</th><th>جزئیات</th></tr></thead><tbody>
+        ${seclog.map(s => `<tr><td class="num">${faDigit(s.j_date)}</td><td>${esc(s.eventFa)}</td><td class="num">${esc(s.username || '—')}</td><td class="hint">${esc(s.detail || '')}</td></tr>`).join('')}
+        </tbody></table></div>` : '<div class="empty">رویدادی ثبت نشده است</div>'}</div>`
   $('#newUser').onclick = () => userForm()
+  document.querySelectorAll('[data-genrc]').forEach(b => b.onclick = guard(async () => {
+    const r = await post('/api/auth/recovery/regenerate', { userId: +b.dataset.genrc })
+    showRecoveryCode(r.code, { isNew: true, onDone: () => refresh() })
+  }))
   document.querySelectorAll('[data-tog]').forEach(b => b.onclick = guard(async () => {
     await post(`/api/users/${b.dataset.tog}`, { active: +b.dataset.act === 1 }, 'PATCH'); refresh()
   }))
@@ -1268,6 +1489,52 @@ function browseDirs(onPick) {
 }
 
 // ==================== راهنما و موبایل ====================
+// ---------- بررسی نسخه‌ی جدید (دانلود دستی) ----------
+const REPO = 'nadershayegan-beep/hesabdar-sakhteman'
+const RELEASES_URL = `https://github.com/${REPO}/releases/latest`
+function cmpVer(a, b) {
+  const pa = String(a || '0').replace(/^v/, '').split('.').map(n => +n || 0)
+  const pb = String(b || '0').replace(/^v/, '').split('.').map(n => +n || 0)
+  for (let i = 0; i < 3; i++) { const x = pa[i] || 0, y = pb[i] || 0; if (x > y) return 1; if (x < y) return -1 }
+  return 0
+}
+async function fetchLatestRelease() {
+  const r = await fetch(`https://api.github.com/repos/${REPO}/releases/latest`, { headers: { Accept: 'application/vnd.github+json' } })
+  if (!r.ok) throw new Error('unavailable')
+  const j = await r.json()
+  return { tag: (j.tag_name || '').replace(/^v/, ''), url: j.html_url || RELEASES_URL,
+    assets: (j.assets || []).map(a => ({ name: a.name, url: a.browser_download_url })).filter(a => /\.(dmg|exe|zip|AppImage)$/i.test(a.name)) }
+}
+function assetLinksHtml(L) {
+  if (!L.assets.length) return ''
+  return `<div style="display:flex;flex-direction:column;gap:6px;margin:10px 0">`
+    + L.assets.map(a => `<a class="btn small" href="${esc(a.url)}" target="_blank" rel="noopener">⬇️ ${esc(a.name)}</a>`).join('')
+    + `</div>`
+}
+async function renderUpdateBox() {
+  const box = $('#updateBox'); if (!box) return
+  try {
+    const L = await fetchLatestRelease()
+    if (cmpVer(L.tag, APP_VER) > 0) {
+      box.innerHTML = `<div class="helpcard" style="border-color:#16a34a;background:#f0fdf4">
+        <h3>🎉 نسخه‌ی جدید ${escFa(L.tag)} منتشر شده است</h3>
+        <p>نسخه‌ی فعلی شما ${escFa(APP_VER)} است. فایل مربوط به سیستم خودتان را دانلود کنید و روی نسخه‌ی قبلی نصب کنید — <b>داده‌ها و اسناد شما پاک نمی‌شود</b> (در پوشه‌ی جدا نگهداری می‌شوند).</p>
+        <p class="hint">🖥 مک: فایل با پسوند <b>dmg</b> · 🪟 ویندوز: فایل با پسوند <b>exe</b></p>
+        ${assetLinksHtml(L)}
+        <a class="link" href="${esc(L.url)}" target="_blank" rel="noopener">صفحه‌ی دانلود در گیت‌هاب ↗</a></div>`
+    } else {
+      box.innerHTML = `<div class="helpcard"><h3>✅ برنامه به‌روز است</h3>
+        <p>شما آخرین نسخه (${escFa(APP_VER)}) را دارید.</p>
+        <a class="link" href="${RELEASES_URL}" target="_blank" rel="noopener">مشاهده‌ی همه‌ی نسخه‌ها ↗</a></div>`
+    }
+  } catch {
+    box.innerHTML = `<div class="helpcard"><h3>⬇️ دریافت آخرین نسخه</h3>
+      <p>برای دانلود دستی آخرین نسخه به صفحه‌ی زیر بروید و فایل مخصوص سیستم خود را بگیرید (مک: dmg · ویندوز: exe):</p>
+      <a class="abcta" href="${RELEASES_URL}" target="_blank" rel="noopener">صفحه‌ی دانلود نسخه‌ها ↗</a>
+      <p class="hint" style="margin-top:8px">اگر اینترنت در دسترس نیست، بعداً همین‌جا دوباره امتحان کنید.</p></div>`
+  }
+}
+
 VIEWS.help = async () => {
   const lan = LAN_URL
   let qr = ''
@@ -1294,6 +1561,9 @@ VIEWS.help = async () => {
          <p class="hint">با نام کاربری و رمز خودتان وارد شوید. رئیس هیئت مدیره و بازرس هم می‌توانند از گوشی، گزارش‌ها را به‌صورت فقط-مشاهده ببینند.</p>
        </div>
      </div>
+     <div class="helpsec">⬇️ دریافت و به‌روزرسانی برنامه</div>
+     <div id="updateBox"><div class="helpcard"><h3>در حال بررسی نسخه‌ی جدید…</h3>
+       <p>یک لحظه صبر کنید یا <a class="link" href="${RELEASES_URL}" target="_blank" rel="noopener">صفحه‌ی دانلود نسخه‌ها ↗</a> را باز کنید.</p></div></div>
      <div class="helpsec">📘 راهنمای کار با نرم‌افزار</div>
      <div class="helpgrid">
        ${cards.map(([g, t, p]) => `<div class="helpcard"><h3>${g} ${esc(t)}</h3><p>${esc(p)}</p></div>`).join('')}
@@ -1310,6 +1580,7 @@ VIEWS.help = async () => {
        <a class="abcta" href="https://toyedid.com" target="_blank" rel="noopener">toyedid.com</a>
      </div>
      <div class="abfootnote">نسخه‌ی فعلی: <b class="num">${escFa(APP_VER)}</b> · ساخته‌شده با ❤️ برای مدیران ساختمان — <a href="https://toyedid.com" target="_blank" rel="noopener">توی دید</a></div>`
+  renderUpdateBox()
 }
 
 // ==================== شروع ====================

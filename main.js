@@ -1,8 +1,9 @@
 // حسابدار مدیر ساختمان توی دید — پوسته‌ی Electron (اپ نصبی ویندوز/مک)
 // سرور موجود (app/server.js) به‌عنوان پروسه‌ی فرزند با Node داخلی Electron اجرا می‌شود.
-const { app, BrowserWindow, Menu, shell, dialog, session } = require('electron')
+const { app, BrowserWindow, Menu, shell, dialog, session, ipcMain } = require('electron')
 const { fork } = require('node:child_process')
 const path = require('node:path')
+const fs = require('node:fs/promises')
 
 const SERVER = path.join(app.getAppPath(), 'srv', 'server.js')
 const USER_DIR = app.getPath('userData')      // مسیر داده‌ی کاربر (قابل نوشتن، مستقل از آپدیت)
@@ -44,6 +45,7 @@ function startServer() {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',        // فرزند به‌صورت Node خالص اجرا شود
         HS_PACKAGED: '1',                 // به server.js بگو در حالت اپ نصبی است
+        HS_APP_VERSION: app.getVersion(), // نسخه‌ی واقعی نصب‌کننده (برای بررسی آپدیت)
         HS_USER_DIR: USER_DIR,            // داده اینجا ذخیره شود
         NO_PKG: '1',                      // ساخت بسته‌ی zip غیرفعال
         PORT: String(process.env.PORT || 3000)
@@ -76,7 +78,8 @@ function createWindow(url) {
     width: 1360, height: 880, minWidth: 1024, minHeight: 640,
     backgroundColor: '#ffffff', show: false, autoHideMenuBar: false,
     title: 'حسابدار مدیر ساختمان توی‌دید',
-    webPreferences: { contextIsolation: true, nodeIntegration: false, spellcheck: false }
+    webPreferences: { contextIsolation: true, nodeIntegration: false, spellcheck: false,
+      preload: path.join(__dirname, 'preload.js') }
   })
   win.loadURL(url)
   win.once('ready-to-show', () => {
@@ -126,7 +129,24 @@ function buildMenu() {
       { role: 'togglefullscreen', label: 'تمام‌صفحه' },
       { role: 'toggleDevTools', label: 'ابزار توسعه‌دهنده' }
     ] },
+    { label: 'امنیت', submenu: [
+      { label: 'ریست رمز مدیر…', click: async () => {
+        const r = await dialog.showMessageBox(win, {
+          type: 'warning', title: 'ریست رمز مدیر', message: 'رمز مدیر ساختمان ریست شود؟',
+          detail: 'این کار فقط از روی همین کامپیوتر امکان‌پذیر است.\n' +
+                  'بعد از تأیید، ۱۰ دقیقه فرصت دارید در صفحه‌ی ورود رمز جدید بگذارید.\n' +
+                  'همه‌ی نشست‌های باز بسته می‌شوند. داده‌های مالی دست‌نخورده می‌ماند.',
+          buttons: ['بله، ریست کن', 'انصراف'], defaultId: 1, cancelId: 1
+        })
+        if (r.response !== 0) return
+        try { await fs.writeFile(path.join(USER_DIR, 'reset.request'), String(Date.now())) }
+        catch (e) { return dialog.showErrorBox('خطا', String(e && e.message || e)) }
+        if (win) win.reload()
+        dialog.showMessageBox(win, { type: 'info', message: 'حالا در صفحه‌ی ورود روی «ریست از این کامپیوتر» بزنید.' })
+      } }
+    ] },
     { label: 'راهنما', submenu: [
+      { label: 'دانلود نسخه‌ی جدید…', click: () => shell.openExternal('https://github.com/nadershayegan-beep/hesabdar-sakhteman/releases/latest') },
       { label: 'وب‌سایت توی‌دید', click: () => shell.openExternal('https://toyedid.com') },
       { label: 'نسخه‌ی برنامه', click: () => dialog.showMessageBox(win, {
           type: 'info', title: 'درباره', message: 'حسابدار مدیر ساختمان توی‌دید',
@@ -158,6 +178,55 @@ function checkUpdates() {
     autoUpdater.checkForUpdates().catch(() => { })
   } catch { /* electron-updater تنظیم نشده — بی‌اهمیت */ }
 }
+
+// ---------- تولید PDF از صفحات چاپیِ داخلی ----------
+const OUT_DIR = () => path.join(USER_DIR, 'اسناد صادرشده')
+const safeFile = s => String(s || 'سند').replace(/[\/\\:*?"<>|\n\r]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 90)
+
+// یک صفحه‌ی /print/... را در پنجره‌ی پنهان بارگذاری و به PDF تبدیل و ذخیره می‌کند.
+async function renderPdf(relPath, filename) {
+  if (!serverUrl) throw new Error('سرور آماده نیست')
+  if (!/^\/print\//.test(relPath || '')) throw new Error('مسیر نامعتبر')
+  await fs.mkdir(OUT_DIR(), { recursive: true })
+  const outPath = path.join(OUT_DIR(), safeFile(filename) + '.pdf')
+  let pw = new BrowserWindow({
+    show: false, width: 900, height: 1200,
+    webPreferences: { contextIsolation: true, nodeIntegration: false }
+  })
+  try {
+    await pw.loadURL(serverUrl + relPath)              // با نشست مشترک، کوکی ورود ارسال می‌شود
+    await pw.webContents.executeJavaScript(
+      'document.fonts && document.fonts.ready ? document.fonts.ready.then(()=>true) : true'
+    ).catch(() => {})
+    const data = await pw.webContents.printToPDF({ pageSize: 'A4', printBackground: true, landscape: false })
+    await fs.writeFile(outPath, data)
+    return outPath
+  } finally { if (pw) { pw.destroy(); pw = null } }
+}
+
+ipcMain.handle('hs:save-pdf', async (_e, { path: rel, filename }) => {
+  try { const p = await renderPdf(rel, filename); shell.showItemInFolder(p); return { ok: true, path: p } }
+  catch (e) { return { ok: false, error: String(e && e.message || e) } }
+})
+
+ipcMain.handle('hs:save-pdf-batch', async (_e, { items }) => {
+  const out = []
+  for (const it of (items || [])) {
+    try { out.push({ ok: true, path: await renderPdf(it.path, it.filename), filename: it.filename }) }
+    catch (e) { out.push({ ok: false, filename: it.filename, error: String(e && e.message || e) }) }
+  }
+  if (out.some(r => r.ok)) shell.openPath(OUT_DIR())
+  return { ok: out.some(r => r.ok), results: out, dir: OUT_DIR() }
+})
+
+ipcMain.handle('hs:reveal-path', async (_e, { path: p }) => {
+  try { shell.showItemInFolder(p); return { ok: true } } catch (e) { return { ok: false, error: String(e) } }
+})
+
+ipcMain.handle('hs:open-outdir', async () => {
+  try { await fs.mkdir(OUT_DIR(), { recursive: true }); shell.openPath(OUT_DIR()); return { ok: true } }
+  catch (e) { return { ok: false, error: String(e) } }
+})
 
 // ---------- چرخه‌ی عمر ----------
 app.whenReady().then(async () => {

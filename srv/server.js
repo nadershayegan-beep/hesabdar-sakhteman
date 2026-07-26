@@ -23,6 +23,8 @@ const PUB_DIR = join(ROOT, 'public')
 
 if (!existsSync(DATA_DIR)) await mkdir(DATA_DIR, { recursive: true })
 if (!existsSync(UP_DIR)) await mkdir(UP_DIR, { recursive: true })
+// فایل درخواستِ ریستِ محلیِ کهنه = یک درِ باز؛ در هر بار بالا آمدن حذف می‌شود
+await rm(join(USER_ROOT, 'reset.request'), { force: true })
 
 // ---------- دیتابیس ----------
 let db = new DatabaseSync(join(DATA_DIR, 'sakhteman.db'))
@@ -127,6 +129,17 @@ const SCHEMA_SQL = `
     j_date TEXT NOT NULL, g_date TEXT NOT NULL,
     settled_amount INTEGER DEFAULT 0, note TEXT DEFAULT '', created_at TEXT NOT NULL
   );
+  -- رویدادهای امنیتی (بازیابی/ریست رمز)
+  CREATE TABLE IF NOT EXISTS security_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    event TEXT NOT NULL,            -- recovery_generated | recovery_used | local_reset | recovery_failed
+    username TEXT DEFAULT '', detail TEXT DEFAULT '', ip TEXT DEFAULT '',
+    g_date TEXT NOT NULL, j_date TEXT NOT NULL, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS report_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL, phone TEXT DEFAULT '', role TEXT DEFAULT '', created_at TEXT NOT NULL
+  );
 `
 // افزودن امن ستون‌های جدید به دیتابیس‌های موجود (بدون از دست رفتن داده)
 function migrate() {
@@ -136,6 +149,9 @@ function migrate() {
   addCol('invoices', 'recur_period', `TEXT DEFAULT ''`)
   addCol('invoices', 'is_billing', 'INTEGER DEFAULT 0')   // 1 = صورت‌حساب ساکن (شارژ/جریمه)، نه هزینه‌ی صندوق
   addCol('fund_txns', 'peer_fund_id', 'INTEGER')
+  addCol('users', 'recovery_hash', `TEXT DEFAULT ''`)     // کد بازیابیِ رمز (فقط هش، هرگز خودِ کد)
+  addCol('users', 'recovery_salt', `TEXT DEFAULT ''`)
+  addCol('users', 'recovery_set_at', `TEXT DEFAULT ''`)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -266,6 +282,49 @@ function authUser(req) {
   return db.prepare(`SELECT * FROM users WHERE id=? AND active=1`).get(uid) || null
 }
 const userPublic = u => u && ({ id: u.id, username: u.username, name: u.display_name, role: u.role, roleFa: ROLE_FA[u.role] })
+
+// ---------- بازیابی رمز ----------
+const delay = ms => new Promise(r => setTimeout(r, ms))
+const clientIp = req => (req.socket && req.socket.remoteAddress) || ''
+const isLoopback = req => { const a = clientIp(req); return a === '127.0.0.1' || a === '::1' || a === '::ffff:127.0.0.1' }
+// الفبای بدونِ کاراکترهای مبهم (بدون I، O، 0، 1)
+const RC_ALPHA = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+function makeRecoveryCode() {
+  const b = randomBytes(16); let s = ''
+  for (let i = 0; i < 16; i++) s += RC_ALPHA[b[i] % RC_ALPHA.length]
+  return s.match(/.{4}/g).join('-')          // مثال: K7QP-3MZR-XW9T-BHNV
+}
+const normalizeCode = c => String(c || '').toUpperCase().replace(/[^A-Z2-9]/g, '')
+// کد بازیابیِ جدید: فقط هش ذخیره می‌شود؛ خودِ کد یک‌بار برگردانده و دیگر قابل بازخوانی نیست
+function setRecoveryCode(userId) {
+  const code = makeRecoveryCode()
+  const { hash, salt } = hashPw(normalizeCode(code))
+  db.prepare(`UPDATE users SET recovery_hash=?, recovery_salt=?, recovery_set_at=? WHERE id=?`).run(hash, salt, nowISO(), userId)
+  return code
+}
+// محدودیت نرخ (مقاوم به ری‌استارت — در جدول settings): ۵ تلاش → قفل ۱۵ دقیقه
+const RC_MAX = 5, RC_LOCK_MS = 15 * 60000
+const rcState = username => {
+  const raw = getSetting('rc_fail_' + username, ''); if (!raw) return { count: 0, until: 0 }
+  const [c, u] = raw.split('|'); return { count: +c || 0, until: u ? Date.parse(u) || 0 : 0 }
+}
+const rcLockedMin = username => { const s = rcState(username); return (s.until && Date.now() < s.until) ? Math.ceil((s.until - Date.now()) / 60000) : 0 }
+function rcFail(username) {
+  let s = rcState(username)
+  if (s.until && Date.now() >= s.until) s = { count: 0, until: 0 }   // قفل منقضی‌شده ⇒ شمارنده صفر
+  const count = s.count + 1
+  const until = count >= RC_MAX ? new Date(Date.now() + RC_LOCK_MS).toISOString() : ''
+  setSetting('rc_fail_' + username, count + '|' + until)
+}
+const rcClear = username => db.prepare(`DELETE FROM settings WHERE key=?`).run('rc_fail_' + username)
+function logSecurity(event, username, detail, ip) {
+  const t = todayJ()
+  db.prepare(`INSERT INTO security_log(event,username,detail,ip,g_date,j_date,created_at) VALUES(?,?,?,?,?,?,?)`)
+    .run(event, username || '', detail || '', ip || '', todayG(), jStr(t.jy, t.jm, t.jd), nowISO())
+}
+async function resetRequestFresh() {
+  try { const st = await stat(join(USER_ROOT, 'reset.request')); return (Date.now() - st.mtimeMs) < 10 * 60000 } catch { return false }
+}
 
 // ---------- کمک‌کارهای HTTP ----------
 function sendJSON(res, code, obj, headers = {}) {
@@ -1065,7 +1124,127 @@ async function applyUpdate(buf) {
 }
 
 // ---------- سرور ----------
-const PUBLIC_PATHS = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/setup'])
+// ---------- صفحات چاپی (تولید PDF) ----------
+const hEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const isTomanDisp = () => getSetting('displayUnit', 'toman') !== 'rial'
+const pUnitFa = () => isTomanDisp() ? 'تومان' : 'ریال'
+const pSep = n => faNum(String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '٬'))
+const pMoney = r => pSep(isTomanDisp() ? (r || 0) / 10 : (r || 0))
+const printLayout = (title, inner) => `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${hEsc(title)}</title>
+<style>
+@page{size:A4;margin:14mm}
+*{box-sizing:border-box}
+body{font-family:Tahoma,'IRANSans','Vazirmatn',system-ui,sans-serif;color:#111;margin:0;font-size:13px;line-height:1.8;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+.stmt{max-width:182mm;margin:0 auto}
+h1{font-size:19px;margin:0 0 2px}
+.sub{color:#555;font-size:12px;margin:0 0 10px}
+.big{font-size:17px;font-weight:800;border:2px solid #1d5fa8;border-radius:8px;padding:11px 14px;margin:10px 0;background:#f2f6fc}
+h3{font-size:14px;margin:14px 0 4px}
+table{width:100%;border-collapse:collapse;margin:6px 0}
+th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:right;font-size:12px}
+th{background:#eef2f7;font-weight:700}
+.num{font-variant-numeric:tabular-nums}
+.tot td{font-weight:800;background:#f8fafc}
+.amt-out{color:#c0392b}.amt-in{color:#0f8a56}
+.foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#666;font-size:11px;text-align:center}
+.sign{display:flex;justify-content:space-between;margin-top:22px;font-size:12px;color:#333}
+.kpis{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
+.kpi{flex:1 1 130px;border:1px solid #cbd5e1;border-radius:8px;padding:8px 11px;background:#f8fafc}
+.kpi .k{font-size:11px;color:#555}
+.kpi .v{font-size:16px;font-weight:800;margin-top:3px}
+.kpi .s{font-size:10px;color:#777;margin-top:1px}
+.sech{font-size:14px;margin:15px 0 4px;font-weight:800}
+.ok{color:#0f8a56}.warn{color:#c0392b}
+</style></head><body><div class="stmt">${inner}</div></body></html>`
+
+function printUnitHtml(c) {
+  const u = c.unit, open = c.shares.filter(s => s.remaining > 0)
+  const debtLine = c.debt > 0
+    ? `بدهی فعلی: <span class="amt-out">${pMoney(c.debt)} ${pUnitFa()}</span>${c.aging ? ` · قدمت: ${c.aging.days > 9000 ? 'انتقالی' : faNum(c.aging.days) + ' روز'}` : ''}`
+    : c.debt < 0 ? `بستانکاری: <span class="amt-in">${pMoney(-c.debt)} ${pUnitFa()}</span>` : 'تسویه‌ی کامل — بدهی ندارید'
+  const inner = `
+    <h1>${hEsc(c.buildingName || 'ساختمان')}</h1>
+    <div class="sub">صورت‌حساب واحد ${faNum(u.number)}${u.resident_name ? ' — ' + hEsc(u.resident_name) : ''} · تاریخ صدور: ${faNum(c.today)}</div>
+    <div class="big">${debtLine}</div>
+    <h3>ریز بدهکاری‌ها</h3>
+    <table><thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
+    ${open.length ? open.map(s => `<tr><td>${hEsc(s.title)}</td><td>${hEsc(s.category || '—')}</td><td class="num">${s.is_opening ? 'انتقالی' : faNum(s.j_date)}</td>
+      <td class="num">${pMoney(s.share_amount)}</td><td class="num">${pMoney(s.paid)}</td><td class="num amt-out">${pMoney(s.remaining)}</td></tr>`).join('')
+    : '<tr><td colspan="6" style="text-align:center;color:#888">بدهیِ بازی ندارید</td></tr>'}
+    </tbody></table>
+    <h3>دریافتی‌های ثبت‌شده‌ی شما</h3>
+    <table><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>توضیح</th></tr></thead><tbody>
+    ${c.payments.length ? c.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faNum(p.j_date)}</td><td class="num amt-in">${pMoney(p.amount)}</td>
+      <td>${hEsc(p.fund_name || '—')}</td><td>${hEsc(p.note || '')}</td></tr>`).join('')
+    : '<tr><td colspan="4" style="text-align:center;color:#888">پرداختی ثبت نشده</td></tr>'}
+    </tbody></table>
+    <table><tbody><tr class="tot"><td>جمع سهم‌ها</td><td class="num">${pMoney(c.totalShares)} ${pUnitFa()}</td>
+      <td>جمع پرداختی</td><td class="num">${pMoney(c.totalPaid)} ${pUnitFa()}</td></tr></tbody></table>
+    <div class="sub" style="margin-top:8px">شارژ ماهانه‌ی این واحد: <b>${pMoney(u.chargeAmount)} ${pUnitFa()}</b></div>
+    <div class="foot">صادرشده از «حسابدار مدیر ساختمان توی‌دید» · toyedid.com</div>`
+  return printLayout(`صورت‌حساب واحد ${u.number}`, inner)
+}
+
+// آخرین روز میلادیِ یک دوره‌ی جلالی (برای بازه‌ی گزارش)
+function periodLastG(p) {
+  const nextFirst = periodFirstG(shiftPeriod(p, 1))
+  const d = new Date(nextFirst + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+
+function printSummaryHtml(period, showNames) {
+  const p = period || curPeriod()
+  const from = periodFirstG(p), to = periodLastG(p)
+  const mr = managerReport(from, to)
+  const dr = debtorsReport()
+  const bc = balanceCheck()
+  const fundTotal = mr.fundFlow.reduce((s, f) => s + f.close, 0)
+  const U = pUnitFa()
+  const kpi = (k, v, s, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`
+  const inner = `
+    <h1>${hEsc(mr.buildingName || 'ساختمان')}</h1>
+    <div class="sub">خلاصه‌ی ماهانه برای هیئت‌مدیره · دوره‌ی ${faNum(periodFa(p))} · تاریخ صدور: ${faNum((() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })())}${mr.managerName ? ' · مدیر: ' + hEsc(mr.managerName) : ''}</div>
+    <div class="kpis">
+      ${kpi('موجودی کل صندوق‌ها', pMoney(fundTotal) + ' ' + U, '', fundTotal >= 0 ? 'ok' : 'warn')}
+      ${kpi('دریافتی این ماه', pMoney(mr.payments.total) + ' ' + U, faNum(mr.payments.count) + ' فقره', 'ok')}
+      ${kpi('هزینه‌ی این ماه', pMoney(mr.expenses.total) + ' ' + U, faNum(mr.expenses.count) + ' فاکتور', 'warn')}
+      ${kpi('بدهی کل ساکنین', pMoney(dr.total) + ' ' + U, faNum(dr.rows.length) + ' واحد بدهکار', dr.total > 0 ? 'warn' : 'ok')}
+      ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', mr.managerDebt > 0 ? 'warn' : 'ok')}
+    </div>
+    <div class="sech">گردش صندوق‌ها</div>
+    <table><thead><tr><th>صندوق</th><th>مانده‌ی ابتدای دوره</th><th>ورودی</th><th>خروجی</th><th>مانده‌ی پایان دوره</th></tr></thead><tbody>
+    ${mr.fundFlow.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.open)}</td><td class="num amt-in">${pMoney(f.in)}</td>
+      <td class="num amt-out">${pMoney(f.out)}</td><td class="num"><b>${pMoney(f.close)}</b></td></tr>`).join('')}
+    <tr class="tot"><td>جمع</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.open, 0))}</td>
+      <td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.in, 0))}</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.out, 0))}</td>
+      <td class="num">${pMoney(fundTotal)}</td></tr>
+    </tbody></table>
+    <div class="sech">هزینه‌ها بر اساس دسته</div>
+    <table><thead><tr><th>دسته</th><th>تعداد</th><th>مبلغ</th></tr></thead><tbody>
+    ${mr.expenses.byCategory.length ? mr.expenses.byCategory.map(c => `<tr><td>${hEsc(c.name)}</td><td class="num">${faNum(c.count)}</td><td class="num">${pMoney(c.total)} ${U}</td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:#888">هزینه‌ای در این دوره ثبت نشده</td></tr>'}
+    </tbody></table>
+    <div class="sech">وضعیت بدهکاران (بر اساس قدمت)</div>
+    <table><thead><tr><th>۰-۳۰ روز</th><th>۳۱-۶۰ روز</th><th>۶۱-۹۰ روز</th><th>بیش از ۹۰ روز</th><th>جمع کل</th></tr></thead><tbody>
+    <tr><td class="num">${pMoney(dr.buckets['۰-۳۰'])}</td><td class="num">${pMoney(dr.buckets['۳۱-۶۰'])}</td>
+      <td class="num">${pMoney(dr.buckets['۶۱-۹۰'])}</td><td class="num amt-out">${pMoney(dr.buckets['+۹۰'])}</td>
+      <td class="num tot"><b>${pMoney(dr.total)} ${U}</b></td></tr>
+    </tbody></table>
+    ${showNames && dr.rows.length ? `<table style="margin-top:6px"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
+      ${dr.rows.map(r => `<tr><td class="num">${faNum(r.number)}</td><td>${hEsc(r.resident_name || '—')}</td>
+        <td class="num amt-out">${pMoney(r.debt)} ${U}</td><td class="num">${r.aging ? (r.aging.days > 9000 ? 'انتقالی' : faNum(r.aging.days) + ' روز') : '—'}</td></tr>`).join('')}
+      </tbody></table>`
+    : dr.rows.length ? `<div class="s" style="color:#777;margin-top:4px">نام بدهکاران برای حفظ حریم خصوصی در این گزارش نمایش داده نشده است.</div>` : ''}
+    <div class="sech">صحت دفاتر</div>
+    <div class="big" style="font-size:14px">${bc.balanced
+      ? '✅ تراز کل برقرار است: جمع بدهی واحدها با «جمع سهم‌ها منهای دریافتی‌ها» برابر است.'
+      : '⚠️ تراز کل برقرار نیست — لطفاً گزارش «تراز کل» را در نرم‌افزار بررسی کنید.'}</div>
+    <div class="foot">صادرشده از «حسابدار مدیر ساختمان توی‌دید» · toyedid.com</div>`
+  return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
+}
+
+const PUBLIC_PATHS = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/setup',
+  '/api/auth/recover', '/api/auth/local-reset', '/api/auth/local-reset/available'])
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`)
@@ -1077,7 +1256,10 @@ const server = createServer(async (req, res) => {
 
     // ---- احراز هویت ----
     if (path === '/api/auth/status' && M === 'GET')
-      return sendJSON(res, 200, { needsSetup: noUsers, user: userPublic(user), version: APP_VERSION, lanUrl: lanUrl(), buildingName: getSetting('buildingName') })
+      return sendJSON(res, 200, {
+        needsSetup: noUsers, user: userPublic(user), version: APP_VERSION, lanUrl: lanUrl(), buildingName: getSetting('buildingName'),
+        needsRecoveryCode: !!(user && user.role === 'admin' && !user.recovery_hash)
+      })
 
     if (path === '/api/auth/setup' && M === 'POST') {
       if (!noUsers) return sendJSON(res, 400, { error: 'مدیر قبلاً ساخته شده است' })
@@ -1085,10 +1267,12 @@ const server = createServer(async (req, res) => {
       if (!b.username || !b.password || !b.displayName) return sendJSON(res, 400, { error: 'همه‌ی فیلدها لازم است' })
       if (String(b.password).length < 4) return sendJSON(res, 400, { error: 'رمز حداقل ۴ کاراکتر' })
       const { hash, salt } = hashPw(b.password)
-      db.prepare(`INSERT INTO users(username,display_name,role,pass_hash,pass_salt,created_at) VALUES(?,?,?,?,?,?)`)
-        .run(b.username.trim(), b.displayName.trim(), 'admin', hash, salt, nowISO())
+      const uid = Number(db.prepare(`INSERT INTO users(username,display_name,role,pass_hash,pass_salt,created_at) VALUES(?,?,?,?,?,?)`)
+        .run(b.username.trim(), b.displayName.trim(), 'admin', hash, salt, nowISO()).lastInsertRowid)
       if ((b.buildingName || '').trim()) setSetting('buildingName', b.buildingName.trim())
-      return sendJSON(res, 200, { ok: true })
+      const recoveryCode = setRecoveryCode(uid)
+      logSecurity('recovery_generated', b.username.trim(), 'setup', clientIp(req))
+      return sendJSON(res, 200, { ok: true, recoveryCode })
     }
 
     if (path === '/api/auth/login' && M === 'POST') {
@@ -1104,6 +1288,41 @@ const server = createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true }, { 'Set-Cookie': 'sid=; HttpOnly; Path=/; Max-Age=0' })
     }
 
+    // ---- بازیابی رمز با کد بازیابی (عمومی) ----
+    if (path === '/api/auth/recover' && M === 'POST') {
+      const b = await jbody(req)
+      const username = (b.username || '').trim(), ip = clientIp(req)
+      const lock = rcLockedMin(username)
+      if (lock > 0) { await delay(500); return sendJSON(res, 429, { error: `تعداد تلاش زیاد است. ${faNum(lock)} دقیقه بعد دوباره امتحان کنید` }) }
+      const u = db.prepare(`SELECT * FROM users WHERE username=? AND active=1`).get(username)
+      const ok = u && u.recovery_hash && verifyPw(normalizeCode(b.code), u.recovery_hash, u.recovery_salt)
+      if (!ok) { rcFail(username); logSecurity('recovery_failed', username, '', ip); await delay(500); return sendJSON(res, 401, { error: 'نام کاربری یا کد بازیابی اشتباه است' }) }
+      if (String(b.newPassword || '').length < 4) return sendJSON(res, 400, { error: 'رمز جدید حداقل ۴ کاراکتر' })
+      const { hash, salt } = hashPw(b.newPassword)
+      db.prepare(`UPDATE users SET pass_hash=?, pass_salt=? WHERE id=?`).run(hash, salt, u.id)
+      const newRecoveryCode = setRecoveryCode(u.id)   // کد قدیمی باطل، کد جدید یک‌بار
+      rcClear(username); sessions.clear(); logSecurity('recovery_used', username, '', ip)
+      return sendJSON(res, 200, { ok: true, newRecoveryCode })
+    }
+    // ---- ریست محلی: فقط از روی همین کامپیوتر (loopback) + فایل درخواستِ تازه ----
+    if (path === '/api/auth/local-reset/available' && M === 'GET')
+      return sendJSON(res, 200, { available: isLoopback(req) && await resetRequestFresh() })
+    if (path === '/api/auth/local-reset' && M === 'POST') {
+      if (!isLoopback(req)) { await delay(500); logSecurity('recovery_failed', '', 'local-reset non-loopback', clientIp(req)); return sendJSON(res, 403, { error: 'ریست فقط از روی همین کامپیوتر ممکن است' }) }
+      if (!(await resetRequestFresh())) return sendJSON(res, 403, { error: 'درخواستِ ریست معتبر نیست یا منقضی شده' })
+      const b = await jbody(req)
+      const username = (b.username || '').trim()
+      const u = db.prepare(`SELECT * FROM users WHERE username=? AND role='admin'`).get(username)
+      if (!u) return sendJSON(res, 400, { error: 'کاربر مدیر با این نام یافت نشد' })
+      if (String(b.newPassword || '').length < 4) return sendJSON(res, 400, { error: 'رمز جدید حداقل ۴ کاراکتر' })
+      const { hash, salt } = hashPw(b.newPassword)
+      db.prepare(`UPDATE users SET pass_hash=?, pass_salt=?, active=1 WHERE id=?`).run(hash, salt, u.id)
+      const newRecoveryCode = setRecoveryCode(u.id)
+      await rm(join(USER_ROOT, 'reset.request'), { force: true })
+      rcClear(username); sessions.clear(); logSecurity('local_reset', username, '', clientIp(req))
+      return sendJSON(res, 200, { ok: true, newRecoveryCode })
+    }
+
     // ---- گیت ورود ----
     if (path.startsWith('/api/') && !PUBLIC_PATHS.has(path)) {
       if (!user) return sendJSON(res, 401, { error: 'لطفاً وارد شوید' })
@@ -1112,6 +1331,38 @@ const server = createServer(async (req, res) => {
     // نقش‌های نظارتی (board/inspector) فقط مشاهده‌گرند — گیت سمت سرور، نه فقط رابط کاربری
     if (path.startsWith('/api/') && M !== 'GET' && path !== '/api/auth/logout' && !isAdmin)
       return sendJSON(res, 403, { error: 'شما دسترسی فقط-مشاهده دارید' })
+
+    // ---- تولید مجددِ کد بازیابی (فقط مدیر؛ گیتِ بالا نقش‌های نظارتی را رد کرده) ----
+    if (path === '/api/auth/recovery/regenerate' && M === 'POST') {
+      const b = await jbody(req)
+      const target = db.prepare(`SELECT * FROM users WHERE id=?`).get(+b.userId || user.id)
+      if (!target) return sendJSON(res, 404, { error: 'کاربر یافت نشد' })
+      const code = setRecoveryCode(target.id)
+      logSecurity('recovery_generated', target.username, 'by:' + user.username, clientIp(req))
+      return sendJSON(res, 200, { ok: true, code })
+    }
+    if (path === '/api/security-log' && M === 'GET') {
+      if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
+      const FA = { recovery_generated: 'ساخت کد بازیابی', recovery_used: 'استفاده از کد بازیابی', local_reset: 'ریست محلی', recovery_failed: 'تلاش ناموفق' }
+      return sendJSON(res, 200, db.prepare(`SELECT * FROM security_log ORDER BY id DESC LIMIT 20`).all()
+        .map(r => ({ ...r, eventFa: FA[r.event] || r.event })))
+    }
+
+    // ---- دفترچه‌ی مخاطبان گزارش (هیئت‌مدیره) ----
+    if (path === '/api/report-contacts' && M === 'GET')
+      return sendJSON(res, 200, db.prepare(`SELECT * FROM report_contacts ORDER BY id`).all())
+    if (path === '/api/report-contacts' && M === 'POST') {
+      const b = await jbody(req)
+      if (!(b.name || '').trim()) return sendJSON(res, 400, { error: 'نام مخاطب لازم است' })
+      const id = Number(db.prepare(`INSERT INTO report_contacts(name,phone,role,created_at) VALUES(?,?,?,?)`)
+        .run(b.name.trim(), (b.phone || '').trim(), (b.role || '').trim(), nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const rcM = /^\/api\/report-contacts\/(\d+)$/.exec(path)
+    if (rcM && M === 'DELETE') {
+      db.prepare(`DELETE FROM report_contacts WHERE id=?`).run(+rcM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
 
     // ---- متادیتا ----
     if (path === '/api/meta' && M === 'GET') {
@@ -1613,8 +1864,8 @@ const server = createServer(async (req, res) => {
     // ---- کاربران ----
     if (path === '/api/users' && M === 'GET') {
       if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
-      return sendJSON(res, 200, db.prepare(`SELECT id,username,display_name,role,active FROM users ORDER BY id`).all()
-        .map(r => ({ ...r, roleFa: ROLE_FA[r.role] })))
+      return sendJSON(res, 200, db.prepare(`SELECT id,username,display_name,role,active,recovery_set_at FROM users ORDER BY id`).all()
+        .map(r => ({ ...r, roleFa: ROLE_FA[r.role], hasRecovery: !!r.recovery_set_at })))
     }
     if (path === '/api/users' && M === 'POST') {
       const b = await jbody(req)
@@ -1713,6 +1964,23 @@ const server = createServer(async (req, res) => {
       const m = /^data:[^;]*;base64,(.+)$/s.exec(b.dataUrl || '')
       if (!m) return sendJSON(res, 400, { error: 'فایل آپدیت ارسال نشد' })
       return sendJSON(res, 200, { ok: true, count: await applyUpdate(Buffer.from(m[1], 'base64')) })
+    }
+
+    // ---- صفحات چاپی (تولید PDF) — نیازمند ورود، همه‌ی نقش‌ها ----
+    if (path.startsWith('/print/') && M === 'GET') {
+      if (!user) { res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">نیاز به ورود</p>') }
+      const um = /^\/print\/unit\/(\d+)$/.exec(path)
+      if (um) {
+        const c = unitCard(+um[1])
+        if (!c) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">واحد یافت نشد</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(printUnitHtml(c))
+      }
+      if (path === '/print/summary') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(printSummaryHtml(Q.period, Q.names === '1'))
+      }
+      res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('یافت نشد')
     }
 
     // ---- اسناد ----
@@ -1828,6 +2096,8 @@ listenWithFallback(PORT)
 
 if (process.env.NO_PKG !== '1' && !PACKAGED) { try { await refreshPackage() } catch (e) { console.error('ساخت بسته ناموفق:', e.message) } }
 else { try { APP_VERSION = JSON.parse(await readFile(join(ROOT, 'version.json'), 'utf8')).version } catch { } }
+// در اپ نصبی، نسخه‌ی واقعیِ نصب‌کننده (از Electron) مرجع است تا بررسیِ آپدیت درست کار کند
+if (process.env.HS_APP_VERSION) APP_VERSION = 'v' + String(process.env.HS_APP_VERSION).replace(/^v/, '')
 
 autoIssueCurrentCharge()
 autoIssueRecurring()

@@ -1,7 +1,7 @@
 {
   "name": "hesabdar-sakhteman-desktop",
   "productName": "Hesabdar Sakhteman ToyeDid",
-  "version": "1.0.10",
+  "version": "1.0.11",
   "private": true,
   "description": "حسابدار مدیر ساختمان توی‌دید — مدیریت مالی ساختمان‌های مسکونی",
   "author": { "name": "ToyeDid", "email": "info@toyedid.com" },
@@ -30,6 +30,7 @@
     "directories": { "output": "dist", "buildResources": "build" },
     "files": [
       "main.js",
+      "preload.js",
       "srv/**/*",
       "!srv/data/**",
       "!srv/uploads/**",
