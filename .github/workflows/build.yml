@@ -8,11 +8,19 @@ on:
 permissions:
   contents: write
 
-# اول مک Release را می‌سازد، سپس ویندوز به همان Release اضافه می‌شود
-# (سریالی تا از ساختِ دو Release تکراری جلوگیری شود).
+# مک و ویندوز به‌صورت جدا build می‌شوند (بدون انتشار)، سپس یک job واحد
+# همه‌ی خروجی‌ها را در «یک» Release پیش‌نویس جمع می‌کند تا هیچ Draft تکراری/ناقص ساخته نشود.
 jobs:
-  mac:
-    runs-on: macos-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            args: --mac
+          - os: windows-latest
+            args: --win
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -21,25 +29,41 @@ jobs:
           cache: npm
           cache-dependency-path: package-lock.json
       - run: npm ci
-      - name: Build macOS
-        run: npx electron-builder --mac --publish always
+      - name: Build ${{ matrix.os }}
+        run: npx electron-builder ${{ matrix.args }} --publish never
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CSC_IDENTITY_AUTO_DISCOVERY: false
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ matrix.os }}
+          retention-days: 3
+          path: |
+            dist/*.dmg
+            dist/*.exe
+            dist/*.yml
+            dist/*.blockmap
 
-  win:
-    needs: mac
-    runs-on: windows-latest
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
         with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: package-lock.json
-      - run: npm ci
-      - name: Build Windows
-        run: npx electron-builder --win --publish always
+          path: artifacts
+      - name: Create single draft release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: false
+          TAG: ${{ github.ref_name }}
+        run: |
+          FILES=$(find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.yml' -o -name '*.blockmap' \) | sort -u)
+          echo "فایل‌های Release:"; echo "$FILES"
+          gh release create "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --draft \
+            --title "$TAG" \
+            --notes "حسابدار ساختمان توی دید — نسخه $TAG. نصب‌کننده‌ی ویندوز روی هر دو سیستم ۳۲ و ۶۴ بیتی کار می‌کند." \
+            $FILES
