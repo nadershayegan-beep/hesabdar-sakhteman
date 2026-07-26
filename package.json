@@ -1,10 +1,13 @@
 {
   "name": "hesabdar-sakhteman-desktop",
   "productName": "Hesabdar Sakhteman ToyeDid",
-  "version": "1.0.13",
+  "version": "1.0.14",
   "private": true,
   "description": "حسابدار ساختمان توی دید — مدیریت مالی ساختمان‌های مسکونی",
-  "author": { "name": "ToyeDid", "email": "info@toyedid.com" },
+  "author": {
+    "name": "ToyeDid",
+    "email": "info@toyedid.com"
+  },
   "homepage": "https://toyedid.com",
   "main": "main.js",
   "scripts": {
@@ -27,7 +30,10 @@
     "productName": "Hesabdar Sakhteman ToyeDid",
     "artifactName": "HesabdarSakhteman-${version}-${os}-${arch}.${ext}",
     "asar": false,
-    "directories": { "output": "dist", "buildResources": "build" },
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
     "files": [
       "main.js",
       "preload.js",
@@ -38,7 +44,15 @@
       "!srv/**/.DS_Store"
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64", "ia32"] }],
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64",
+            "ia32"
+          ]
+        }
+      ],
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -52,16 +66,38 @@
       "artifactName": "HesabdarSakhteman-${version}-win.${ext}"
     },
     "mac": {
-      "target": [{ "target": "dmg", "arch": ["arm64", "x64"] }],
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
       "category": "public.app-category.finance",
       "icon": "build/icon.png",
       "identity": null,
-      "extendInfo": { "LSApplicationCategoryType": "public.app-category.finance" }
+      "extendInfo": {
+        "LSApplicationCategoryType": "public.app-category.finance"
+      }
     },
-    "dmg": { "title": "حسابدار ساختمان توی دید ${version}", "artifactName": "HesabdarSakhteman-${version}-mac-${arch}.${ext}" },
-    "linux": { "target": ["AppImage"], "category": "Office" },
+    "dmg": {
+      "title": "حسابدار ساختمان توی دید ${version}",
+      "artifactName": "HesabdarSakhteman-${version}-mac-${arch}.${ext}"
+    },
+    "linux": {
+      "target": [
+        "AppImage"
+      ],
+      "category": "Office"
+    },
     "publish": [
-      { "provider": "github", "owner": "nadershayegan-beep", "repo": "hesabdar-sakhteman" }
+      {
+        "provider": "github",
+        "owner": "nadershayegan-beep",
+        "repo": "hesabdar-sakhteman"
+      }
     ]
   }
 }

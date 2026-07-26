@@ -54,16 +54,17 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+          merge-multiple: true
+      - name: List downloaded files
+        run: ls -la artifacts
       - name: Create single draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: "حسابدار ساختمان توی دید — نسخه ${{ github.ref_name }}. نصب‌کننده‌ی ویندوز روی هر دو سیستم ۳۲ و ۶۴ بیتی کار می‌کند."
+          files: artifacts/**/*
+          fail_on_unmatched_files: false
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          FILES=$(find artifacts -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.yml' -o -name '*.blockmap' \) | sort -u)
-          echo "فایل‌های Release:"; echo "$FILES"
-          gh release create "$TAG" \
-            --repo "$GITHUB_REPOSITORY" \
-            --draft \
-            --title "$TAG" \
-            --notes "حسابدار ساختمان توی دید — نسخه $TAG. نصب‌کننده‌ی ویندوز روی هر دو سیستم ۳۲ و ۶۴ بیتی کار می‌کند." \
-            $FILES
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
