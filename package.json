@@ -1,9 +1,9 @@
 {
   "name": "hesabdar-sakhteman-desktop",
   "productName": "Hesabdar Sakhteman ToyeDid",
-  "version": "1.0.11",
+  "version": "1.0.12",
   "private": true,
-  "description": "حسابدار مدیر ساختمان توی‌دید — مدیریت مالی ساختمان‌های مسکونی",
+  "description": "حسابدار ساختمان توی دید — مدیریت مالی ساختمان‌های مسکونی",
   "author": { "name": "ToyeDid", "email": "info@toyedid.com" },
   "homepage": "https://toyedid.com",
   "main": "main.js",
@@ -38,7 +38,7 @@
       "!srv/**/.DS_Store"
     ],
     "win": {
-      "target": [{ "target": "nsis", "arch": ["x64"] }],
+      "target": [{ "target": "nsis", "arch": ["x64", "ia32"] }],
       "icon": "build/icon.png"
     },
     "nsis": {
@@ -47,7 +47,7 @@
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "حسابدار ساختمان توی‌دید",
+      "shortcutName": "حسابدار ساختمان توی دید",
       "deleteAppDataOnUninstall": false
     },
     "mac": {
@@ -57,7 +57,7 @@
       "identity": null,
       "extendInfo": { "LSApplicationCategoryType": "public.app-category.finance" }
     },
-    "dmg": { "title": "حسابدار ساختمان توی‌دید ${version}" },
+    "dmg": { "title": "حسابدار ساختمان توی دید ${version}" },
     "linux": { "target": ["AppImage"], "category": "Office" },
     "publish": [
       { "provider": "github", "owner": "nadershayegan-beep", "repo": "hesabdar-sakhteman" }

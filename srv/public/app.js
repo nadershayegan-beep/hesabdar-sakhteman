@@ -230,7 +230,7 @@ function showRecoveryCode(code, opts = {}) {
     `<button class="btn primary" id="rcDone" disabled>ادامه</button>`)
   const bn = (META && META.buildingName) || ($('#authBuilding') && $('#authBuilding').value.trim()) || 'ساختمان'
   const t = todayJ()
-  const fileText = `کد بازیابیِ حسابدار مدیر ساختمان\nساختمان: ${bn}\nکد بازیابی: ${code}\nتاریخ: ${t.jy}/${t.jm}/${t.jd}\n\n⚠️ این کد را محرمانه و در جای امن نگه دارید.`
+  const fileText = `کد بازیابیِ حسابدار ساختمان توی دید\nساختمان: ${bn}\nکد بازیابی: ${code}\nتاریخ: ${t.jy}/${t.jm}/${t.jd}\n\n⚠️ این کد را محرمانه و در جای امن نگه دارید.`
   $('#rcCopy').onclick = () => { (navigator.clipboard ? navigator.clipboard.writeText(code) : Promise.reject()).then(() => toast('کپی شد')).catch(() => toast('کد را دستی کپی کنید', true)) }
   $('#rcSave').onclick = () => { const b = new Blob([fileText], { type: 'text/plain;charset=utf-8' }); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'کد-بازیابی-' + bn + '.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000) }
   $('#rcPrint').onclick = () => { const w = window.open('', '_blank'); if (w) { w.document.write('<pre style="font:20px monospace;direction:rtl;padding:30px;white-space:pre-wrap">' + esc(fileText) + '</pre>'); w.document.close(); w.focus(); w.print() } }
@@ -766,7 +766,7 @@ function statementHtml(d) {
       <tr><th>جمع پرداخت‌ها</th><th></th><th>${money(d.totalPaid)}</th></tr>
     </tbody></table>
     <div class="total">${d.debt > 0 ? `مانده‌ی بدهی: ${moneyU(d.debt)}` : d.debt < 0 ? `بستانکاری: ${moneyU(-d.debt)}` : 'تسویه‌ی کامل — بدهی ندارید'}</div>
-    <div class="stfoot">این صورت‌حساب از نرم‌افزار «حسابدار مدیر ساختمان توی دید» صادر شده است.</div>
+    <div class="stfoot">این صورت‌حساب از نرم‌افزار «حسابدار ساختمان توی دید» صادر شده است.</div>
   </div>`
 }
 

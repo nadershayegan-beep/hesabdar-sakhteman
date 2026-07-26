@@ -1,4 +1,4 @@
-// حسابدار مدیر ساختمان توی دید — پوسته‌ی Electron (اپ نصبی ویندوز/مک)
+// حسابدار ساختمان توی دید — پوسته‌ی Electron (اپ نصبی ویندوز/مک)
 // سرور موجود (app/server.js) به‌عنوان پروسه‌ی فرزند با Node داخلی Electron اجرا می‌شود.
 const { app, BrowserWindow, Menu, shell, dialog, session, ipcMain } = require('electron')
 const { fork } = require('node:child_process')
@@ -14,7 +14,7 @@ let splash = null
 let serverUrl = null
 let quitting = false
 
-app.setName('حسابدار ساختمان توی‌دید')
+app.setName('حسابدار ساختمان توی دید')
 if (!app.requestSingleInstanceLock()) { app.quit(); return }
 app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus() } })
 
@@ -27,7 +27,7 @@ function showSplash() {
   const html = `<!doctype html><html dir="rtl"><meta charset="utf-8"><body style="margin:0;height:100vh;display:flex;
     flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#0f172a;color:#e5e7eb;
     font-family:Tahoma,system-ui,sans-serif;-webkit-user-select:none">
-    <div style="font-size:19px;font-weight:700">حسابدار مدیر ساختمان</div>
+    <div style="font-size:19px;font-weight:700">حسابدار ساختمان توی دید</div>
     <div style="font-size:13px;opacity:.75">در حال آماده‌سازی…</div>
     <div style="width:190px;height:4px;background:#1f2937;border-radius:4px;overflow:hidden">
       <div style="width:40%;height:100%;background:#38bdf8;animation:m 1.1s ease-in-out infinite"></div></div>
@@ -77,7 +77,7 @@ function createWindow(url) {
   win = new BrowserWindow({
     width: 1360, height: 880, minWidth: 1024, minHeight: 640,
     backgroundColor: '#ffffff', show: false, autoHideMenuBar: false,
-    title: 'حسابدار مدیر ساختمان توی‌دید',
+    title: 'حسابدار ساختمان توی دید',
     webPreferences: { contextIsolation: true, nodeIntegration: false, spellcheck: false,
       preload: path.join(__dirname, 'preload.js') }
   })
@@ -149,7 +149,7 @@ function buildMenu() {
       { label: 'دانلود نسخه‌ی جدید…', click: () => shell.openExternal('https://github.com/nadershayegan-beep/hesabdar-sakhteman/releases/latest') },
       { label: 'وب‌سایت توی‌دید', click: () => shell.openExternal('https://toyedid.com') },
       { label: 'نسخه‌ی برنامه', click: () => dialog.showMessageBox(win, {
-          type: 'info', title: 'درباره', message: 'حسابدار مدیر ساختمان توی‌دید',
+          type: 'info', title: 'درباره', message: 'حسابدار ساختمان توی دید',
           detail: 'نسخه ' + app.getVersion() + '\nمسیر داده‌ها:\n' + USER_DIR, buttons: ['باشه'] }) }
     ] }
   ]

@@ -1,4 +1,4 @@
-// حسابدار مدیر ساختمان توی دید — سرور محلی (Node.js خالص + node:sqlite، بدون وابستگی)
+// حسابدار ساختمان توی دید — سرور محلی (Node.js خالص + node:sqlite، بدون وابستگی)
 import { createServer } from 'node:http'
 import { DatabaseSync } from 'node:sqlite'
 import { readFile, mkdir, writeFile, rm, readdir, stat, chmod } from 'node:fs/promises'
@@ -1034,7 +1034,7 @@ async function listBackups(destRaw) {
 async function restoreBackup(buf) {
   const entries = readZip(buf)
   const dbEntry = entries.find(e => e.name.replace(/\\/g, '/') === 'data/sakhteman.db') || entries.find(e => basename(e.name) === 'sakhteman.db')
-  if (!dbEntry) throw new Error('این فایل، بکاپ حسابدار مدیر ساختمان نیست (data/sakhteman.db پیدا نشد)')
+  if (!dbEntry) throw new Error('این فایل، بکاپ حسابدار ساختمان توی دید نیست (data/sakhteman.db پیدا نشد)')
   try { db.close() } catch { }
   await writeFile(join(DATA_DIR, 'sakhteman.db'), dbEntry.data)
   await rm(join(DATA_DIR, 'sakhteman.db-wal'), { force: true })
@@ -1103,7 +1103,7 @@ async function refreshPackage() {
 async function applyUpdate(buf) {
   const entries = readZip(buf)
   if (!entries.some(e => basename(e.name) === 'server.js'))
-    throw new Error('این فایل، بسته‌ی نصب حسابدار مدیر ساختمان نیست (server.js پیدا نشد)')
+    throw new Error('این فایل، بسته‌ی نصب حسابدار ساختمان توی دید نیست (server.js پیدا نشد)')
   const PROTECTED = new Set(['data', 'uploads', 'اپدیت', 'بکاپ‌ها'])
   let count = 0
   for (const e of entries) {
@@ -1181,7 +1181,7 @@ function printUnitHtml(c) {
     <table><tbody><tr class="tot"><td>جمع سهم‌ها</td><td class="num">${pMoney(c.totalShares)} ${pUnitFa()}</td>
       <td>جمع پرداختی</td><td class="num">${pMoney(c.totalPaid)} ${pUnitFa()}</td></tr></tbody></table>
     <div class="sub" style="margin-top:8px">شارژ ماهانه‌ی این واحد: <b>${pMoney(u.chargeAmount)} ${pUnitFa()}</b></div>
-    <div class="foot">صادرشده از «حسابدار مدیر ساختمان توی‌دید» · toyedid.com</div>`
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout(`صورت‌حساب واحد ${u.number}`, inner)
 }
 
@@ -1239,7 +1239,7 @@ function printSummaryHtml(period, showNames) {
     <div class="big" style="font-size:14px">${bc.balanced
       ? '✅ تراز کل برقرار است: جمع بدهی واحدها با «جمع سهم‌ها منهای دریافتی‌ها» برابر است.'
       : '⚠️ تراز کل برقرار نیست — لطفاً گزارش «تراز کل» را در نرم‌افزار بررسی کنید.'}</div>
-    <div class="foot">صادرشده از «حسابدار مدیر ساختمان توی‌دید» · toyedid.com</div>`
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
 }
 
@@ -2088,7 +2088,7 @@ function listenWithFallback(port, tries = 15) {
   server.listen(port, () => {
     const a = server.address()
     PORT = (a && typeof a === 'object' && a.port) ? a.port : port
-    console.log(`حسابدار مدیر ساختمان روی http://localhost:${PORT} بالا آمد`)
+    console.log(`حسابدار ساختمان توی دید روی http://localhost:${PORT} بالا آمد`)
     if (process.send) { try { process.send({ type: 'ready', port: PORT }) } catch { } }
   })
 }
