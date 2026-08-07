@@ -140,6 +140,44 @@ const SCHEMA_SQL = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL, phone TEXT DEFAULT '', role TEXT DEFAULT '', created_at TEXT NOT NULL
   );
+  -- ماژول رویدادها و پروژه‌ها --
+  CREATE TABLE IF NOT EXISTS events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,                 -- meeting | decision | proposal
+    title TEXT NOT NULL, g_date TEXT DEFAULT '', j_date TEXT DEFAULT '',
+    summary TEXT DEFAULT '', attendees TEXT DEFAULT '',
+    status TEXT DEFAULT '',             -- approved | rejected | pending | done
+    parent_id INTEGER DEFAULT 0,        -- تصمیم/پیشنهاد ذیل یک جلسه
+    project_id INTEGER DEFAULT 0,
+    created_by INTEGER, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS projects (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL, status TEXT DEFAULT 'approved',
+    budget INTEGER DEFAULT 0, decision_event_id INTEGER DEFAULT 0,
+    note TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS vendors (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL, phone TEXT DEFAULT '', field TEXT DEFAULT '', note TEXT DEFAULT '', created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS quotes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL, vendor_id INTEGER DEFAULT 0, vendor_name TEXT DEFAULT '',
+    amount INTEGER DEFAULT 0, g_date TEXT DEFAULT '', j_date TEXT DEFAULT '',
+    note TEXT DEFAULT '', selected INTEGER DEFAULT 0, created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS contractor_invoices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER DEFAULT 0, vendor_id INTEGER DEFAULT 0, vendor_name TEXT DEFAULT '',
+    title TEXT DEFAULT '', amount INTEGER DEFAULT 0, g_date TEXT DEFAULT '', j_date TEXT DEFAULT '',
+    paid INTEGER DEFAULT 0, note TEXT DEFAULT '', created_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS attachments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_type TEXT NOT NULL, entity_id INTEGER NOT NULL,
+    file TEXT NOT NULL, display_name TEXT DEFAULT '', created_at TEXT NOT NULL
+  );
 `
 // افزودن امن ستون‌های جدید به دیتابیس‌های موجود (بدون از دست رفتن داده)
 function migrate() {
@@ -1124,6 +1162,69 @@ async function applyUpdate(buf) {
 }
 
 // ---------- سرور ----------
+// ---------- رویدادها (جلسات/تصمیمات/پیشنهادات) ----------
+const EVENT_KINDS = ['meeting', 'decision', 'proposal']
+const EVENT_KIND_FA = { meeting: 'جلسه', decision: 'تصمیم/مصوبه', proposal: 'پیشنهاد' }
+const EVENT_STATUSES = ['', 'approved', 'rejected', 'pending', 'done']
+const EVENT_STATUS_FA = { approved: 'مصوب', rejected: 'رد شده', pending: 'در دست بررسی', done: 'انجام‌شده' }
+const listAttachments = (t, id) => db.prepare(`SELECT id, file, display_name FROM attachments WHERE entity_type=? AND entity_id=? ORDER BY id`).all(t, id)
+function eventsData() {
+  const all = db.prepare(`SELECT * FROM events ORDER BY g_date DESC, id DESC`).all()
+  const enrich = e => ({ ...e, kindFa: EVENT_KIND_FA[e.kind] || e.kind, statusFa: EVENT_STATUS_FA[e.status] || '', attachments: listAttachments('event', e.id) })
+  const meetings = all.filter(e => e.kind === 'meeting').map(m => ({ ...enrich(m), children: all.filter(c => +c.parent_id === m.id).map(enrich) }))
+  const orphans = all.filter(e => e.kind !== 'meeting' && !+e.parent_id).map(enrich)
+  return { meetings, orphans, counts: {
+    meetings: meetings.length,
+    decisions: all.filter(e => e.kind === 'decision').length,
+    proposals: all.filter(e => e.kind === 'proposal').length
+  } }
+}
+
+// ---------- پروژه‌ها، پیمانکاران، استعلام‌ها ----------
+const PROJECT_STATUSES = ['proposed', 'approved', 'in_progress', 'done', 'canceled']
+const PROJECT_STATUS_FA = { proposed: 'پیشنهادی', approved: 'تصویب‌شده', in_progress: 'در حال اجرا', done: 'تمام‌شده', canceled: 'متوقف' }
+const listVendors = () => db.prepare(`SELECT * FROM vendors ORDER BY name`).all()
+const vendorName = id => (id ? (db.prepare(`SELECT name FROM vendors WHERE id=?`).get(id) || {}).name || '' : '')
+function projectQuotes(pid) {
+  const rows = db.prepare(`SELECT q.*, v.name vname FROM quotes q LEFT JOIN vendors v ON v.id=q.vendor_id WHERE q.project_id=? ORDER BY q.amount ASC, q.id`).all(pid)
+  const min = rows.reduce((m, q) => q.amount > 0 && (m === 0 || q.amount < m) ? q.amount : m, 0)
+  return rows.map(q => ({ ...q, vendorLabel: q.vname || q.vendor_name || '—', isCheapest: q.amount > 0 && q.amount === min, attachments: listAttachments('quote', q.id) }))
+}
+function projectRow(p) {
+  const dec = +p.decision_event_id ? db.prepare(`SELECT title, j_date FROM events WHERE id=?`).get(p.decision_event_id) : null
+  const q = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(CASE WHEN selected=1 THEN amount ELSE 0 END), 0) sel FROM quotes WHERE project_id=?`).get(p.id)
+  return { ...p, statusFa: PROJECT_STATUS_FA[p.status] || p.status, decisionTitle: dec ? dec.title : '', decisionDate: dec ? dec.j_date : '', quoteCount: q.c, selectedAmount: q.sel }
+}
+const projectsList = () => db.prepare(`SELECT * FROM projects ORDER BY id DESC`).all().map(projectRow)
+function projectInvoices(pid) {
+  return db.prepare(`SELECT ci.*, v.name vname FROM contractor_invoices ci LEFT JOIN vendors v ON v.id=ci.vendor_id WHERE ci.project_id=? ORDER BY ci.g_date DESC, ci.id DESC`).all(pid)
+    .map(ci => ({ ...ci, vendorLabel: ci.vname || ci.vendor_name || '—', attachments: listAttachments('cinvoice', ci.id) }))
+}
+function projectDetail(id) {
+  const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(id)
+  if (!p) return null
+  const invoices = projectInvoices(id)
+  return {
+    project: projectRow(p), quotes: projectQuotes(id), invoices, attachments: listAttachments('project', id),
+    invoiceTotal: invoices.reduce((s, i) => s + i.amount, 0),
+    invoicePaid: invoices.reduce((s, i) => s + (i.paid ? i.amount : 0), 0)
+  }
+}
+// گزارش‌ها: خرجِ هر پروژه و هر پیمانکار (فقط بایگانی — روی صندوق اثری ندارد)
+function projectsReport() {
+  return projectsList().map(p => {
+    const i = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) t, COALESCE(SUM(CASE WHEN paid=1 THEN amount ELSE 0 END),0) paid FROM contractor_invoices WHERE project_id=?`).get(p.id)
+    return { ...p, invoiceCount: i.c, invoiceTotal: i.t, invoicePaid: i.paid, invoiceUnpaid: i.t - i.paid }
+  })
+}
+function vendorsReport() {
+  return listVendors().map(v => {
+    const q = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) t FROM quotes WHERE vendor_id=?`).get(v.id)
+    const i = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) t, COALESCE(SUM(CASE WHEN paid=1 THEN amount ELSE 0 END),0) paid FROM contractor_invoices WHERE vendor_id=?`).get(v.id)
+    return { id: v.id, name: v.name, field: v.field, phone: v.phone, quoteCount: q.c, quoteTotal: q.t, invoiceCount: i.c, invoiceTotal: i.t, invoicePaid: i.paid, invoiceUnpaid: i.t - i.paid }
+  })
+}
+
 // ---------- صفحات چاپی (تولید PDF) ----------
 const hEsc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 const isTomanDisp = () => getSetting('displayUnit', 'toman') !== 'rial'
@@ -1241,6 +1342,27 @@ function printSummaryHtml(period, showNames) {
       : '⚠️ تراز کل برقرار نیست — لطفاً گزارش «تراز کل» را در نرم‌افزار بررسی کنید.'}</div>
     <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
+}
+
+function printMeetingHtml(id) {
+  const m = db.prepare(`SELECT * FROM events WHERE id=? AND kind='meeting'`).get(id)
+  if (!m) return null
+  const kids = db.prepare(`SELECT * FROM events WHERE parent_id=? ORDER BY id`).all(id)
+  const bn = getSetting('buildingName') || 'ساختمان'
+  const item = e => `<tr><td>${EVENT_KIND_FA[e.kind] || e.kind}</td><td><b>${hEsc(e.title)}</b>${e.summary ? '<br><span style="color:#555;font-size:11px">' + hEsc(e.summary) + '</span>' : ''}</td>
+    <td class="num">${e.status ? (EVENT_STATUS_FA[e.status] || '') : '—'}</td></tr>`
+  const inner = `
+    <h1>${hEsc(bn)}</h1>
+    <div class="sub">صورت‌جلسه رسمی · ${hEsc(m.title)} · تاریخ: ${m.j_date ? faNum(m.j_date) : '—'}</div>
+    ${m.attendees ? `<div class="big" style="font-size:13px">👥 حاضرین: ${hEsc(m.attendees)}</div>` : ''}
+    ${m.summary ? `<div class="sech">خلاصه‌ی جلسه</div><div style="font-size:13px;line-height:1.9">${hEsc(m.summary).replace(/\n/g, '<br>')}</div>` : ''}
+    <div class="sech">مصوبات و پیشنهادات</div>
+    <table><thead><tr><th>نوع</th><th>شرح</th><th>وضعیت</th></tr></thead><tbody>
+    ${kids.length ? kids.map(item).join('') : '<tr><td colspan="3" style="text-align:center;color:#888">موردی ثبت نشده</td></tr>'}
+    </tbody></table>
+    <div class="sign"><span>امضای رئیس هیئت‌مدیره: ____________</span><span>امضای مدیر ساختمان: ____________</span></div>
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+  return printLayout(`صورت‌جلسه — ${m.title}`, inner)
 }
 
 const PUBLIC_PATHS = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/setup',
@@ -1363,6 +1485,175 @@ const server = createServer(async (req, res) => {
       db.prepare(`DELETE FROM report_contacts WHERE id=?`).run(+rcM[1])
       return sendJSON(res, 200, { ok: true })
     }
+
+    // ---- رویدادها: جلسات، تصمیمات، پیشنهادات (نوشتن فقط مدیر؛ خواندن برای همه) ----
+    if (path === '/api/events' && M === 'GET') return sendJSON(res, 200, eventsData())
+    if (path === '/api/events' && M === 'POST') {
+      const b = await jbody(req)
+      if (!EVENT_KINDS.includes(b.kind)) return sendJSON(res, 400, { error: 'نوع رویداد نامعتبر است' })
+      if (!(b.title || '').trim()) return sendJSON(res, 400, { error: 'عنوان لازم است' })
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      const status = EVENT_STATUSES.includes(b.status) ? b.status : ''
+      const id = Number(db.prepare(`INSERT INTO events(kind,title,g_date,j_date,summary,attendees,status,parent_id,project_id,created_by,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(b.kind, b.title.trim(), d.g_date, d.j_date, (b.summary || '').trim(),
+          (b.attendees || '').trim(), status, +b.parentId || 0, +b.projectId || 0, user.id, nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const evM = /^\/api\/events\/(\d+)$/.exec(path)
+    if (evM && M === 'PUT') {
+      const id = +evM[1], cur = db.prepare(`SELECT * FROM events WHERE id=?`).get(id)
+      if (!cur) return sendJSON(res, 404, { error: 'رویداد یافت نشد' })
+      const b = await jbody(req)
+      const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }
+      if (d.error) return sendJSON(res, 400, d)
+      const status = EVENT_STATUSES.includes(b.status) ? b.status : cur.status
+      db.prepare(`UPDATE events SET title=?,g_date=?,j_date=?,summary=?,attendees=?,status=? WHERE id=?`)
+        .run((b.title ?? cur.title).trim(), d.g_date, d.j_date, (b.summary ?? cur.summary).trim(),
+          (b.attendees ?? cur.attendees).trim(), status, id)
+      return sendJSON(res, 200, { ok: true })
+    }
+    if (evM && M === 'DELETE') {
+      const id = +evM[1]
+      for (const a of listAttachments('event', id)) await rm(join(UP_DIR, a.file), { force: true })
+      db.prepare(`DELETE FROM attachments WHERE entity_type='event' AND entity_id=?`).run(id)
+      db.prepare(`UPDATE events SET parent_id=0 WHERE parent_id=?`).run(id)   // مصوبات ذیل، مستقل شوند
+      db.prepare(`DELETE FROM events WHERE id=?`).run(id)
+      return sendJSON(res, 200, { ok: true })
+    }
+
+    // ---- اسناد پیوست (عمومی برای هر موجودیت) ----
+    const atAddM = /^\/api\/attachments\/([a-z_]+)\/(\d+)$/.exec(path)
+    if (atAddM && M === 'POST') {
+      const b = await jbody(req)
+      if (!b.doc || !b.doc.dataUrl) return sendJSON(res, 400, { error: 'فایلی انتخاب نشد' })
+      const file = await saveDoc(b.doc, 'رویدادها')
+      if (!file) return sendJSON(res, 400, { error: 'ذخیره‌ی سند ناموفق بود' })
+      const id = Number(db.prepare(`INSERT INTO attachments(entity_type,entity_id,file,display_name,created_at) VALUES(?,?,?,?,?)`)
+        .run(atAddM[1], +atAddM[2], file, (b.doc.name || '').slice(0, 120), nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id, file, name: b.doc.name || '' })
+    }
+    const atDelM = /^\/api\/attachments\/(\d+)$/.exec(path)
+    if (atDelM && M === 'DELETE') {
+      const a = db.prepare(`SELECT * FROM attachments WHERE id=?`).get(+atDelM[1])
+      if (a) { await rm(join(UP_DIR, a.file), { force: true }); db.prepare(`DELETE FROM attachments WHERE id=?`).run(a.id) }
+      return sendJSON(res, 200, { ok: true })
+    }
+
+    // ---- پیمانکاران / تأمین‌کنندگان ----
+    if (path === '/api/vendors' && M === 'GET') return sendJSON(res, 200, listVendors())
+    if (path === '/api/vendors' && M === 'POST') {
+      const b = await jbody(req); if (!(b.name || '').trim()) return sendJSON(res, 400, { error: 'نام پیمانکار لازم است' })
+      const id = Number(db.prepare(`INSERT INTO vendors(name,phone,field,note,created_at) VALUES(?,?,?,?,?)`)
+        .run(b.name.trim(), (b.phone || '').trim(), (b.field || '').trim(), (b.note || '').trim(), nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const vnM = /^\/api\/vendors\/(\d+)$/.exec(path)
+    if (vnM && M === 'PUT') {
+      const cur = db.prepare(`SELECT * FROM vendors WHERE id=?`).get(+vnM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
+      const b = await jbody(req)
+      db.prepare(`UPDATE vendors SET name=?,phone=?,field=?,note=? WHERE id=?`)
+        .run((b.name ?? cur.name).trim(), (b.phone ?? cur.phone).trim(), (b.field ?? cur.field).trim(), (b.note ?? cur.note).trim(), +vnM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+    if (vnM && M === 'DELETE') { db.prepare(`DELETE FROM vendors WHERE id=?`).run(+vnM[1]); return sendJSON(res, 200, { ok: true }) }
+
+    // ---- پروژه‌ها ----
+    if (path === '/api/projects' && M === 'GET') return sendJSON(res, 200, projectsList())
+    if (path === '/api/projects' && M === 'POST') {
+      const b = await jbody(req); if (!(b.title || '').trim()) return sendJSON(res, 400, { error: 'عنوان پروژه لازم است' })
+      const status = PROJECT_STATUSES.includes(b.status) ? b.status : 'approved'
+      const id = Number(db.prepare(`INSERT INTO projects(title,status,budget,decision_event_id,note,created_by,created_at) VALUES(?,?,?,?,?,?,?)`)
+        .run(b.title.trim(), status, Math.round(+b.budget) || 0, +b.decisionEventId || 0, (b.note || '').trim(), user.id, nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const prM = /^\/api\/projects\/(\d+)$/.exec(path)
+    if (prM && M === 'GET') { const d = projectDetail(+prM[1]); return d ? sendJSON(res, 200, d) : sendJSON(res, 404, { error: 'پروژه یافت نشد' }) }
+    if (prM && M === 'PUT') {
+      const cur = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+prM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
+      const b = await jbody(req); const status = PROJECT_STATUSES.includes(b.status) ? b.status : cur.status
+      db.prepare(`UPDATE projects SET title=?,status=?,budget=?,decision_event_id=?,note=? WHERE id=?`)
+        .run((b.title ?? cur.title).trim(), status, b.budget != null ? Math.round(+b.budget) : cur.budget,
+          b.decisionEventId != null ? +b.decisionEventId : cur.decision_event_id, (b.note ?? cur.note).trim(), +prM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+    if (prM && M === 'DELETE') {
+      const pid = +prM[1]
+      for (const q of db.prepare(`SELECT id FROM quotes WHERE project_id=?`).all(pid)) {
+        for (const a of listAttachments('quote', q.id)) await rm(join(UP_DIR, a.file), { force: true })
+        db.prepare(`DELETE FROM attachments WHERE entity_type='quote' AND entity_id=?`).run(q.id)
+      }
+      for (const a of listAttachments('project', pid)) await rm(join(UP_DIR, a.file), { force: true })
+      db.prepare(`DELETE FROM attachments WHERE entity_type='project' AND entity_id=?`).run(pid)
+      db.prepare(`DELETE FROM quotes WHERE project_id=?`).run(pid)
+      db.prepare(`DELETE FROM projects WHERE id=?`).run(pid)
+      return sendJSON(res, 200, { ok: true })
+    }
+
+    // ---- استعلام‌ها ----
+    if (path === '/api/quotes' && M === 'POST') {
+      const b = await jbody(req)
+      if (!+b.projectId || !db.prepare(`SELECT 1 FROM projects WHERE id=?`).get(+b.projectId)) return sendJSON(res, 400, { error: 'پروژه نامعتبر است' })
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      const vname = +b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()
+      const id = Number(db.prepare(`INSERT INTO quotes(project_id,vendor_id,vendor_name,amount,g_date,j_date,note,selected,created_at) VALUES(?,?,?,?,?,?,?,0,?)`)
+        .run(+b.projectId, +b.vendorId || 0, vname, Math.round(+b.amount) || 0, d.g_date, d.j_date, (b.note || '').trim(), nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const qtM = /^\/api\/quotes\/(\d+)$/.exec(path)
+    if (qtM && M === 'PUT') {
+      const cur = db.prepare(`SELECT * FROM quotes WHERE id=?`).get(+qtM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
+      const b = await jbody(req); const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }; if (d.error) return sendJSON(res, 400, d)
+      const vname = b.vendorId != null ? (+b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()) : cur.vendor_name
+      db.prepare(`UPDATE quotes SET vendor_id=?,vendor_name=?,amount=?,g_date=?,j_date=?,note=? WHERE id=?`)
+        .run(b.vendorId != null ? +b.vendorId : cur.vendor_id, vname, b.amount != null ? Math.round(+b.amount) : cur.amount, d.g_date, d.j_date, (b.note ?? cur.note).trim(), +qtM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+    if (qtM && M === 'DELETE') {
+      for (const a of listAttachments('quote', +qtM[1])) await rm(join(UP_DIR, a.file), { force: true })
+      db.prepare(`DELETE FROM attachments WHERE entity_type='quote' AND entity_id=?`).run(+qtM[1])
+      db.prepare(`DELETE FROM quotes WHERE id=?`).run(+qtM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+    const qsM = /^\/api\/quotes\/(\d+)\/select$/.exec(path)
+    if (qsM && M === 'POST') {
+      const q = db.prepare(`SELECT project_id FROM quotes WHERE id=?`).get(+qsM[1]); if (!q) return sendJSON(res, 404, { error: 'یافت نشد' })
+      const b = await jbody(req)
+      db.prepare(`UPDATE quotes SET selected=0 WHERE project_id=?`).run(q.project_id)
+      if (b.selected !== false) db.prepare(`UPDATE quotes SET selected=1 WHERE id=?`).run(+qsM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+
+    // ---- فاکتورهای پیمانکار (بایگانی — بدون اثر روی صندوق) ----
+    if (path === '/api/contractor-invoices' && M === 'POST') {
+      const b = await jbody(req)
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      if (!(+b.amount > 0)) return sendJSON(res, 400, { error: 'مبلغ فاکتور لازم است' })
+      const vname = +b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()
+      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
+        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), Math.round(+b.amount), d.g_date, d.j_date, b.paid ? 1 : 0, (b.note || '').trim(), nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const ciM = /^\/api\/contractor-invoices\/(\d+)$/.exec(path)
+    if (ciM && M === 'PUT') {
+      const cur = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
+      const b = await jbody(req); const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }; if (d.error) return sendJSON(res, 400, d)
+      const vname = b.vendorId != null ? (+b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()) : cur.vendor_name
+      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,note=? WHERE id=?`)
+        .run(b.vendorId != null ? +b.vendorId : cur.vendor_id, vname, (b.title ?? cur.title).trim(),
+          b.amount != null ? Math.round(+b.amount) : cur.amount, d.g_date, d.j_date,
+          b.paid != null ? (b.paid ? 1 : 0) : cur.paid, (b.note ?? cur.note).trim(), +ciM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+    if (ciM && M === 'DELETE') {
+      for (const a of listAttachments('cinvoice', +ciM[1])) await rm(join(UP_DIR, a.file), { force: true })
+      db.prepare(`DELETE FROM attachments WHERE entity_type='cinvoice' AND entity_id=?`).run(+ciM[1])
+      db.prepare(`DELETE FROM contractor_invoices WHERE id=?`).run(+ciM[1])
+      return sendJSON(res, 200, { ok: true })
+    }
+
+    // ---- گزارش‌های پروژه/پیمانکار ----
+    if (path === '/api/report/projects' && M === 'GET') return sendJSON(res, 200, projectsReport())
+    if (path === '/api/report/vendors' && M === 'GET') return sendJSON(res, 200, vendorsReport())
 
     // ---- متادیتا ----
     if (path === '/api/meta' && M === 'GET') {
@@ -1979,6 +2270,13 @@ const server = createServer(async (req, res) => {
       if (path === '/print/summary') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(printSummaryHtml(Q.period, Q.names === '1'))
+      }
+      const mtM = /^\/print\/meeting\/(\d+)$/.exec(path)
+      if (mtM) {
+        const html = printMeetingHtml(+mtM[1])
+        if (!html) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">جلسه یافت نشد</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(html)
       }
       res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('یافت نشد')
     }

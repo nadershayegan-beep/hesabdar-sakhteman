@@ -292,6 +292,8 @@ const head = (title, sub, actions = '') =>
   `<div class="vhead printhide"><div><h1>${esc(title)}</h1><p class="sub">${esc(sub)}</p></div><div class="fbtns">${actions}</div></div>`
 const kpi = (lbl, val, d = '', cls = '') =>
   `<div class="kpi ${cls}"><div class="lbl">${esc(lbl)}</div><div class="val num">${val}<span class="r"> ${curFa()}</span></div>${d ? `<div class="d">${d}</div>` : ''}</div>`
+const kpiN = (lbl, val, d = '', cls = '') =>
+  `<div class="kpi ${cls}"><div class="lbl">${esc(lbl)}</div><div class="val num">${val}</div>${d ? `<div class="d">${esc(d)}</div>` : ''}</div>`
 const emptyRow = (cols, msg) => `<tr><td colspan="${cols}"><div class="empty">${esc(msg)}</div></td></tr>`
 const statusBadge = s => s === 'settled' ? '<span class="badge b-settled">تسویه</span>' : '<span class="badge b-open">باز</span>'
 
@@ -848,7 +850,7 @@ function settleForm(funds, debt) {
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['debtors', 'بدهکاران'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل']]
+  const tabs = [['manager', 'عملکرد مدیر مالی'], ['debtors', 'بدهکاران'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
   $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
     `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -1083,6 +1085,33 @@ REPORTS.balance = async () => {
       <div class="pline"><span>Σ سهم‌ها برابر Σ فاکتورهاست</span><b class="${b.sharesMatchInvoices ? 'pos' : 'neg'}">${b.sharesMatchInvoices ? '✔ بله' : '✖ خیر'}</b></div>
       <div class="pline"><span>خالص بدهی = Σ سهم‌ها − Σ دریافتی‌ها</span><b class="${b.balanced ? 'pos' : 'neg'}">${b.balanced ? '✔ تراز است' : '✖ تراز نیست'}</b></div>
       <p class="sub" style="margin-top:12px">این صفحه سلامت دفاتر را می‌سنجد: اگر هر دو سطر ✔ باشد، همه‌ی فاکتورها کامل تسهیم شده‌اند و هیچ ریالی گم نشده است.</p></div>`
+}
+REPORTS.projects = async () => {
+  const rows = await api('/api/report/projects')
+  const t = rows.reduce((a, p) => ({ budget: a.budget + p.budget, sel: a.sel + p.selectedAmount, inv: a.inv + p.invoiceTotal, paid: a.paid + p.invoicePaid }), { budget: 0, sel: 0, inv: 0, paid: 0 })
+  $('#repBody').innerHTML = `
+    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="kpis">${kpiN('پروژه‌ها', faDigit(rows.length))}${kpi('جمع بودجه مصوب', money(t.budget))}
+      ${kpi('جمع فاکتور پیمانکار', money(t.inv), '', 'bad')}${kpi('پرداخت‌شده', money(t.paid), '', 'good')}</div>
+    <div class="panel"><div class="tablewrap"><table class="tx">
+      <thead><tr><th>پروژه</th><th>وضعیت</th><th>بودجه مصوب</th><th>استعلام</th><th>مبلغ انتخابی</th><th>فاکتور</th><th>جمع فاکتور</th><th>پرداخت‌شده</th></tr></thead><tbody>
+      ${rows.length ? rows.map(p => `<tr class="clickable" data-proj="${p.id}"><td><b>${esc(p.title)}</b></td><td><span class="badge ${projStatusCls(p.status)}">${esc(p.statusFa)}</span></td>
+        <td class="num">${money(p.budget)}</td><td class="num">${faDigit(p.quoteCount)}</td><td class="num amt-in">${money(p.selectedAmount)}</td>
+        <td class="num">${faDigit(p.invoiceCount)}</td><td class="num amt-out">${money(p.invoiceTotal)}</td><td class="num">${money(p.invoicePaid)}</td></tr>`).join('') : emptyRow(8, 'پروژه‌ای ثبت نشده')}
+      </tbody></table></div></div>`
+  document.querySelectorAll('[data-proj]').forEach(c => c.onclick = () => showProject(+c.dataset.proj))
+}
+REPORTS.vendors = async () => {
+  const rows = await api('/api/report/vendors')
+  $('#repBody').innerHTML = `
+    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="panel"><div class="phead"><b>عملکرد پیمانکاران</b><span class="hint">مجموع استعلام‌ها و فاکتورهای بایگانی‌شده‌ی هر پیمانکار</span></div>
+      <div class="tablewrap"><table class="tx">
+      <thead><tr><th>پیمانکار</th><th>زمینه</th><th>تلفن</th><th>استعلام</th><th>جمع استعلام</th><th>فاکتور</th><th>جمع فاکتور</th><th>پرداخت‌نشده</th></tr></thead><tbody>
+      ${rows.length ? rows.map(v => `<tr><td><b>${esc(v.name)}</b></td><td>${esc(v.field || '—')}</td><td class="num">${faDigit(v.phone || '—')}</td>
+        <td class="num">${faDigit(v.quoteCount)}</td><td class="num">${money(v.quoteTotal)}</td>
+        <td class="num">${faDigit(v.invoiceCount)}</td><td class="num amt-out">${money(v.invoiceTotal)}</td><td class="num ${v.invoiceUnpaid > 0 ? 'amt-out' : ''}">${money(v.invoiceUnpaid)}</td></tr>`).join('') : emptyRow(8, 'پیمانکاری ثبت نشده')}
+      </tbody></table></div></div>`
 }
 
 // ==================== تنظیمات ====================
@@ -1533,6 +1562,334 @@ async function renderUpdateBox() {
       <a class="abcta" href="${RELEASES_URL}" target="_blank" rel="noopener">صفحه‌ی دانلود نسخه‌ها ↗</a>
       <p class="hint" style="margin-top:8px">اگر اینترنت در دسترس نیست، بعداً همین‌جا دوباره امتحان کنید.</p></div>`
   }
+}
+
+// ==================== رویدادها (جلسات/تصمیمات/پیشنهادات) ====================
+const parseJ = s => { const p = String(s || '').split('/').map(x => +enDigit(x)); return p.length === 3 && p[0] ? { jy: p[0], jm: p[1], jd: p[2] } : null }
+const evStatusCls = s => ({ approved: 'b-ok', rejected: 'b-no', pending: 'b-open', done: 'b-done' }[s] || 'b-open')
+
+function attachRow(e, type = 'event') {
+  const files = (e.attachments || []).map(a =>
+    `<span class="attpill"><a href="/uploads/${encodeURI(a.file)}" target="_blank" rel="noopener">📎 ${esc(a.display_name || 'سند')}</a>${adminOnly(`<button class="attx" data-att-del="${a.id}" title="حذف سند">✕</button>`)}</span>`).join('')
+  return `<div class="attrow">${files}${adminOnly(`<button class="btn tiny" data-att-add="${e.id}" data-att-type="${type}">📎 افزودن سند</button>`)}</div>`
+}
+// آپلود یک سند به هر موجودیت (event/project/quote)؛ true اگر افزوده شد
+function doAttachUpload(type, id) {
+  return new Promise(resolve => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*,application/pdf'
+    inp.onchange = guard(async () => {
+      const f = inp.files[0]; if (!f) { resolve(false); return }
+      const c = await maybeCompress(f)
+      toast('در حال آپلود سند…')
+      await post(`/api/attachments/${type}/${id}`, { doc: { name: c.name, dataUrl: await readFileDataUrl(c) } })
+      toast('سند افزوده شد'); resolve(true)
+    })
+    inp.click()
+  })
+}
+function eventItem(e) {
+  const badge = e.statusFa ? `<span class="badge ${evStatusCls(e.status)}">${e.statusFa}</span>` : ''
+  return `<div class="evitem">
+    <div class="evhead"><div><span class="evkind k-${e.kind}">${e.kindFa}</span> <b>${esc(e.title)}</b> ${badge}
+      <span class="evdate num">${e.j_date ? faDigit(e.j_date) : ''}</span></div>
+      ${adminOnly(`<div class="evacts"><button class="btn tiny" data-ev-edit="${e.id}">✏️</button><button class="btn tiny" data-ev-del="${e.id}">🗑</button></div>`)}</div>
+    ${e.summary ? `<div class="evsummary">${esc(e.summary).replace(/\n/g, '<br>')}</div>` : ''}
+    ${attachRow(e)}</div>`
+}
+function meetingCard(m) {
+  return `<div class="panel evcard">
+    <div class="evhead"><div><span class="evkind k-meeting">جلسه</span> <b>${esc(m.title)}</b>
+      <span class="evdate num">${m.j_date ? faDigit(m.j_date) : ''}</span></div>
+      <div class="evacts">
+        <button class="btn tiny" data-ev-pdf="${m.id}" title="صورت‌جلسه PDF">📄</button>
+        ${adminOnly(`<button class="btn tiny" data-ev-decision="${m.id}" title="افزودن مصوبه/پیشنهاد">＋ مصوبه</button>
+        <button class="btn tiny" data-ev-edit="${m.id}">✏️</button>
+        <button class="btn tiny" data-ev-del="${m.id}">🗑</button>`)}</div></div>
+    ${m.attendees ? `<div class="evmeta">👥 حاضرین: ${esc(m.attendees)}</div>` : ''}
+    ${m.summary ? `<div class="evsummary">${esc(m.summary).replace(/\n/g, '<br>')}</div>` : ''}
+    ${attachRow(m)}
+    ${m.children.length ? `<div class="evchildren">${m.children.map(eventItem).join('')}</div>` : ''}</div>`
+}
+
+let EV_CACHE = {}
+VIEWS.events = async () => {
+  const d = await api('/api/events')
+  EV_CACHE = {}
+  d.meetings.forEach(m => { EV_CACHE[m.id] = m; m.children.forEach(c => EV_CACHE[c.id] = c) })
+  d.orphans.forEach(o => EV_CACHE[o.id] = o)
+  const empty = !d.meetings.length && !d.orphans.length
+  $('#view').innerHTML = head('رویدادها و جلسات', 'بایگانی جلسات، مصوبات و پیشنهادات ساختمان',
+    adminOnly(`<button class="btn primary" id="evNewMeeting">＋ ثبت جلسه</button><button class="btn" id="evNewDecision">＋ تصمیم/پیشنهاد</button>`)) +
+    `<div class="kpis">
+      ${kpiN('جلسات برگزارشده', faDigit(d.counts.meetings))}
+      ${kpiN('مصوبات', faDigit(d.counts.decisions))}
+      ${kpiN('پیشنهادات', faDigit(d.counts.proposals))}
+    </div>
+    ${empty ? `<div class="empty">هنوز جلسه یا تصمیمی ثبت نشده${isAdmin() ? ' — با دکمه‌های بالا شروع کنید' : ''}</div>` : `
+    <div class="evlist">
+      ${d.meetings.map(meetingCard).join('')}
+      ${d.orphans.length ? `<div class="panel"><div class="phead"><b>تصمیمات و پیشنهادات مستقل</b></div>
+        <div class="evchildren">${d.orphans.map(eventItem).join('')}</div></div>` : ''}
+    </div>`}`
+  wireCommon()
+  if ($('#evNewMeeting')) $('#evNewMeeting').onclick = () => eventForm('meeting')
+  if ($('#evNewDecision')) $('#evNewDecision').onclick = () => eventForm('decision')
+  document.querySelectorAll('[data-ev-pdf]').forEach(b => b.onclick = () => { const e = EV_CACHE[+b.dataset.evPdf]; if (e) saveMeetingPdf(e) })
+  document.querySelectorAll('[data-ev-decision]').forEach(b => b.onclick = () => eventForm('decision', null, +b.dataset.evDecision))
+  document.querySelectorAll('[data-ev-edit]').forEach(b => b.onclick = () => { const e = EV_CACHE[+b.dataset.evEdit]; if (e) eventForm(e.kind, e) })
+  document.querySelectorAll('[data-ev-del]').forEach(b => b.onclick = () => {
+    const e = EV_CACHE[+b.dataset.evDel]
+    confirmBox(`«${e ? e.title : 'این رویداد'}» حذف شود؟ اسناد پیوستش هم پاک می‌شود.`, async () => {
+      await api('/api/events/' + b.dataset.evDel, { method: 'DELETE' }); toast('حذف شد'); render()
+    })
+  })
+  document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && render()))
+  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = guard(async () => {
+    await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); toast('سند حذف شد'); render()
+  }))
+}
+
+const saveMeetingPdf = guard(async m => {
+  const rel = `/print/meeting/${m.id}`, fname = `صورت‌جلسه ${m.title}`
+  if (window.hesabdar && window.hesabdar.savePdf) {
+    toast('در حال ساخت PDF…')
+    const r = await window.hesabdar.savePdf(rel, fname)
+    toast(r && r.ok ? 'صورت‌جلسه در پوشه‌ی «اسناد صادرشده» ذخیره شد' : (r && r.error) || 'ناموفق', !(r && r.ok))
+  } else window.open(rel, '_blank')
+})
+
+function eventForm(kind, ev = null, parentId = 0) {
+  const isMeeting = (ev ? ev.kind : kind) === 'meeting'
+  const k = ev ? ev.kind : kind
+  const j = ev && ev.j_date ? parseJ(ev.j_date) : null
+  openModal(ev ? 'ویرایش رویداد' : (isMeeting ? 'ثبت جلسه' : 'ثبت تصمیم/پیشنهاد'), `<div class="form">
+    ${!isMeeting ? `<label class="f">نوع
+      <select class="inp" id="evKind">
+        <option value="decision" ${k === 'decision' ? 'selected' : ''}>تصمیم/مصوبه</option>
+        <option value="proposal" ${k === 'proposal' ? 'selected' : ''}>پیشنهاد</option></select></label>` : ''}
+    <label class="f">عنوان<input class="inp" id="evTitle" value="${ev ? esc(ev.title) : ''}" placeholder="${isMeeting ? 'مثلاً: جلسه‌ی هیئت‌مدیره — مرداد' : 'مثلاً: تصویب بازسازی لابی'}"></label>
+    <label class="f">تاریخ ${dateBoxHtml('ev', j)}</label>
+    ${isMeeting ? `<label class="f">حاضرین<input class="inp" id="evAttendees" value="${ev ? esc(ev.attendees || '') : ''}" placeholder="نام اعضای حاضر در جلسه"></label>` : ''}
+    ${!isMeeting ? `<label class="f">وضعیت
+      <select class="inp" id="evStatus">
+        <option value="">—</option>
+        <option value="approved">مصوب</option>
+        <option value="rejected">رد شده</option>
+        <option value="pending">در دست بررسی</option>
+        <option value="done">انجام‌شده</option></select></label>` : ''}
+    <label class="f">${isMeeting ? 'خلاصه‌ی جلسه و مذاکرات' : 'متن تصمیم/پیشنهاد'}
+      <textarea class="inp" id="evSummary" rows="4" placeholder="${isMeeting ? 'مهم‌ترین موضوعات و جمع‌بندی…' : 'شرح دقیق…'}">${ev ? esc(ev.summary || '') : ''}</textarea></label>
+    ${!ev ? `<p class="hint">پس از ذخیره، از دکمه‌ی «📎 افزودن سند» روی همان رویداد، فایل صورت‌جلسه یا مدارک را پیوست کنید.</p>` : ''}
+  </div>`, `<button class="btn primary" id="evSave">ذخیره</button><button class="btn" id="evCancel">انصراف</button>`)
+  wireToday($('#modalBody'))
+  if (ev && ev.status && $('#evStatus')) $('#evStatus').value = ev.status
+  $('#evCancel').onclick = closeModal
+  $('#evSave').onclick = guard(async () => {
+    const title = $('#evTitle').value.trim(); if (!title) throw new Error('عنوان لازم است')
+    const dt = readDate('ev')
+    const payload = { title, jy: dt.jy, jm: dt.jm, jd: dt.jd, summary: $('#evSummary').value.trim() }
+    if (isMeeting) { payload.kind = 'meeting'; payload.attendees = $('#evAttendees').value.trim() }
+    else { payload.kind = $('#evKind').value; payload.status = $('#evStatus').value; if (parentId) payload.parentId = parentId }
+    if (ev) await post('/api/events/' + ev.id, payload, 'PUT')
+    else await post('/api/events', payload)
+    closeModal(); toast('ذخیره شد'); render()
+  })
+}
+
+// ==================== پروژه‌ها ====================
+const PROJECT_STATUS_FA = { proposed: 'پیشنهادی', approved: 'تصویب‌شده', in_progress: 'در حال اجرا', done: 'تمام‌شده', canceled: 'متوقف' }
+const projStatusCls = s => ({ approved: 'b-ok', in_progress: 'b-open', done: 'b-done', canceled: 'b-no', proposed: 'b-open' }[s] || 'b-open')
+
+function projectCard(p) {
+  return `<button class="pcard" data-proj="${p.id}">
+    <div class="pctop"><span class="pn">${esc(p.title)}</span><span class="badge ${projStatusCls(p.status)}">${esc(p.statusFa)}</span></div>
+    ${p.budget ? `<div class="pline"><span>بودجه مصوب</span><b class="num">${money(p.budget)} ${curFa()}</b></div>` : ''}
+    <div class="pline"><span>استعلام‌ها</span><b class="num">${faDigit(p.quoteCount)}</b></div>
+    ${p.selectedAmount ? `<div class="pline"><span>مبلغ انتخابی</span><b class="num amt-in">${money(p.selectedAmount)} ${curFa()}</b></div>` : ''}
+    ${p.decisionTitle ? `<div class="pfoot">📋 مصوبه: ${esc(p.decisionTitle)}</div>` : ''}</button>`
+}
+VIEWS.projects = async () => {
+  const list = await api('/api/projects')
+  const counts = { total: list.length, active: list.filter(p => p.status === 'in_progress').length, done: list.filter(p => p.status === 'done').length }
+  $('#view').innerHTML = head('پروژه‌ها', 'پروژه‌های تصویب‌شده، استعلام‌ها و پیمانکاران',
+    adminOnly(`<button class="btn primary" id="prNew">＋ پروژه جدید</button><button class="btn" id="prVendors">👷 پیمانکاران</button>`)) +
+    `<div class="kpis">
+      ${kpiN('کل پروژه‌ها', faDigit(counts.total))}
+      ${kpiN('در حال اجرا', faDigit(counts.active))}
+      ${kpiN('تمام‌شده', faDigit(counts.done))}
+    </div>
+    ${list.length ? `<div class="pgrid">${list.map(projectCard).join('')}</div>`
+      : `<div class="empty">هنوز پروژه‌ای ثبت نشده${isAdmin() ? ' — با «＋ پروژه جدید» شروع کنید' : ''}</div>`}`
+  wireCommon()
+  if ($('#prNew')) $('#prNew').onclick = () => projectForm()
+  if ($('#prVendors')) $('#prVendors').onclick = () => vendorsManager()
+  document.querySelectorAll('[data-proj]').forEach(c => c.onclick = () => showProject(+c.dataset.proj))
+}
+
+function quoteRow(q) {
+  const badges = `${q.isCheapest ? '<span class="badge b-ok">کمترین</span>' : ''}${q.selected ? ' <span class="badge b-done">⭐ انتخاب‌شده</span>' : ''}`
+  const files = (q.attachments || []).map(a => `<a class="attmini" href="/uploads/${encodeURI(a.file)}" target="_blank" rel="noopener" title="${esc(a.display_name || 'سند')}">📎</a>`).join('')
+  return `<tr class="${q.selected ? 'qsel' : ''}">
+    <td><b>${esc(q.vendorLabel)}</b> ${badges}</td>
+    <td class="num">${money(q.amount)} ${curFa()}</td>
+    <td class="num">${q.j_date ? faDigit(q.j_date) : '—'}</td>
+    <td>${esc(q.note || '—')}</td>
+    <td>${files}${adminOnly(`<button class="btn tiny" data-q-att="${q.id}" title="افزودن سند">＋</button>`)}</td>
+    <td class="rowact">${adminOnly(`<button class="btn tiny" data-q-sel="${q.id}" data-q-sel-on="${q.selected ? 1 : 0}" title="انتخاب نهایی">${q.selected ? '★' : '☆'}</button><button class="btn tiny" data-q-edit="${q.id}">✏️</button><button class="btn tiny" data-q-del="${q.id}">🗑</button>`)}</td></tr>`
+}
+const showProject = guard(async id => {
+  const d = await api('/api/projects/' + id)
+  const p = d.project, refresh = () => showProject(id)
+  $('#view').innerHTML =
+    `<button class="btn small back printhide" id="backBtn">→ بازگشت به پروژه‌ها</button>` +
+    head('پروژه: ' + p.title, `${p.statusFa}${p.budget ? ` · بودجه مصوب: ${money(p.budget)} ${curFa()}` : ''}${p.decisionTitle ? ` · مصوبه: ${p.decisionTitle}` : ''}`,
+      adminOnly(`<button class="btn primary" id="pjQuote">＋ استعلام</button><button class="btn" id="pjEdit">✏️ ویرایش</button><button class="btn danger" id="pjDel">🗑 حذف</button>`)) +
+    (p.note ? `<div class="panel" style="padding:12px 16px">${esc(p.note).replace(/\n/g, '<br>')}</div>` : '') +
+    `<div class="panel"><div class="phead"><b>استعلام‌ها (${faDigit(d.quotes.length)})</b><span class="hint">ارزان‌ترین با نشان «کمترین»؛ انتخاب نهایی را با ★ علامت بزنید</span></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>پیمانکار</th><th>مبلغ</th><th>تاریخ</th><th>توضیح</th><th>سند</th><th></th></tr></thead><tbody>
+      ${d.quotes.length ? d.quotes.map(quoteRow).join('') : emptyRow(6, 'استعلامی ثبت نشده')}
+      </tbody></table></div></div>
+    <div class="panel"><div class="phead"><b>فاکتورهای پیمانکار (${faDigit(d.invoices.length)})</b>
+      <span class="hint">جمع: ${money(d.invoiceTotal)} · پرداخت‌شده: ${money(d.invoicePaid)} ${curFa()}</span></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>پیمانکار / شرح</th><th>مبلغ</th><th>تاریخ</th><th>وضعیت</th><th>سند</th><th></th></tr></thead><tbody>
+      ${d.invoices.length ? d.invoices.map(cInvoiceRow).join('') : emptyRow(6, 'فاکتوری بایگانی نشده')}
+      </tbody></table></div>
+      ${adminOnly(`<div style="padding:10px 0 0"><button class="btn small" id="ciNew">＋ فاکتور پیمانکار</button></div>`)}
+      <div class="hint" style="margin-top:6px">این فاکتورها فقط بایگانی می‌شوند و روی موجودی صندوق‌ها اثری ندارند.</div></div>
+    <div class="panel"><div class="phead"><b>اسناد پروژه</b></div>${attachRow({ id: p.id, attachments: d.attachments }, 'project')}</div>`
+  $('#backBtn').onclick = () => { VIEW = 'projects'; render() }
+  if ($('#pjQuote')) $('#pjQuote').onclick = () => quoteForm(id, null, refresh)
+  if ($('#pjEdit')) $('#pjEdit').onclick = () => projectForm(p, refresh)
+  if ($('#pjDel')) $('#pjDel').onclick = () => confirmBox(`پروژه «${p.title}» و همه‌ی استعلام‌ها و اسنادش حذف شود؟`,
+    async () => { await api('/api/projects/' + id, { method: 'DELETE' }); toast('حذف شد'); VIEW = 'projects'; render() })
+  document.querySelectorAll('[data-q-sel]').forEach(b => b.onclick = guard(async () => {
+    await post('/api/quotes/' + b.dataset.qSel + '/select', { selected: b.dataset.qSelOn !== '1' }); refresh()
+  }))
+  document.querySelectorAll('[data-q-edit]').forEach(b => b.onclick = () => quoteForm(id, d.quotes.find(x => x.id === +b.dataset.qEdit), refresh))
+  document.querySelectorAll('[data-q-del]').forEach(b => b.onclick = () => confirmBox('این استعلام حذف شود؟',
+    async () => { await api('/api/quotes/' + b.dataset.qDel, { method: 'DELETE' }); toast('حذف شد'); refresh() }))
+  document.querySelectorAll('[data-q-att]').forEach(b => b.onclick = () => doAttachUpload('quote', +b.dataset.qAtt).then(ok => ok && refresh()))
+  if ($('#ciNew')) $('#ciNew').onclick = () => cInvoiceForm(id, null, refresh)
+  document.querySelectorAll('[data-ci-paid]').forEach(b => b.onclick = guard(async () => { await post('/api/contractor-invoices/' + b.dataset.ciPaid, { paid: b.dataset.ciPaidOn !== '1' }, 'PUT'); refresh() }))
+  document.querySelectorAll('[data-ci-edit]').forEach(b => b.onclick = () => cInvoiceForm(id, d.invoices.find(x => x.id === +b.dataset.ciEdit), refresh))
+  document.querySelectorAll('[data-ci-del]').forEach(b => b.onclick = () => confirmBox('این فاکتور حذف شود؟', async () => { await api('/api/contractor-invoices/' + b.dataset.ciDel, { method: 'DELETE' }); toast('حذف شد'); refresh() }))
+  document.querySelectorAll('[data-ci-att]').forEach(b => b.onclick = () => doAttachUpload('cinvoice', +b.dataset.ciAtt).then(ok => ok && refresh()))
+  document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && refresh()))
+  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = guard(async () => { await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); refresh() }))
+})
+
+async function projectForm(p = null, after) {
+  const ev = await api('/api/events')
+  const decisions = []
+  ev.meetings.forEach(m => m.children.forEach(c => { if (c.kind === 'decision') decisions.push(c) }))
+  ev.orphans.forEach(o => { if (o.kind === 'decision') decisions.push(o) })
+  openModal(p ? 'ویرایش پروژه' : 'پروژه جدید', `<div class="form">
+    <label class="f">عنوان پروژه<input class="inp" id="pjTitle" value="${p ? esc(p.title) : ''}" placeholder="مثلاً: بازسازی لابی"></label>
+    <div class="frow">
+      <label class="f">وضعیت<select class="inp" id="pjStatus">
+        ${Object.entries(PROJECT_STATUS_FA).map(([k, v]) => `<option value="${k}" ${(p ? p.status : 'approved') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+      <label class="f">بودجه مصوب (${curFa()})<input class="inp num" id="pjBudget" data-money="pjBudgetHint" inputmode="numeric" value="${p && p.budget ? sep(Math.round(r2d(p.budget))) : ''}"><span class="hint" id="pjBudgetHint"></span></label>
+    </div>
+    <label class="f">مصوبه‌ی مرتبط (اختیاری)<select class="inp" id="pjDecision">
+      <option value="0">—</option>
+      ${decisions.map(z => `<option value="${z.id}" ${p && +p.decision_event_id === z.id ? 'selected' : ''}>${esc(z.title)}${z.j_date ? ' — ' + z.j_date : ''}</option>`).join('')}</select></label>
+    <label class="f">توضیح<textarea class="inp" id="pjNote" rows="3">${p ? esc(p.note || '') : ''}</textarea></label>
+  </div>`, `<button class="btn primary" id="pjSave">ذخیره</button><button class="btn" id="pjCancel">انصراف</button>`)
+  wireMoney($('#modalBody'))
+  $('#pjCancel').onclick = closeModal
+  $('#pjSave').onclick = guard(async () => {
+    const title = $('#pjTitle').value.trim(); if (!title) throw new Error('عنوان پروژه لازم است')
+    const payload = { title, status: $('#pjStatus').value, budget: readMoney($('#pjBudget')), decisionEventId: +$('#pjDecision').value, note: $('#pjNote').value.trim() }
+    if (p) await post('/api/projects/' + p.id, payload, 'PUT'); else await post('/api/projects', payload)
+    closeModal(); toast('ذخیره شد'); after ? after() : render()
+  })
+}
+
+async function quoteForm(projectId, q = null, after) {
+  const vendors = await api('/api/vendors')
+  const j = q && q.j_date ? parseJ(q.j_date) : null
+  openModal(q ? 'ویرایش استعلام' : 'ثبت استعلام', `<div class="form">
+    <label class="f">پیمانکار<select class="inp" id="qVendor"><option value="0">— انتخاب از فهرست —</option>
+      ${vendors.map(v => `<option value="${v.id}" ${q && +q.vendor_id === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+    <label class="f">یا نام پیمانکار (اگر در فهرست نیست)<input class="inp" id="qVendorName" value="${q && !+q.vendor_id ? esc(q.vendor_name || '') : ''}"></label>
+    <div class="frow">
+      <label class="f">مبلغ استعلام (${curFa()})<input class="inp num" id="qAmount" data-money="qAmountHint" inputmode="numeric" value="${q ? sep(Math.round(r2d(q.amount))) : ''}"><span class="hint" id="qAmountHint"></span></label>
+      <label class="f">تاریخ${dateBoxHtml('qd', j)}</label>
+    </div>
+    <label class="f">توضیح<input class="inp" id="qNote" value="${q ? esc(q.note || '') : ''}"></label>
+    ${!q ? `<p class="hint">پس از ثبت، از ستون «سند» فایل استعلام را پیوست کنید.</p>` : ''}
+  </div>`, `<button class="btn primary" id="qSave">ذخیره</button><button class="btn" id="qCancel">انصراف</button>`)
+  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  $('#qCancel').onclick = closeModal
+  $('#qSave').onclick = guard(async () => {
+    const dt = readDate('qd')
+    const payload = { projectId, vendorId: +$('#qVendor').value, vendorName: $('#qVendorName').value.trim(), amount: readMoney($('#qAmount')), jy: dt.jy, jm: dt.jm, jd: dt.jd, note: $('#qNote').value.trim() }
+    if (q) await post('/api/quotes/' + q.id, payload, 'PUT'); else await post('/api/quotes', payload)
+    closeModal(); toast('ذخیره شد'); after ? after() : render()
+  })
+}
+
+function cInvoiceRow(ci) {
+  const paid = ci.paid ? '<span class="badge b-ok">پرداخت‌شده</span>' : '<span class="badge b-open">پرداخت‌نشده</span>'
+  const files = (ci.attachments || []).map(a => `<a class="attmini" href="/uploads/${encodeURI(a.file)}" target="_blank" rel="noopener" title="${esc(a.display_name || 'سند')}">📎</a>`).join('')
+  return `<tr>
+    <td><b>${esc(ci.vendorLabel)}</b>${ci.title ? `<br><span class="hint">${esc(ci.title)}</span>` : ''}</td>
+    <td class="num">${money(ci.amount)} ${curFa()}</td>
+    <td class="num">${ci.j_date ? faDigit(ci.j_date) : '—'}</td>
+    <td>${paid}</td>
+    <td>${files}${adminOnly(`<button class="btn tiny" data-ci-att="${ci.id}" title="افزودن سند">＋</button>`)}</td>
+    <td class="rowact">${adminOnly(`<button class="btn tiny" data-ci-paid="${ci.id}" data-ci-paid-on="${ci.paid ? 1 : 0}" title="تغییر وضعیت پرداخت">${ci.paid ? '✓' : '○'}</button><button class="btn tiny" data-ci-edit="${ci.id}">✏️</button><button class="btn tiny" data-ci-del="${ci.id}">🗑</button>`)}</td></tr>`
+}
+async function cInvoiceForm(projectId, ci = null, after) {
+  const vendors = await api('/api/vendors')
+  const j = ci && ci.j_date ? parseJ(ci.j_date) : null
+  openModal(ci ? 'ویرایش فاکتور پیمانکار' : 'ثبت فاکتور پیمانکار', `<div class="form">
+    <label class="f">پیمانکار<select class="inp" id="ciVendor"><option value="0">— انتخاب از فهرست —</option>
+      ${vendors.map(v => `<option value="${v.id}" ${ci && +ci.vendor_id === v.id ? 'selected' : ''}>${esc(v.name)}</option>`).join('')}</select></label>
+    <label class="f">یا نام پیمانکار (اگر در فهرست نیست)<input class="inp" id="ciVendorName" value="${ci && !+ci.vendor_id ? esc(ci.vendor_name || '') : ''}"></label>
+    <label class="f">شرح فاکتور<input class="inp" id="ciTitle" value="${ci ? esc(ci.title || '') : ''}" placeholder="مثلاً: مرحله اول نقاشی"></label>
+    <div class="frow">
+      <label class="f">مبلغ (${curFa()})<input class="inp num" id="ciAmount" data-money="ciAmountHint" inputmode="numeric" value="${ci ? sep(Math.round(r2d(ci.amount))) : ''}"><span class="hint" id="ciAmountHint"></span></label>
+      <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
+    </div>
+    <label class="check"><input type="checkbox" id="ciPaid" ${ci && ci.paid ? 'checked' : ''}> پرداخت‌شده</label>
+    <label class="f">توضیح<input class="inp" id="ciNote" value="${ci ? esc(ci.note || '') : ''}"></label>
+    ${!ci ? `<p class="hint">پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
+  </div>`, `<button class="btn primary" id="ciSave">ذخیره</button><button class="btn" id="ciCancel">انصراف</button>`)
+  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  $('#ciCancel').onclick = closeModal
+  $('#ciSave').onclick = guard(async () => {
+    const amount = readMoney($('#ciAmount')); if (!amount) throw new Error('مبلغ فاکتور لازم است')
+    const dt = readDate('cid')
+    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, jy: dt.jy, jm: dt.jm, jd: dt.jd, paid: $('#ciPaid').checked, note: $('#ciNote').value.trim() }
+    if (ci) await post('/api/contractor-invoices/' + ci.id, payload, 'PUT'); else await post('/api/contractor-invoices', payload)
+    closeModal(); toast('ذخیره شد'); after ? after() : render()
+  })
+}
+
+function vendorsManager() {
+  const draw = guard(async () => {
+    const vs = await api('/api/vendors')
+    openModal('👷 دفترچه‌ی پیمانکاران', `<div class="form">
+      ${adminOnly(`<div class="frow" style="align-items:end">
+        <input class="inp" id="vnName" placeholder="نام پیمانکار">
+        <input class="inp" id="vnPhone" placeholder="تلفن">
+        <input class="inp" id="vnField" placeholder="زمینه (مثلاً آسانسور)">
+        <button class="btn primary" id="vnAdd">＋ افزودن</button></div>`)}
+      <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>زمینه</th><th>تلفن</th><th></th></tr></thead><tbody>
+      ${vs.length ? vs.map(v => `<tr><td><b>${esc(v.name)}</b></td><td>${esc(v.field || '—')}</td><td class="num">${faDigit(v.phone || '—')}</td>
+        <td class="rowact">${adminOnly(`<button class="btn tiny" data-vn-del="${v.id}">🗑</button>`)}</td></tr>`).join('') : emptyRow(4, 'هنوز پیمانکاری ثبت نشده')}
+      </tbody></table></div></div>`)
+    if ($('#vnAdd')) $('#vnAdd').onclick = guard(async () => {
+      const name = $('#vnName').value.trim(); if (!name) return toast('نام لازم است', true)
+      await post('/api/vendors', { name, phone: $('#vnPhone').value.trim(), field: $('#vnField').value.trim() })
+      toast('افزوده شد'); draw()
+    })
+    document.querySelectorAll('[data-vn-del]').forEach(b => b.onclick = guard(async () => {
+      await api('/api/vendors/' + b.dataset.vnDel, { method: 'DELETE' }); toast('حذف شد'); draw()
+    }))
+  })
+  draw()
 }
 
 VIEWS.help = async () => {
