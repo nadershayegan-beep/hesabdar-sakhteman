@@ -193,6 +193,10 @@ function migrate() {
   addCol('invoices', 'project_id', 'INTEGER DEFAULT 0')   // لینک شارژ پروژه به پروژه
   addCol('projects', 'final_amount', 'INTEGER DEFAULT 0') // مبلغ نهایی حسابرسی‌شده (مبنای تعدیل)
   addCol('units', 'common_units', 'INTEGER DEFAULT 0')    // نفرات مشاعات (جدا از نفرات واقعی)
+  addCol('units', 'owner_name', `TEXT DEFAULT ''`)        // نام مالک (ساکن = مستاجر/بهره‌بردار)
+  addCol('contractor_invoices', 'kind', `TEXT DEFAULT 'purchase'`) // purchase=خرید(هزینه) | sale=فروش(درآمد)
+  addCol('invoices', 'payer', `TEXT DEFAULT 'tenant'`)    // بر عهدهٔ: tenant=مستاجر/ساکن | owner=مالک
+  addCol('projects', 'charge_kind', `TEXT DEFAULT 'operational'`) // جاری=current | عملیاتی=operational
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -1202,7 +1206,15 @@ function projectRow(p) {
 const projectsList = () => db.prepare(`SELECT * FROM projects ORDER BY id DESC`).all().map(projectRow)
 function projectInvoices(pid) {
   return db.prepare(`SELECT ci.*, v.name vname FROM contractor_invoices ci LEFT JOIN vendors v ON v.id=ci.vendor_id WHERE ci.project_id=? ORDER BY ci.g_date DESC, ci.id DESC`).all(pid)
-    .map(ci => ({ ...ci, vendorLabel: ci.vname || ci.vendor_name || '—', attachments: listAttachments('cinvoice', ci.id) }))
+    .map(ci => ({ ...ci, kind: ci.kind || 'purchase', kindFa: ci.kind === 'sale' ? 'فروش' : 'خرید', vendorLabel: ci.vname || ci.vendor_name || '—', attachments: listAttachments('cinvoice', ci.id) }))
+}
+// هزینهٔ واقعی خالص پروژه = جمع خریدها − جمع فروش‌ها
+function projectNetCost(pid) {
+  const r = db.prepare(`SELECT COALESCE(SUM(CASE WHEN kind='sale' THEN -amount ELSE amount END),0) net,
+    COALESCE(SUM(CASE WHEN kind='sale' THEN 0 ELSE amount END),0) buy,
+    COALESCE(SUM(CASE WHEN kind='sale' THEN amount ELSE 0 END),0) sell,
+    COALESCE(SUM(CASE WHEN paid=1 THEN (CASE WHEN kind='sale' THEN -amount ELSE amount END) ELSE 0 END),0) paidNet FROM contractor_invoices WHERE project_id=?`).get(pid)
+  return { net: r.net, purchase: r.buy, sale: r.sell, paid: r.paidNet }
 }
 // فاکتور شارژِ ساکنین برای یک پروژه (is_billing=1، لینک‌شده به پروژه)
 const projectChargeInvoice = pid => db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_billing=1 ORDER BY id DESC LIMIT 1`).get(pid)
@@ -1212,35 +1224,41 @@ function projectChargeShares(inv) {
     .map(s => { const paid = shareAllocated(s.id); return { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: s.share_amount, paid, remaining: s.share_amount - paid } })
 }
 // صدور یا ویرایش شارژ پروژه (وسط‌کار قابل افزایش) — بدهیِ واحدها بازمحاسبه می‌شود
-function setProjectCharge(project, { method, includeVacant, amount, d }, userId) {
+function setProjectCharge(project, { method, includeVacant, amount, payer, chargeKind, d }, userId) {
   const amt = Math.round(amount)
   if (!(amt > 0)) return { error: 'مبلغ شارژ باید بزرگ‌تر از صفر باشد' }
   if (!METHODS.includes(method) || method === 'custom' || method === 'per_unit_charge') return { error: 'روش تقسیم نامعتبر است' }
+  const py = payer === 'owner' ? 'owner' : 'tenant'
+  const ck = chargeKind === 'current' ? 'current' : 'operational'
   const units = eligibleUnits(!!includeVacant)
   if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد' }
   const shares = computeShares(units, method, amt, {})
+  db.prepare(`UPDATE projects SET charge_kind=? WHERE id=?`).run(ck, project.id)
   const inv = projectChargeInvoice(project.id)
   if (inv) {
-    db.prepare(`UPDATE invoices SET amount=?,method=?,include_vacant=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, includeVacant ? 1 : 0, d.g_date, d.j_date, inv.id)
+    db.prepare(`UPDATE invoices SET amount=?,method=?,include_vacant=?,payer=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, includeVacant ? 1 : 0, py, d.g_date, d.j_date, inv.id)
     writeShares(inv.id, shares)
     return { ok: true, invoiceId: inv.id, amount: amt, updated: true }
   }
-  const id = Number(db.prepare(`INSERT INTO invoices(title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,status,is_charge,is_billing,project_id,created_by,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',0,1,?,?,?)`)
-    .run(`شارژ پروژه: ${project.title}`, 0, amt, d.g_date, d.j_date, method, includeVacant ? 1 : 0, 0, 0, 'variable', '', '', '', project.id, userId, nowISO()).lastInsertRowid)
+  const id = Number(db.prepare(`INSERT INTO invoices(title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,status,is_charge,is_billing,project_id,payer,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',0,1,?,?,?,?)`)
+    .run(`شارژ پروژه: ${project.title}`, 0, amt, d.g_date, d.j_date, method, includeVacant ? 1 : 0, 0, 0, 'variable', '', '', '', project.id, py, userId, nowISO()).lastInsertRowid)
   writeShares(id, shares)
   return { ok: true, invoiceId: id, amount: amt }
 }
-// تعدیل نهایی: شارژ ساکنین را روی «مبلغ نهاییِ حسابرسی‌شده» تنظیم می‌کند → بدهکار/بستانکار نهایی
+// اتمام و ثبت کامل هزینه‌ها: شارژِ ساکنین روی هزینهٔ واقعیِ نهایی تنظیم و سهم هر واحد بازمحاسبه می‌شود
+// مبنا: مبلغ نهاییِ دستی (اگر وارد شده) وگرنه هزینهٔ خالصِ فاکتورهای پروژه (خرید − فروش)
 function reconcileProjectCharge(project) {
   const inv = projectChargeInvoice(project.id)
   if (!inv) return { error: 'اول شارژ پروژه را صادر کنید' }
-  const fa = Math.round(project.final_amount || 0)
-  if (!(fa > 0)) return { error: 'اول «مبلغ نهایی» پروژه را وارد کنید' }
+  const net = projectNetCost(project.id).net
+  const fa = Math.round(project.final_amount || 0) || net
+  if (!(fa > 0)) return { error: 'ابتدا فاکتورهای پروژه را ثبت کنید یا «مبلغ نهایی» را وارد کنید' }
   const units = eligibleUnits(!!inv.include_vacant)
   const shares = computeShares(units, inv.method, fa, {})
   db.prepare(`UPDATE invoices SET amount=? WHERE id=?`).run(fa, inv.id)
   writeShares(inv.id, shares)
+  db.prepare(`UPDATE projects SET status='done' WHERE id=?`).run(project.id)
   return { ok: true, amount: fa }
 }
 function projectDetail(id) {
@@ -1249,13 +1267,14 @@ function projectDetail(id) {
   const invoices = projectInvoices(id)
   const charge = projectChargeInvoice(id)
   const chargeCollected = charge ? invoiceCollected(charge.id) : 0
-  const invoiceTotal = invoices.reduce((s, i) => s + i.amount, 0)
+  const nc = projectNetCost(id)
+  const finalBasis = (p.final_amount || 0) || nc.net
   return {
     project: projectRow(p), quotes: projectQuotes(id), invoices, attachments: listAttachments('project', id),
-    invoiceTotal, invoicePaid: invoices.reduce((s, i) => s + (i.paid ? i.amount : 0), 0),
-    finalAmount: p.final_amount || 0,
-    deviation: (p.final_amount || 0) && p.budget ? (p.final_amount - p.budget) : 0,
-    charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: charge.amount - chargeCollected } : null,
+    invoiceTotal: nc.net, purchaseTotal: nc.purchase, saleTotal: nc.sale, invoicePaid: nc.paid,
+    finalAmount: p.final_amount || 0, netCost: nc.net, finalBasis,
+    deviation: finalBasis && p.budget ? (finalBasis - p.budget) : 0,
+    charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, payer: charge.payer, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: charge.amount - chargeCollected } : null,
     chargeShares: projectChargeShares(charge)
   }
 }
@@ -1707,7 +1726,7 @@ const server = createServer(async (req, res) => {
     if (prChargeM && M === 'POST') {
       const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+prChargeM[1]); if (!p) return sendJSON(res, 404, { error: 'پروژه یافت نشد' })
       const b = await jbody(req); const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
-      const r = setProjectCharge(p, { method: b.method, includeVacant: b.includeVacant, amount: b.amount != null ? +b.amount : p.budget, d }, user.id)
+      const r = setProjectCharge(p, { method: b.method, includeVacant: b.includeVacant, amount: b.amount != null ? +b.amount : p.budget, payer: b.payer, chargeKind: b.chargeKind, d }, user.id)
       return r.error ? sendJSON(res, 400, r) : sendJSON(res, 200, r)
     }
     // تعدیل نهایی: شارژ ساکنین را روی مبلغ نهاییِ حسابرسی‌شده تنظیم می‌کند
@@ -1771,8 +1790,9 @@ const server = createServer(async (req, res) => {
       const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
       if (!(+b.amount > 0)) return sendJSON(res, 400, { error: 'مبلغ فاکتور لازم است' })
       const vname = +b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()
-      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,note,created_at) VALUES(?,?,?,?,?,?,?,?,?,?)`)
-        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), Math.round(+b.amount), d.g_date, d.j_date, b.paid ? 1 : 0, (b.note || '').trim(), nowISO()).lastInsertRowid)
+      const kind = b.kind === 'sale' ? 'sale' : 'purchase'
+      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,note,kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), Math.round(+b.amount), d.g_date, d.j_date, b.paid ? 1 : 0, (b.note || '').trim(), kind, nowISO()).lastInsertRowid)
       return sendJSON(res, 200, { ok: true, id })
     }
     const ciM = /^\/api\/contractor-invoices\/(\d+)$/.exec(path)
@@ -1780,10 +1800,11 @@ const server = createServer(async (req, res) => {
       const cur = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
       const b = await jbody(req); const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }; if (d.error) return sendJSON(res, 400, d)
       const vname = b.vendorId != null ? (+b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()) : cur.vendor_name
-      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,note=? WHERE id=?`)
+      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,note=?,kind=? WHERE id=?`)
         .run(b.vendorId != null ? +b.vendorId : cur.vendor_id, vname, (b.title ?? cur.title).trim(),
           b.amount != null ? Math.round(+b.amount) : cur.amount, d.g_date, d.j_date,
-          b.paid != null ? (b.paid ? 1 : 0) : cur.paid, (b.note ?? cur.note).trim(), +ciM[1])
+          b.paid != null ? (b.paid ? 1 : 0) : cur.paid, (b.note ?? cur.note).trim(),
+          b.kind ? (b.kind === 'sale' ? 'sale' : 'purchase') : cur.kind, +ciM[1])
       return sendJSON(res, 200, { ok: true })
     }
     if (ciM && M === 'DELETE') {
@@ -1823,9 +1844,9 @@ const server = createServer(async (req, res) => {
     if (path === '/api/units' && M === 'POST') {
       const b = await jbody(req)
       if (!(b.number || '').trim()) return sendJSON(res, 400, { error: 'شماره/نام واحد لازم است' })
-      const id = Number(db.prepare(`INSERT INTO units(number,floor,area,occupants,common_units,resident_name,phone,occupied,monthly_charge,note,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(b.number.trim(), +b.floor || 0, +b.area || 0, +b.occupants || 0, +b.commonUnits || 0,
-          (b.residentName || '').trim(), (b.phone || '').trim(), b.occupied === false ? 0 : 1,
+      const id = Number(db.prepare(`INSERT INTO units(number,floor,area,occupants,common_units,resident_name,owner_name,phone,occupied,monthly_charge,note,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(b.number.trim(), +b.floor || 0, +b.area || 0, +b.occupants || 0, +b.commonUnits || 0,
+          (b.residentName || '').trim(), (b.ownerName || '').trim(), (b.phone || '').trim(), b.occupied === false ? 0 : 1,
           b.monthlyCharge != null && b.monthlyCharge !== '' ? Math.round(+b.monthlyCharge) : null,
           (b.note || '').trim(), nowISO()).lastInsertRowid)
       const total = +getSetting('totalUnits', '0') || 0
@@ -1839,9 +1860,9 @@ const server = createServer(async (req, res) => {
       const id = +unitM[1], b = await jbody(req)
       const cur = db.prepare(`SELECT * FROM units WHERE id=?`).get(id)
       if (!cur) return sendJSON(res, 404, { error: 'واحد یافت نشد' })
-      db.prepare(`UPDATE units SET number=?,floor=?,area=?,occupants=?,common_units=?,resident_name=?,phone=?,occupied=?,monthly_charge=?,active=?,note=? WHERE id=?`)
+      db.prepare(`UPDATE units SET number=?,floor=?,area=?,occupants=?,common_units=?,resident_name=?,owner_name=?,phone=?,occupied=?,monthly_charge=?,active=?,note=? WHERE id=?`)
         .run((b.number ?? cur.number).trim(), b.floor != null ? +b.floor : cur.floor, b.area != null ? +b.area : cur.area,
-          b.occupants != null ? +b.occupants : cur.occupants, b.commonUnits != null ? +b.commonUnits : cur.common_units, b.residentName ?? cur.resident_name, b.phone ?? cur.phone,
+          b.occupants != null ? +b.occupants : cur.occupants, b.commonUnits != null ? +b.commonUnits : cur.common_units, b.residentName ?? cur.resident_name, b.ownerName ?? cur.owner_name, b.phone ?? cur.phone,
           b.occupied != null ? (b.occupied ? 1 : 0) : cur.occupied,
           b.monthlyCharge !== undefined ? (b.monthlyCharge === '' || b.monthlyCharge == null ? null : Math.round(+b.monthlyCharge)) : cur.monthly_charge,
           b.active != null ? (b.active ? 1 : 0) : cur.active, b.note ?? cur.note, id)

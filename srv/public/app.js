@@ -749,9 +749,10 @@ function unitForm(u) {
       <label class="f">نفرات مشاعات — برای تقسیم هزینه‌های مشاعات (خالی = همان نفرات ساکن)
         <input class="inp num" id="unCommon" inputmode="numeric" value="${u && u.common_units ? faDigit(u.common_units) : ''}" placeholder="مثلاً واحد ۱‌نفره برای مشاعات ۲"></label>
       <div class="frow">
-        <label class="f">نام ساکن / مسئول پرداخت<input class="inp" id="unName" value="${esc(u ? u.resident_name : '')}"></label>
-        <label class="f">تلفن<input class="inp num" id="unPhone" inputmode="tel" value="${esc(u ? u.phone : '')}"></label>
+        <label class="f">نام ساکن / مستاجر<input class="inp" id="unName" value="${esc(u ? u.resident_name : '')}"></label>
+        <label class="f">نام مالک<input class="inp" id="unOwner" value="${esc(u ? (u.owner_name || '') : '')}"></label>
       </div>
+      <label class="f">تلفن<input class="inp num" id="unPhone" inputmode="tel" value="${esc(u ? u.phone : '')}"></label>
       <label class="f">شارژ اختصاصی این واحد (${curFa()}) — خالی بگذارید تا از مبلغ سراسری استفاده شود
         <input class="inp num" id="unCharge" data-money="unChargeHint" inputmode="numeric" value="${u && u.monthly_charge != null ? sep(Math.round(r2d(u.monthly_charge))) : ''}">
         <span class="hint" id="unChargeHint">مبلغ سراسری فعلی: ${moneyU(META.chargeAmount)}</span></label>
@@ -769,7 +770,7 @@ function unitForm(u) {
       number: $('#unNum').value.trim(), floor: +enDigit($('#unFloor').value) || 0,
       area: +enDigit($('#unArea').value) || 0, occupants: +enDigit($('#unOcc').value) || 0,
       commonUnits: +enDigit($('#unCommon').value) || 0,
-      residentName: $('#unName').value.trim(), phone: $('#unPhone').value.trim(),
+      residentName: $('#unName').value.trim(), ownerName: $('#unOwner').value.trim(), phone: $('#unPhone').value.trim(),
       occupied: $('#unOccupied').checked, note: $('#unNote').value.trim(),
       monthlyCharge: chargeRaw ? d2r(+chargeRaw) : ''
     }
@@ -1938,7 +1939,7 @@ const showProject = guard(async id => {
       </tbody></table></div>
       ${adminOnly(`<div style="padding:10px 0 0; display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn small" id="pjChargeEdit">✏️ ویرایش مبلغ شارژ</button>
-        <button class="btn small primary" id="pjReconcile">🎯 تعدیل نهایی</button></div>`)}`
+        <button class="btn small primary" id="pjReconcile">✅ اتمام و ثبت کامل هزینه‌ها</button></div>`)}`
       : `<div class="empty">هنوز شارژی برای این پروژه صادر نشده است</div>
       ${adminOnly(`<div style="padding:6px 0 0"><button class="btn small primary" id="pjChargeNew">＋ صدور شارژ پروژه از ساکنین</button></div>`)}`}
     </div>` +
@@ -1946,8 +1947,8 @@ const showProject = guard(async id => {
       <div class="tablewrap"><table class="tx"><thead><tr><th>پیمانکار</th><th>مبلغ</th><th>تاریخ</th><th>توضیح</th><th>سند</th><th></th></tr></thead><tbody>
       ${d.quotes.length ? d.quotes.map(quoteRow).join('') : emptyRow(6, 'استعلامی ثبت نشده')}
       </tbody></table></div></div>
-    <div class="panel"><div class="phead"><b>فاکتورهای پیمانکار (${faDigit(d.invoices.length)})</b>
-      <span class="hint">جمع: ${money(d.invoiceTotal)} · پرداخت‌شده: ${money(d.invoicePaid)} ${curFa()}</span></div>
+    <div class="panel"><div class="phead"><b>فاکتورهای خرید/فروش پروژه (${faDigit(d.invoices.length)})</b>
+      <span class="hint">خرید: ${money(d.purchaseTotal || 0)} · فروش: ${money(d.saleTotal || 0)} · هزینهٔ خالص: <b>${money(d.invoiceTotal)}</b> ${curFa()}</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>پیمانکار / شرح</th><th>مبلغ</th><th>تاریخ</th><th>وضعیت</th><th>سند</th><th></th></tr></thead><tbody>
       ${d.invoices.length ? d.invoices.map(cInvoiceRow).join('') : emptyRow(6, 'فاکتوری بایگانی نشده')}
       </tbody></table></div>
@@ -1960,9 +1961,11 @@ const showProject = guard(async id => {
   if ($('#pjChargeNew')) $('#pjChargeNew').onclick = () => projectChargeForm(p, null, refresh)
   if ($('#pjChargeEdit')) $('#pjChargeEdit').onclick = () => projectChargeForm(p, d.charge, refresh)
   if ($('#pjReconcile')) $('#pjReconcile').onclick = () => {
-    if (!d.finalAmount) return toast('اول «مبلغ نهایی» را در ویرایش پروژه وارد کنید', true)
-    confirmBox(`شارژ ساکنین روی مبلغ نهایی (${moneyU(d.finalAmount)}) تنظیم شود؟ بدهی/بستانکاری هر واحد بازمحاسبه می‌شود.`,
-      async () => { const r = await post('/api/projects/' + id + '/reconcile', {}); toast(`تعدیل شد — شارژ روی ${moneyU(r.amount)} تنظیم شد`); refresh() })
+    if (!d.finalBasis) return toast('اول فاکتورهای پروژه را ثبت کنید یا «مبلغ نهایی» را در ویرایش پروژه وارد کنید', true)
+    const src = d.finalAmount ? 'مبلغ نهاییِ حسابرسی' : 'هزینهٔ خالص فاکتورها'
+    const dev = d.finalBasis - (p.budget || 0)
+    confirmBox(`هزینهٔ کامل روی ${moneyU(d.finalBasis)} (${src}) ثبت شود؟\nسهم هر واحد و فاکتور کلی پروژه بازمحاسبه و بدهکار/بستانکار ساکنین به‌روز می‌شود.${p.budget ? `\nانحراف از برآورد اولیه: ${signed(dev)} ${curFa()}` : ''}`,
+      async () => { const r = await post('/api/projects/' + id + '/reconcile', {}); toast(`ثبت شد — هزینهٔ کامل ${moneyU(r.amount)}${p.budget ? ` · انحراف ${signed(dev)}` : ''}`); refresh() })
   }
   if ($('#pjDel')) $('#pjDel').onclick = () => confirmBox(`پروژه «${p.title}» و همه‌ی استعلام‌ها و اسنادش حذف شود؟`,
     async () => { await api('/api/projects/' + id, { method: 'DELETE' }); toast('حذف شد'); VIEW = 'projects'; render() })
@@ -2018,6 +2021,10 @@ function projectChargeForm(project, charge, after) {
       <label class="f">مبلغ شارژ (${curFa()})<input class="inp num" id="pcAmount" data-money="pcHint" inputmode="numeric" value="${sep(Math.round(r2d(charge ? charge.amount : (project.budget || 0))))}"><span class="hint" id="pcHint"></span></label>
       <label class="f">روش تقسیم<select class="inp" id="pcMethod">${divMethods.map(m => `<option value="${m.value}" ${(charge ? charge.method : 'equal') === m.value ? 'selected' : ''}>${esc(m.fa)}</option>`).join('')}</select></label>
     </div>
+    <div class="frow">
+      <label class="f">بر عهدهٔ<select class="inp" id="pcPayer"><option value="owner" ${(charge ? charge.payer : 'owner') === 'owner' ? 'selected' : ''}>مالک</option><option value="tenant" ${charge && charge.payer === 'tenant' ? 'selected' : ''}>مستاجر / ساکن</option></select></label>
+      <label class="f">نوع هزینه<select class="inp" id="pcKind"><option value="operational" ${(project.charge_kind || 'operational') === 'operational' ? 'selected' : ''}>عملیاتی (پروژه‌ای)</option><option value="current" ${project.charge_kind === 'current' ? 'selected' : ''}>جاری</option></select></label>
+    </div>
     <label class="check"><input type="checkbox" id="pcVacant" ${charge && charge.includeVacant ? 'checked' : ''}> واحدهای خالی هم سهم بدهند</label>
     <label class="f">تاریخ${dateBoxHtml('pc')}</label>
     <p class="hint">با ذخیره، بدهی همه‌ی واحدها بر اساس روش انتخابی بازمحاسبه می‌شود؛ پرداخت‌های قبلی حفظ می‌مانند. برای «تقسیم مشاعات»، نفرات مشاعاتِ هر واحد را در بخش واحدها تعیین کنید.</p>
@@ -2027,7 +2034,7 @@ function projectChargeForm(project, charge, after) {
   $('#pcSave').onclick = guard(async () => {
     const amount = readMoney($('#pcAmount')); if (!(amount > 0)) throw new Error('مبلغ را وارد کنید')
     const dt = readDate('pc')
-    await post('/api/projects/' + project.id + '/charge', { amount, method: $('#pcMethod').value, includeVacant: $('#pcVacant').checked, jy: dt.jy, jm: dt.jm, jd: dt.jd })
+    await post('/api/projects/' + project.id + '/charge', { amount, method: $('#pcMethod').value, payer: $('#pcPayer').value, chargeKind: $('#pcKind').value, includeVacant: $('#pcVacant').checked, jy: dt.jy, jm: dt.jm, jd: dt.jd })
     closeModal(); toast(charge ? 'شارژ به‌روزرسانی شد' : 'شارژ صادر شد'); after ? after() : render()
   })
 }
@@ -2057,11 +2064,12 @@ async function quoteForm(projectId, q = null, after) {
 }
 
 function cInvoiceRow(ci) {
-  const paid = ci.paid ? '<span class="badge b-ok">پرداخت‌شده</span>' : '<span class="badge b-open">پرداخت‌نشده</span>'
+  const paid = ci.paid ? '<span class="badge b-ok">تسویه</span>' : '<span class="badge b-open">تسویه‌نشده</span>'
+  const kindBadge = ci.kind === 'sale' ? '<span class="badge b-done">فروش</span>' : '<span class="badge b-no">خرید</span>'
   const files = (ci.attachments || []).map(a => `<a class="attmini" href="/uploads/${encodeURI(a.file)}" target="_blank" rel="noopener" title="${esc(a.display_name || 'سند')}">📎</a>`).join('')
   return `<tr>
-    <td><b>${esc(ci.vendorLabel)}</b>${ci.title ? `<br><span class="hint">${esc(ci.title)}</span>` : ''}</td>
-    <td class="num">${money(ci.amount)} ${curFa()}</td>
+    <td><b>${esc(ci.vendorLabel)}</b> ${kindBadge}${ci.title ? `<br><span class="hint">${esc(ci.title)}</span>` : ''}</td>
+    <td class="num ${ci.kind === 'sale' ? 'amt-in' : ''}">${ci.kind === 'sale' ? '−' : ''}${money(ci.amount)} ${curFa()}</td>
     <td class="num">${ci.j_date ? faDigit(ci.j_date) : '—'}</td>
     <td>${paid}</td>
     <td>${files}${adminOnly(`<button class="btn tiny" data-ci-att="${ci.id}" title="افزودن سند">＋</button>`)}</td>
@@ -2079,16 +2087,17 @@ async function cInvoiceForm(projectId, ci = null, after) {
       <label class="f">مبلغ (${curFa()})<input class="inp num" id="ciAmount" data-money="ciAmountHint" inputmode="numeric" value="${ci ? sep(Math.round(r2d(ci.amount))) : ''}"><span class="hint" id="ciAmountHint"></span></label>
       <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
     </div>
-    <label class="check"><input type="checkbox" id="ciPaid" ${ci && ci.paid ? 'checked' : ''}> پرداخت‌شده</label>
+    <label class="f">نوع<select class="inp" id="ciKind"><option value="purchase" ${!ci || ci.kind !== 'sale' ? 'selected' : ''}>خرید / هزینه (به هزینه اضافه می‌شود)</option><option value="sale" ${ci && ci.kind === 'sale' ? 'selected' : ''}>فروش / درآمد (از هزینه کم می‌شود)</option></select></label>
+    <label class="check"><input type="checkbox" id="ciPaid" ${ci && ci.paid ? 'checked' : ''}> تسویه‌شده (پرداخت/دریافت شد)</label>
     <label class="f">توضیح<input class="inp" id="ciNote" value="${ci ? esc(ci.note || '') : ''}"></label>
-    ${!ci ? `<p class="hint">پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
+    ${!ci ? `<p class="hint">مثال فروش: فروش داغیِ منبع قدیمی. پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
   </div>`, `<button class="btn primary" id="ciSave">ذخیره</button><button class="btn" id="ciCancel">انصراف</button>`)
   wireToday($('#modalBody')); wireMoney($('#modalBody'))
   $('#ciCancel').onclick = closeModal
   $('#ciSave').onclick = guard(async () => {
     const amount = readMoney($('#ciAmount')); if (!amount) throw new Error('مبلغ فاکتور لازم است')
     const dt = readDate('cid')
-    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, jy: dt.jy, jm: dt.jm, jd: dt.jd, paid: $('#ciPaid').checked, note: $('#ciNote').value.trim() }
+    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, paid: $('#ciPaid').checked, note: $('#ciNote').value.trim() }
     if (ci) await post('/api/contractor-invoices/' + ci.id, payload, 'PUT'); else await post('/api/contractor-invoices', payload)
     closeModal(); toast('ذخیره شد'); after ? after() : render()
   })
