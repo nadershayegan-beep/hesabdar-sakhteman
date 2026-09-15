@@ -746,6 +746,8 @@ function unitForm(u) {
         <label class="f">متراژ (متر مربع)<input class="inp num" id="unArea" inputmode="decimal" value="${u ? u.area : ''}"></label>
         <label class="f">تعداد نفرات ساکن<input class="inp num" id="unOcc" inputmode="numeric" value="${u ? u.occupants : ''}"></label>
       </div>
+      <label class="f">نفرات مشاعات — برای تقسیم هزینه‌های مشاعات (خالی = همان نفرات ساکن)
+        <input class="inp num" id="unCommon" inputmode="numeric" value="${u && u.common_units ? faDigit(u.common_units) : ''}" placeholder="مثلاً واحد ۱‌نفره برای مشاعات ۲"></label>
       <div class="frow">
         <label class="f">نام ساکن / مسئول پرداخت<input class="inp" id="unName" value="${esc(u ? u.resident_name : '')}"></label>
         <label class="f">تلفن<input class="inp num" id="unPhone" inputmode="tel" value="${esc(u ? u.phone : '')}"></label>
@@ -766,6 +768,7 @@ function unitForm(u) {
     const p = {
       number: $('#unNum').value.trim(), floor: +enDigit($('#unFloor').value) || 0,
       area: +enDigit($('#unArea').value) || 0, occupants: +enDigit($('#unOcc').value) || 0,
+      commonUnits: +enDigit($('#unCommon').value) || 0,
       residentName: $('#unName').value.trim(), phone: $('#unPhone').value.trim(),
       occupied: $('#unOccupied').checked, note: $('#unNote').value.trim(),
       monthlyCharge: chargeRaw ? d2r(+chargeRaw) : ''
@@ -939,7 +942,7 @@ function settleForm(funds, debt) {
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['debtors', 'بدهکاران'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
+  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
   $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
     `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -947,6 +950,73 @@ VIEWS.reports = async () => {
   await REPORTS[repTab]()
 }
 const REPORTS = {}
+let expMode = 'period', expPeriod = null, expProjectId = 0, expIds = []
+REPORTS.expenses = async () => {
+  const periods = await api('/api/report/periods')
+  const projects = await api('/api/projects')
+  if (!expPeriod) expPeriod = { from: periods[0].from, to: periods[0].to, fa: periods[0].fa }
+  let q
+  if (expMode === 'project' && expProjectId) q = `mode=project&projectId=${expProjectId}`
+  else if (expMode === 'invoices' && expIds.length) q = `mode=invoices&ids=${expIds.join(',')}`
+  else { expMode = expMode === 'invoices' && !expIds.length ? 'invoices' : expMode; q = `mode=period&from=${expPeriod.from}&to=${expPeriod.to}` }
+  const r = (expMode === 'project' && !expProjectId) ? null
+    : (expMode === 'invoices' && !expIds.length) ? null
+      : await api('/api/report/expenses?' + q)
+  const chip = (m, t) => `<button class="chip ${expMode === m ? 'on' : ''}" data-em="${m}">${t}</button>`
+  const filterRow = expMode === 'period'
+    ? `<select class="inp" id="exPeriod" style="max-width:220px">${periods.map(p => `<option value="${p.from}|${p.to}|${p.fa}" ${p.from === expPeriod.from ? 'selected' : ''}>${escFa(p.fa)}</option>`).join('')}</select>`
+    : expMode === 'project'
+      ? `<select class="inp" id="exProject" style="max-width:280px"><option value="0">— پروژه را انتخاب کنید —</option>${projects.map(p => `<option value="${p.id}" ${expProjectId === p.id ? 'selected' : ''}>${esc(p.title)}</option>`).join('')}</select>`
+      : `<button class="btn small" id="exPickInv">انتخاب فاکتورها${expIds.length ? ` (${faDigit(expIds.length)})` : ''}</button>`
+  const pdfQ = r ? q : ''
+  $('#repBody').innerHTML = `
+    <div class="filters printhide"><div class="chips">${chip('period', 'بازه‌ی تاریخ')}${chip('project', 'بر اساس پروژه')}${chip('invoices', 'انتخاب فاکتورها')}</div></div>
+    <div class="filters printhide" style="gap:10px; align-items:center">${filterRow}
+      ${r ? `<button class="btn small" id="exPdf">${IS_DESKTOP ? '📄 خروجی PDF' : '🖨 چاپ/PDF'}</button>` : ''}</div>
+    ${!r ? `<div class="empty">${expMode === 'project' ? 'یک پروژه را انتخاب کنید' : 'چند فاکتور را انتخاب کنید'}</div>` : `
+    <div class="panel"><h3 style="margin:0 0 4px">${esc(META.buildingName)} — گزارش هزینه‌کرد</h3><p class="sub">${esc(r.scopeLabel)}</p></div>
+    <div class="kpis">
+      ${kpi('جمع هزینه‌ها', money(r.totals.amount))}
+      ${kpi('وصول از ساکنین', money(r.totals.collected), '', 'good')}
+      ${kpi('مانده بدهی ساکنین', money(r.unitDebt), '', r.unitDebt > 0 ? 'bad' : 'good')}
+      ${r.unitCredit ? kpi('بستانکاری ساکنین', money(r.unitCredit), '', 'good') : ''}
+      ${r.contractor ? kpi('پرداخت به پیمانکار', money(r.contractor.paid)) : ''}
+      ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', money(r.contractor.outstanding), '', r.contractor.outstanding > 0 ? 'warn' : 'good') : ''}
+    </div>
+    ${r.project ? `<div class="notice printhide" style="border-color:var(--accent)">مسیر مالی پروژه: برآورد اولیه <b>${money(r.project.budget)}</b> ← مبلغ نهایی <b>${money(r.project.finalAmount)}</b>${r.project.deviation ? ` · انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${signed(r.project.deviation)}</b>` : ''} ${curFa()}</div>` : ''}
+    <div class="panel"><div class="phead"><b>ریز فاکتورها — بابت چه چیزی</b></div><div class="tablewrap"><table class="tx">
+      <thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
+      ${r.invoices.length ? r.invoices.map(i => `<tr class="clickable" data-inv="${i.id}"><td><b>${esc(i.title)}</b></td><td>${esc(i.category)}</td>
+        <td class="num">${i.j_date ? faDigit(i.j_date) : '—'}</td><td><span class="catpill">${esc(i.methodFa)}</span></td>
+        <td class="num">${money(i.amount)}</td><td class="num amt-in">${money(i.collected)}</td><td class="num ${i.remaining > 0 ? 'amt-out' : ''}">${money(i.remaining)}</td></tr>`).join('') : emptyRow(7, 'فاکتوری در این محدوده نیست')}
+      </tbody><tfoot><tr><td colspan="4">جمع</td><td class="num">${money(r.totals.amount)}</td><td class="num">${money(r.totals.collected)}</td><td class="num">${money(r.totals.remaining)}</td></tr></tfoot></table></div></div>
+    <div class="panel"><div class="phead"><b>تفکیک هر واحد</b></div><div class="tablewrap"><table class="tx">
+      <thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+      ${r.units.length ? r.units.map(u => `<tr class="clickable" data-unit="${u.unit_id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
+        <td class="num">${money(u.share)}</td><td class="num amt-in">${money(u.paid)}</td>
+        <td>${u.balance > 0 ? `<span class="badge b-no">بدهکار ${money(u.balance)}</span>` : u.balance < 0 ? `<span class="badge b-done">بستانکار ${money(-u.balance)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td></tr>`).join('') : emptyRow(5, 'سهمی ثبت نشده')}
+      </tbody></table></div></div>`}`
+  wireCommon()
+  document.querySelectorAll('[data-em]').forEach(b => b.onclick = () => { expMode = b.dataset.em; render() })
+  if ($('#exPeriod')) $('#exPeriod').onchange = () => { const [from, to, fa] = $('#exPeriod').value.split('|'); expPeriod = { from, to, fa }; render() }
+  if ($('#exProject')) $('#exProject').onchange = () => { expProjectId = +$('#exProject').value; render() }
+  if ($('#exPickInv')) $('#exPickInv').onclick = () => pickInvoicesForReport()
+  if ($('#exPdf')) $('#exPdf').onclick = () => {
+    const rel = '/print/expenses?' + pdfQ
+    if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت PDF…'); window.hesabdar.savePdf(rel, `گزارش هزینه‌کرد ${META.buildingName || ''}`.trim()).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
+    else window.open(rel, '_blank')
+  }
+}
+async function pickInvoicesForReport() {
+  const rows = await api('/api/invoices')
+  openModal('انتخاب فاکتورها', `<div class="form"><div class="tablewrap" style="max-height:340px;overflow:auto"><table class="tx">
+    <thead><tr><th></th><th>عنوان</th><th>تاریخ</th><th>مبلغ</th></tr></thead><tbody>
+    ${rows.map(i => `<tr><td><input type="checkbox" class="exChk" value="${i.id}" ${expIds.includes(i.id) ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)"></td>
+      <td>${esc(i.title)}</td><td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td></tr>`).join('')}
+    </tbody></table></div></div>`, `<button class="btn primary" id="exApply">اعمال</button><button class="btn" id="exCancelP">انصراف</button>`)
+  $('#exCancelP').onclick = closeModal
+  $('#exApply').onclick = () => { expIds = [...document.querySelectorAll('.exChk:checked')].map(c => +c.value); closeModal(); render() }
+}
 REPORTS.manager = async () => {
   const periods = await api('/api/report/periods')
   if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
@@ -1498,7 +1568,8 @@ SETTINGS.users = async () => {
         <td><span class="catpill">${esc(u.roleFa)}</span></td>
         <td>${u.active ? '<span class="badge b-settled">فعال</span>' : '<span class="badge b-vacant">معلق</span>'}</td>
         <td>${u.hasRecovery ? '<span class="badge b-settled">دارد</span>' : '<span class="badge b-open">ندارد</span>'} <button class="mini-btn" data-genrc="${u.id}">تولید کد</button></td>
-        <td><button class="mini-btn" data-tog="${u.id}" data-act="${u.active ? 0 : 1}">${u.active ? 'تعلیق' : 'فعال‌سازی'}</button>
+        <td><button class="mini-btn" data-edituser="${u.id}">ویرایش</button>
+          <button class="mini-btn" data-tog="${u.id}" data-act="${u.active ? 0 : 1}">${u.active ? 'تعلیق' : 'فعال‌سازی'}</button>
           <button class="mini-btn" data-pw="${u.id}">تغییر رمز</button>
           ${u.id === ME.id ? '' : `<button class="del" data-deluser="${u.id}">🗑</button>`}</td></tr>`).join('')}
       </tbody></table></div></div>
@@ -1523,8 +1594,27 @@ SETTINGS.users = async () => {
       await post(`/api/users/${b.dataset.pw}`, { password: v }, 'PATCH'); closeModal(); toast('رمز تغییر کرد')
     })
   })
+  document.querySelectorAll('[data-edituser]').forEach(b => b.onclick = () => userEditForm(users.find(x => x.id === +b.dataset.edituser)))
   document.querySelectorAll('[data-deluser]').forEach(b => b.onclick = () => confirmBox('این کاربر حذف شود؟',
     async () => { await api(`/api/users/${b.dataset.deluser}`, { method: 'DELETE' }); toast('کاربر حذف شد'); refresh() }))
+}
+function userEditForm(u) {
+  const self = u.id === ME.id
+  openModal('ویرایش کاربر', `<div class="form">
+    <label class="f">نام و نام خانوادگی<input class="inp" id="ueName" value="${esc(u.display_name)}"></label>
+    <label class="f">نام کاربری<input class="inp" id="ueUser" value="${esc(u.username)}" autocomplete="off"></label>
+    <label class="f">نقش<select class="inp" id="ueRole" ${self ? 'disabled' : ''}>${META.roles.map(r => `<option value="${r.value}" ${u.role === r.value ? 'selected' : ''}>${esc(r.fa)}</option>`).join('')}</select>${self ? '<span class="hint">نقش خودتان قابل تغییر نیست</span>' : ''}</label>
+    <p class="hint">برای تغییر رمز از دکمه‌ی «تغییر رمز» استفاده کنید.</p>
+  </div>`, `<button class="btn primary" id="ueSave">ذخیره</button><button class="btn" id="ueCancel">انصراف</button>`)
+  $('#ueCancel').onclick = closeModal
+  $('#ueSave').onclick = guard(async () => {
+    const displayName = $('#ueName').value.trim(), username = $('#ueUser').value.trim()
+    if (!displayName || !username) throw new Error('نام و نام کاربری لازم است')
+    const payload = { displayName, username }
+    if (!self) payload.role = $('#ueRole').value
+    await post(`/api/users/${u.id}`, payload, 'PATCH')
+    closeModal(); toast('کاربر ویرایش شد'); refresh()
+  })
 }
 function userForm() {
   openModal('کاربر جدید', `<div class="form">
@@ -1831,9 +1921,27 @@ const showProject = guard(async id => {
   const p = d.project, refresh = () => showProject(id)
   $('#view').innerHTML =
     `<button class="btn small back printhide" id="backBtn">→ بازگشت به پروژه‌ها</button>` +
-    head('پروژه: ' + p.title, `${p.statusFa}${p.budget ? ` · بودجه مصوب: ${money(p.budget)} ${curFa()}` : ''}${p.decisionTitle ? ` · مصوبه: ${p.decisionTitle}` : ''}`,
+    head('پروژه: ' + p.title, `${p.statusFa}${p.budget ? ` · برآورد اولیه: ${money(p.budget)} ${curFa()}` : ''}${d.finalAmount ? ` · نهایی: ${money(d.finalAmount)} · انحراف: ${signed(d.deviation)}` : ''}${p.decisionTitle ? ` · مصوبه: ${p.decisionTitle}` : ''}`,
       adminOnly(`<button class="btn primary" id="pjQuote">＋ استعلام</button><button class="btn" id="pjEdit">✏️ ویرایش</button><button class="btn danger" id="pjDel">🗑 حذف</button>`)) +
     (p.note ? `<div class="panel" style="padding:12px 16px">${esc(p.note).replace(/\n/g, '<br>')}</div>` : '') +
+    `<div class="panel"><div class="phead"><b>شارژ ساکنین (شارژ عمرانی پروژه)</b>
+      <span class="hint">برآورد اولیه: ${money(p.budget)} ${curFa()}${d.finalAmount ? ` · نهایی: ${money(d.finalAmount)} · انحراف: ${signed(d.deviation)}` : ''}</span></div>
+      ${d.charge ? `<div class="kpis">
+        ${kpi('مبلغ شارژ فعلی', money(d.charge.amount), 'روش: ' + d.charge.methodFa)}
+        ${kpi('وصول‌شده', money(d.charge.collected), '', 'good')}
+        ${kpi('مانده بدهی ساکنین', money(d.charge.remaining), '', d.charge.remaining > 0 ? 'bad' : 'good')}
+      </div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+      ${d.chargeShares.map(s => { const bal = s.share - s.paid; return `<tr><td><b>${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
+        <td class="num">${money(s.share)}</td><td class="num amt-in">${money(s.paid)}</td>
+        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">بستانکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td></tr>` }).join('')}
+      </tbody></table></div>
+      ${adminOnly(`<div style="padding:10px 0 0; display:flex; gap:8px; flex-wrap:wrap">
+        <button class="btn small" id="pjChargeEdit">✏️ ویرایش مبلغ شارژ</button>
+        <button class="btn small primary" id="pjReconcile">🎯 تعدیل نهایی</button></div>`)}`
+      : `<div class="empty">هنوز شارژی برای این پروژه صادر نشده است</div>
+      ${adminOnly(`<div style="padding:6px 0 0"><button class="btn small primary" id="pjChargeNew">＋ صدور شارژ پروژه از ساکنین</button></div>`)}`}
+    </div>` +
     `<div class="panel"><div class="phead"><b>استعلام‌ها (${faDigit(d.quotes.length)})</b><span class="hint">ارزان‌ترین با نشان «کمترین»؛ انتخاب نهایی را با ★ علامت بزنید</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>پیمانکار</th><th>مبلغ</th><th>تاریخ</th><th>توضیح</th><th>سند</th><th></th></tr></thead><tbody>
       ${d.quotes.length ? d.quotes.map(quoteRow).join('') : emptyRow(6, 'استعلامی ثبت نشده')}
@@ -1849,6 +1957,13 @@ const showProject = guard(async id => {
   $('#backBtn').onclick = () => { VIEW = 'projects'; render() }
   if ($('#pjQuote')) $('#pjQuote').onclick = () => quoteForm(id, null, refresh)
   if ($('#pjEdit')) $('#pjEdit').onclick = () => projectForm(p, refresh)
+  if ($('#pjChargeNew')) $('#pjChargeNew').onclick = () => projectChargeForm(p, null, refresh)
+  if ($('#pjChargeEdit')) $('#pjChargeEdit').onclick = () => projectChargeForm(p, d.charge, refresh)
+  if ($('#pjReconcile')) $('#pjReconcile').onclick = () => {
+    if (!d.finalAmount) return toast('اول «مبلغ نهایی» را در ویرایش پروژه وارد کنید', true)
+    confirmBox(`شارژ ساکنین روی مبلغ نهایی (${moneyU(d.finalAmount)}) تنظیم شود؟ بدهی/بستانکاری هر واحد بازمحاسبه می‌شود.`,
+      async () => { const r = await post('/api/projects/' + id + '/reconcile', {}); toast(`تعدیل شد — شارژ روی ${moneyU(r.amount)} تنظیم شد`); refresh() })
+  }
   if ($('#pjDel')) $('#pjDel').onclick = () => confirmBox(`پروژه «${p.title}» و همه‌ی استعلام‌ها و اسنادش حذف شود؟`,
     async () => { await api('/api/projects/' + id, { method: 'DELETE' }); toast('حذف شد'); VIEW = 'projects'; render() })
   document.querySelectorAll('[data-q-sel]').forEach(b => b.onclick = guard(async () => {
@@ -1877,8 +1992,9 @@ async function projectForm(p = null, after) {
     <div class="frow">
       <label class="f">وضعیت<select class="inp" id="pjStatus">
         ${Object.entries(PROJECT_STATUS_FA).map(([k, v]) => `<option value="${k}" ${(p ? p.status : 'approved') === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-      <label class="f">بودجه مصوب (${curFa()})<input class="inp num" id="pjBudget" data-money="pjBudgetHint" inputmode="numeric" value="${p && p.budget ? sep(Math.round(r2d(p.budget))) : ''}"><span class="hint" id="pjBudgetHint"></span></label>
+      <label class="f">برآورد اولیه (${curFa()})<input class="inp num" id="pjBudget" data-money="pjBudgetHint" inputmode="numeric" value="${p && p.budget ? sep(Math.round(r2d(p.budget))) : ''}"><span class="hint" id="pjBudgetHint"></span></label>
     </div>
+    <label class="f">مبلغ نهایی — بعد از حسابرسی (${curFa()})<input class="inp num" id="pjFinal" data-money="pjFinalHint" inputmode="numeric" value="${p && p.final_amount ? sep(Math.round(r2d(p.final_amount))) : ''}"><span class="hint" id="pjFinalHint">مبنای «تعدیل نهایی» و انحراف از برآورد</span></label>
     <label class="f">مصوبه‌ی مرتبط (اختیاری)<select class="inp" id="pjDecision">
       <option value="0">—</option>
       ${decisions.map(z => `<option value="${z.id}" ${p && +p.decision_event_id === z.id ? 'selected' : ''}>${esc(z.title)}${z.j_date ? ' — ' + z.j_date : ''}</option>`).join('')}</select></label>
@@ -1888,9 +2004,31 @@ async function projectForm(p = null, after) {
   $('#pjCancel').onclick = closeModal
   $('#pjSave').onclick = guard(async () => {
     const title = $('#pjTitle').value.trim(); if (!title) throw new Error('عنوان پروژه لازم است')
-    const payload = { title, status: $('#pjStatus').value, budget: readMoney($('#pjBudget')), decisionEventId: +$('#pjDecision').value, note: $('#pjNote').value.trim() }
+    const payload = { title, status: $('#pjStatus').value, budget: readMoney($('#pjBudget')), finalAmount: readMoney($('#pjFinal')), decisionEventId: +$('#pjDecision').value, note: $('#pjNote').value.trim() }
     if (p) await post('/api/projects/' + p.id, payload, 'PUT'); else await post('/api/projects', payload)
     closeModal(); toast('ذخیره شد'); after ? after() : render()
+  })
+}
+
+// صدور یا ویرایش شارژ عمرانیِ پروژه (تقسیم بین ساکنین)
+function projectChargeForm(project, charge, after) {
+  const divMethods = (META.methods || []).filter(m => ['equal', 'area', 'occupants', 'common'].includes(m.value))
+  openModal(charge ? 'ویرایش مبلغ شارژ' : 'صدور شارژ پروژه از ساکنین', `<div class="form">
+    <div class="frow">
+      <label class="f">مبلغ شارژ (${curFa()})<input class="inp num" id="pcAmount" data-money="pcHint" inputmode="numeric" value="${sep(Math.round(r2d(charge ? charge.amount : (project.budget || 0))))}"><span class="hint" id="pcHint"></span></label>
+      <label class="f">روش تقسیم<select class="inp" id="pcMethod">${divMethods.map(m => `<option value="${m.value}" ${(charge ? charge.method : 'equal') === m.value ? 'selected' : ''}>${esc(m.fa)}</option>`).join('')}</select></label>
+    </div>
+    <label class="check"><input type="checkbox" id="pcVacant" ${charge && charge.includeVacant ? 'checked' : ''}> واحدهای خالی هم سهم بدهند</label>
+    <label class="f">تاریخ${dateBoxHtml('pc')}</label>
+    <p class="hint">با ذخیره، بدهی همه‌ی واحدها بر اساس روش انتخابی بازمحاسبه می‌شود؛ پرداخت‌های قبلی حفظ می‌مانند. برای «تقسیم مشاعات»، نفرات مشاعاتِ هر واحد را در بخش واحدها تعیین کنید.</p>
+  </div>`, `<button class="btn primary" id="pcSave">ذخیره</button><button class="btn" id="pcCancel">انصراف</button>`)
+  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  $('#pcCancel').onclick = closeModal
+  $('#pcSave').onclick = guard(async () => {
+    const amount = readMoney($('#pcAmount')); if (!(amount > 0)) throw new Error('مبلغ را وارد کنید')
+    const dt = readDate('pc')
+    await post('/api/projects/' + project.id + '/charge', { amount, method: $('#pcMethod').value, includeVacant: $('#pcVacant').checked, jy: dt.jy, jm: dt.jm, jd: dt.jd })
+    closeModal(); toast(charge ? 'شارژ به‌روزرسانی شد' : 'شارژ صادر شد'); after ? after() : render()
   })
 }
 
@@ -1967,18 +2105,35 @@ function vendorsManager() {
         <button class="btn primary" id="vnAdd">＋ افزودن</button></div>`)}
       <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>زمینه</th><th>تلفن</th><th></th></tr></thead><tbody>
       ${vs.length ? vs.map(v => `<tr><td><b>${esc(v.name)}</b></td><td>${esc(v.field || '—')}</td><td class="num">${faDigit(v.phone || '—')}</td>
-        <td class="rowact">${adminOnly(`<button class="btn tiny" data-vn-del="${v.id}">🗑</button>`)}</td></tr>`).join('') : emptyRow(4, 'هنوز پیمانکاری ثبت نشده')}
+        <td class="rowact">${adminOnly(`<button class="btn tiny" data-vn-edit="${v.id}">✏️</button><button class="btn tiny" data-vn-del="${v.id}">🗑</button>`)}</td></tr>`).join('') : emptyRow(4, 'هنوز پیمانکاری ثبت نشده')}
       </tbody></table></div></div>`)
     if ($('#vnAdd')) $('#vnAdd').onclick = guard(async () => {
       const name = $('#vnName').value.trim(); if (!name) return toast('نام لازم است', true)
       await post('/api/vendors', { name, phone: $('#vnPhone').value.trim(), field: $('#vnField').value.trim() })
       toast('افزوده شد'); draw()
     })
+    document.querySelectorAll('[data-vn-edit]').forEach(b => b.onclick = () => vendorEditForm(vs.find(x => x.id === +b.dataset.vnEdit), draw))
     document.querySelectorAll('[data-vn-del]').forEach(b => b.onclick = guard(async () => {
       await api('/api/vendors/' + b.dataset.vnDel, { method: 'DELETE' }); toast('حذف شد'); draw()
     }))
   })
   draw()
+}
+function vendorEditForm(v, after) {
+  openModal('ویرایش پیمانکار', `<div class="form">
+    <label class="f">نام<input class="inp" id="veName" value="${esc(v.name)}"></label>
+    <div class="frow">
+      <label class="f">تلفن<input class="inp num" id="vePhone" inputmode="tel" value="${esc(v.phone || '')}"></label>
+      <label class="f">زمینه<input class="inp" id="veField" value="${esc(v.field || '')}"></label>
+    </div>
+    <label class="f">یادداشت<input class="inp" id="veNote" value="${esc(v.note || '')}"></label>
+  </div>`, `<button class="btn primary" id="veSave">ذخیره</button><button class="btn" id="veCancel">انصراف</button>`)
+  $('#veCancel').onclick = () => (after ? after() : closeModal())
+  $('#veSave').onclick = guard(async () => {
+    const name = $('#veName').value.trim(); if (!name) throw new Error('نام لازم است')
+    await post('/api/vendors/' + v.id, { name, phone: $('#vePhone').value.trim(), field: $('#veField').value.trim(), note: $('#veNote').value.trim() }, 'PUT')
+    toast('ذخیره شد'); after ? after() : closeModal()
+  })
 }
 
 VIEWS.help = async () => {

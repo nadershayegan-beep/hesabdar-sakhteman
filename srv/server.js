@@ -190,6 +190,9 @@ function migrate() {
   addCol('users', 'recovery_hash', `TEXT DEFAULT ''`)     // کد بازیابیِ رمز (فقط هش، هرگز خودِ کد)
   addCol('users', 'recovery_salt', `TEXT DEFAULT ''`)
   addCol('users', 'recovery_set_at', `TEXT DEFAULT ''`)
+  addCol('invoices', 'project_id', 'INTEGER DEFAULT 0')   // لینک شارژ پروژه به پروژه
+  addCol('projects', 'final_amount', 'INTEGER DEFAULT 0') // مبلغ نهایی حسابرسی‌شده (مبنای تعدیل)
+  addCol('units', 'common_units', 'INTEGER DEFAULT 0')    // نفرات مشاعات (جدا از نفرات واقعی)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -224,10 +227,10 @@ const daysBetween = (gFrom, gTo) => Math.floor((Date.parse(gTo + 'T00:00:00Z') -
 const todayG = () => { const j = todayJ(); return gDateStr(j.jy, j.jm, j.jd) }
 
 // ---------- ثابت‌ها ----------
-const METHODS = ['equal', 'area', 'occupants', 'per_unit_charge', 'custom']
+const METHODS = ['equal', 'area', 'occupants', 'common', 'per_unit_charge', 'custom']
 const METHOD_FA = {
   equal: 'مساوی', area: 'بر اساس متراژ', occupants: 'بر اساس نفرات',
-  per_unit_charge: 'شارژ هر واحد', custom: 'دستی'
+  common: 'بر اساس مشاعات', per_unit_charge: 'شارژ هر واحد', custom: 'دستی'
 }
 const EXPENSE_KINDS = ['fixed', 'variable', 'unexpected']
 const EXPENSE_KIND_FA = { fixed: 'ثابت', variable: 'متغیر', unexpected: 'پیش‌بینی‌نشده' }
@@ -421,12 +424,13 @@ function computeShares(units, method, amount, opts = {}) {
   let raw
   if (method === 'equal') {
     raw = units.map(u => ({ unit_id: u.id, v: amount / units.length }))
-  } else if (method === 'area' || method === 'occupants') {
-    const key = method === 'area' ? 'area' : 'occupants'
-    const total = units.reduce((s, u) => s + (+u[key] || 0), 0)
-    // اگر مجموع متراژ/نفرات صفر باشد (هنوز وارد نشده)، به تسهیم مساوی برمی‌گردیم تا فاکتور بی‌سهم نماند
+  } else if (method === 'area' || method === 'occupants' || method === 'common') {
+    // common = نفرات مشاعات؛ اگر برای واحدی تعیین نشده باشد، از نفرات واقعی استفاده می‌شود
+    const val = u => method === 'common' ? (+u.common_units || +u.occupants || 0) : (+u[method === 'area' ? 'area' : 'occupants'] || 0)
+    const total = units.reduce((s, u) => s + val(u), 0)
+    // اگر مجموع صفر باشد (هنوز وارد نشده)، به تسهیم مساوی برمی‌گردیم تا فاکتور بی‌سهم نماند
     raw = total > 0
-      ? units.map(u => ({ unit_id: u.id, v: amount * (+u[key] || 0) / total }))
+      ? units.map(u => ({ unit_id: u.id, v: amount * val(u) / total }))
       : units.map(u => ({ unit_id: u.id, v: amount / units.length }))
   } else if (method === 'per_unit_charge') {
     const period = opts.period || curPeriod()
@@ -1200,14 +1204,59 @@ function projectInvoices(pid) {
   return db.prepare(`SELECT ci.*, v.name vname FROM contractor_invoices ci LEFT JOIN vendors v ON v.id=ci.vendor_id WHERE ci.project_id=? ORDER BY ci.g_date DESC, ci.id DESC`).all(pid)
     .map(ci => ({ ...ci, vendorLabel: ci.vname || ci.vendor_name || '—', attachments: listAttachments('cinvoice', ci.id) }))
 }
+// فاکتور شارژِ ساکنین برای یک پروژه (is_billing=1، لینک‌شده به پروژه)
+const projectChargeInvoice = pid => db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_billing=1 ORDER BY id DESC LIMIT 1`).get(pid)
+function projectChargeShares(inv) {
+  if (!inv) return []
+  return db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(inv.id)
+    .map(s => { const paid = shareAllocated(s.id); return { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: s.share_amount, paid, remaining: s.share_amount - paid } })
+}
+// صدور یا ویرایش شارژ پروژه (وسط‌کار قابل افزایش) — بدهیِ واحدها بازمحاسبه می‌شود
+function setProjectCharge(project, { method, includeVacant, amount, d }, userId) {
+  const amt = Math.round(amount)
+  if (!(amt > 0)) return { error: 'مبلغ شارژ باید بزرگ‌تر از صفر باشد' }
+  if (!METHODS.includes(method) || method === 'custom' || method === 'per_unit_charge') return { error: 'روش تقسیم نامعتبر است' }
+  const units = eligibleUnits(!!includeVacant)
+  if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد' }
+  const shares = computeShares(units, method, amt, {})
+  const inv = projectChargeInvoice(project.id)
+  if (inv) {
+    db.prepare(`UPDATE invoices SET amount=?,method=?,include_vacant=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, includeVacant ? 1 : 0, d.g_date, d.j_date, inv.id)
+    writeShares(inv.id, shares)
+    return { ok: true, invoiceId: inv.id, amount: amt, updated: true }
+  }
+  const id = Number(db.prepare(`INSERT INTO invoices(title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,status,is_charge,is_billing,project_id,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',0,1,?,?,?)`)
+    .run(`شارژ پروژه: ${project.title}`, 0, amt, d.g_date, d.j_date, method, includeVacant ? 1 : 0, 0, 0, 'variable', '', '', '', project.id, userId, nowISO()).lastInsertRowid)
+  writeShares(id, shares)
+  return { ok: true, invoiceId: id, amount: amt }
+}
+// تعدیل نهایی: شارژ ساکنین را روی «مبلغ نهاییِ حسابرسی‌شده» تنظیم می‌کند → بدهکار/بستانکار نهایی
+function reconcileProjectCharge(project) {
+  const inv = projectChargeInvoice(project.id)
+  if (!inv) return { error: 'اول شارژ پروژه را صادر کنید' }
+  const fa = Math.round(project.final_amount || 0)
+  if (!(fa > 0)) return { error: 'اول «مبلغ نهایی» پروژه را وارد کنید' }
+  const units = eligibleUnits(!!inv.include_vacant)
+  const shares = computeShares(units, inv.method, fa, {})
+  db.prepare(`UPDATE invoices SET amount=? WHERE id=?`).run(fa, inv.id)
+  writeShares(inv.id, shares)
+  return { ok: true, amount: fa }
+}
 function projectDetail(id) {
   const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(id)
   if (!p) return null
   const invoices = projectInvoices(id)
+  const charge = projectChargeInvoice(id)
+  const chargeCollected = charge ? invoiceCollected(charge.id) : 0
+  const invoiceTotal = invoices.reduce((s, i) => s + i.amount, 0)
   return {
     project: projectRow(p), quotes: projectQuotes(id), invoices, attachments: listAttachments('project', id),
-    invoiceTotal: invoices.reduce((s, i) => s + i.amount, 0),
-    invoicePaid: invoices.reduce((s, i) => s + (i.paid ? i.amount : 0), 0)
+    invoiceTotal, invoicePaid: invoices.reduce((s, i) => s + (i.paid ? i.amount : 0), 0),
+    finalAmount: p.final_amount || 0,
+    deviation: (p.final_amount || 0) && p.budget ? (p.final_amount - p.budget) : 0,
+    charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: charge.amount - chargeCollected } : null,
+    chargeShares: projectChargeShares(charge)
   }
 }
 // گزارش‌ها: خرجِ هر پروژه و هر پیمانکار (فقط بایگانی — روی صندوق اثری ندارد)
@@ -1223,6 +1272,49 @@ function vendorsReport() {
     const i = db.prepare(`SELECT COUNT(*) c, COALESCE(SUM(amount),0) t, COALESCE(SUM(CASE WHEN paid=1 THEN amount ELSE 0 END),0) paid FROM contractor_invoices WHERE vendor_id=?`).get(v.id)
     return { id: v.id, name: v.name, field: v.field, phone: v.phone, quoteCount: q.c, quoteTotal: q.t, invoiceCount: i.c, invoiceTotal: i.t, invoicePaid: i.paid, invoiceUnpaid: i.t - i.paid }
   })
+}
+// گزارش حرفه‌ای هزینه‌کرد — سه حالت: بازه‌ی تاریخ | پروژه | انتخاب فاکتورها
+const gToJStr = g => { if (!g) return ''; const [y, m, d] = g.split('-').map(Number); const j = toJalaali(y, m, d); return jStr(j.jy, j.jm, j.jd) }
+function expensesReport(opts) {
+  let invRows = [], project = null, contractor = null, scopeLabel = ''
+  if (opts.mode === 'project' && +opts.projectId) {
+    const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+opts.projectId)
+    if (!p) return { error: 'پروژه یافت نشد' }
+    invRows = db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_opening=0 ORDER BY id`).all(p.id)
+    const ci = db.prepare(`SELECT COALESCE(SUM(amount),0) t, COALESCE(SUM(CASE WHEN paid=1 THEN amount ELSE 0 END),0) paid FROM contractor_invoices WHERE project_id=?`).get(p.id)
+    contractor = { total: ci.t, paid: ci.paid, outstanding: ci.t - ci.paid }
+    project = { title: p.title, budget: p.budget, finalAmount: p.final_amount || 0, deviation: (p.final_amount || 0) && p.budget ? (p.final_amount - p.budget) : 0 }
+    scopeLabel = 'پروژه: ' + p.title
+  } else if (opts.mode === 'invoices' && opts.ids) {
+    const ids = String(opts.ids).split(',').map(Number).filter(Boolean)
+    invRows = ids.length ? db.prepare(`SELECT * FROM invoices WHERE id IN (${ids.map(() => '?').join(',')}) AND is_opening=0`).all(...ids) : []
+    scopeLabel = `${ids.length} فاکتور انتخابی`
+  } else {
+    const from = opts.from || periodFirstG(curPeriod()), to = opts.to || todayG()
+    invRows = db.prepare(`SELECT * FROM invoices WHERE is_opening=0 AND g_date>=? AND g_date<=? ORDER BY g_date, id`).all(from, to)
+    scopeLabel = `بازه‌ی ${gToJStr(from)} تا ${gToJStr(to)}`
+  }
+  const invoices = invRows.map(inv => {
+    const collected = invoiceCollected(inv.id)
+    const cat = inv.category_id ? ((db.prepare(`SELECT name FROM expense_categories WHERE id=?`).get(inv.category_id) || {}).name || '') : ''
+    return { id: inv.id, title: inv.title, category: cat || '—', j_date: inv.j_date, methodFa: METHOD_FA[inv.method] || inv.method, amount: inv.amount, collected, remaining: inv.amount - collected, isBilling: !!inv.is_billing }
+  })
+  const totals = { amount: invoices.reduce((s, i) => s + i.amount, 0), collected: invoices.reduce((s, i) => s + i.collected, 0), remaining: invoices.reduce((s, i) => s + i.remaining, 0) }
+  const um = {}
+  for (const inv of invRows)
+    for (const s of db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(inv.id)) {
+      const e = um[s.unit_id] || (um[s.unit_id] = { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: 0, paid: 0 })
+      e.share += s.share_amount; e.paid += shareAllocated(s.id)
+    }
+  const numOf = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  const units = Object.values(um).map(e => ({ ...e, balance: e.share - e.paid }))
+    .sort((a, b) => numOf(a.number) - numOf(b.number))
+  return {
+    scopeLabel, invoices, totals, units, project, contractor,
+    unitDebt: units.reduce((s, u) => s + Math.max(0, u.balance), 0),
+    unitCredit: units.reduce((s, u) => s + Math.max(0, -u.balance), 0),
+    buildingName: getSetting('buildingName'), today: (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
+  }
 }
 
 // ---------- صفحات چاپی (تولید PDF) ----------
@@ -1342,6 +1434,39 @@ function printSummaryHtml(period, showNames) {
       : '⚠️ تراز کل برقرار نیست — لطفاً گزارش «تراز کل» را در نرم‌افزار بررسی کنید.'}</div>
     <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
+}
+
+function printExpensesHtml(r) {
+  const U = pUnitFa()
+  const kpi = (k, v, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`
+  const inner = `
+    <h1>${hEsc(r.buildingName || 'ساختمان')}</h1>
+    <div class="sub">گزارش هزینه‌کرد و شفاف‌سازی · ${hEsc(r.scopeLabel)} · تاریخ صدور: ${faNum(r.today)}</div>
+    <div class="kpis">
+      ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
+      ${kpi('وصول از ساکنین', pMoney(r.totals.collected) + ' ' + U, 'ok')}
+      ${kpi('مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
+      ${r.unitCredit ? kpi('بستانکاری ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
+      ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
+      ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, r.contractor.outstanding > 0 ? 'warn' : 'ok') : ''}
+    </div>
+    ${r.project ? `<div class="big" style="font-size:13px">مسیر مالی پروژه: برآورد اولیه <b>${pMoney(r.project.budget)}</b> ← مبلغ نهایی <b>${pMoney(r.project.finalAmount)}</b> ${r.project.deviation ? `· انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${r.project.deviation > 0 ? '+' : '−'}${pMoney(Math.abs(r.project.deviation))}</b>` : ''} ${U}</div>` : ''}
+    <div class="sech">ریز فاکتورها — بابت چه چیزی</div>
+    <table><thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
+    ${r.invoices.length ? r.invoices.map(i => `<tr><td>${hEsc(i.title)}</td><td>${hEsc(i.category)}</td><td class="num">${i.j_date ? faNum(i.j_date) : '—'}</td>
+      <td>${hEsc(i.methodFa)}</td><td class="num">${pMoney(i.amount)}</td><td class="num amt-in">${pMoney(i.collected)}</td><td class="num amt-out">${pMoney(i.remaining)}</td></tr>`).join('')
+    : '<tr><td colspan="7" style="text-align:center;color:#888">فاکتوری در این محدوده نیست</td></tr>'}
+    <tr class="tot"><td>جمع</td><td></td><td></td><td></td><td class="num">${pMoney(r.totals.amount)}</td><td class="num">${pMoney(r.totals.collected)}</td><td class="num">${pMoney(r.totals.remaining)}</td></tr>
+    </tbody></table>
+    <div class="sech">تفکیک هر واحد</div>
+    <table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+    ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
+      <td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td>
+      <td class="num">${u.balance > 0 ? `<span class="amt-out">بدهکار ${pMoney(u.balance)}</span>` : u.balance < 0 ? `<span class="amt-in">بستانکار ${pMoney(-u.balance)}</span>` : 'تسویه'}</td></tr>`).join('')
+    : '<tr><td colspan="5" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
+    </tbody></table>
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+  return printLayout('گزارش هزینه‌کرد', inner)
 }
 
 function printMeetingHtml(id) {
@@ -1571,10 +1696,26 @@ const server = createServer(async (req, res) => {
     if (prM && M === 'PUT') {
       const cur = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+prM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
       const b = await jbody(req); const status = PROJECT_STATUSES.includes(b.status) ? b.status : cur.status
-      db.prepare(`UPDATE projects SET title=?,status=?,budget=?,decision_event_id=?,note=? WHERE id=?`)
+      db.prepare(`UPDATE projects SET title=?,status=?,budget=?,final_amount=?,decision_event_id=?,note=? WHERE id=?`)
         .run((b.title ?? cur.title).trim(), status, b.budget != null ? Math.round(+b.budget) : cur.budget,
+          b.finalAmount != null ? Math.round(+b.finalAmount) : cur.final_amount,
           b.decisionEventId != null ? +b.decisionEventId : cur.decision_event_id, (b.note ?? cur.note).trim(), +prM[1])
       return sendJSON(res, 200, { ok: true })
+    }
+    // صدور/ویرایش شارژ پروژه از ساکنین
+    const prChargeM = /^\/api\/projects\/(\d+)\/charge$/.exec(path)
+    if (prChargeM && M === 'POST') {
+      const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+prChargeM[1]); if (!p) return sendJSON(res, 404, { error: 'پروژه یافت نشد' })
+      const b = await jbody(req); const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      const r = setProjectCharge(p, { method: b.method, includeVacant: b.includeVacant, amount: b.amount != null ? +b.amount : p.budget, d }, user.id)
+      return r.error ? sendJSON(res, 400, r) : sendJSON(res, 200, r)
+    }
+    // تعدیل نهایی: شارژ ساکنین را روی مبلغ نهاییِ حسابرسی‌شده تنظیم می‌کند
+    const prRecM = /^\/api\/projects\/(\d+)\/reconcile$/.exec(path)
+    if (prRecM && M === 'POST') {
+      const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+prRecM[1]); if (!p) return sendJSON(res, 404, { error: 'پروژه یافت نشد' })
+      const r = reconcileProjectCharge(p)
+      return r.error ? sendJSON(res, 400, r) : sendJSON(res, 200, r)
     }
     if (prM && M === 'DELETE') {
       const pid = +prM[1]
@@ -1585,6 +1726,7 @@ const server = createServer(async (req, res) => {
       for (const a of listAttachments('project', pid)) await rm(join(UP_DIR, a.file), { force: true })
       db.prepare(`DELETE FROM attachments WHERE entity_type='project' AND entity_id=?`).run(pid)
       db.prepare(`DELETE FROM quotes WHERE project_id=?`).run(pid)
+      const chg = projectChargeInvoice(pid); if (chg) deleteInvoice(chg.id)   // شارژ ساکنین و تخصیص‌هایش هم پاک شود
       db.prepare(`DELETE FROM projects WHERE id=?`).run(pid)
       return sendJSON(res, 200, { ok: true })
     }
@@ -1654,6 +1796,10 @@ const server = createServer(async (req, res) => {
     // ---- گزارش‌های پروژه/پیمانکار ----
     if (path === '/api/report/projects' && M === 'GET') return sendJSON(res, 200, projectsReport())
     if (path === '/api/report/vendors' && M === 'GET') return sendJSON(res, 200, vendorsReport())
+    if (path === '/api/report/expenses' && M === 'GET') {
+      const r = expensesReport({ mode: Q.mode, from: Q.from, to: Q.to, projectId: Q.projectId, ids: Q.ids })
+      return r.error ? sendJSON(res, 400, r) : sendJSON(res, 200, r)
+    }
 
     // ---- متادیتا ----
     if (path === '/api/meta' && M === 'GET') {
@@ -1677,8 +1823,8 @@ const server = createServer(async (req, res) => {
     if (path === '/api/units' && M === 'POST') {
       const b = await jbody(req)
       if (!(b.number || '').trim()) return sendJSON(res, 400, { error: 'شماره/نام واحد لازم است' })
-      const id = Number(db.prepare(`INSERT INTO units(number,floor,area,occupants,resident_name,phone,occupied,monthly_charge,note,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(b.number.trim(), +b.floor || 0, +b.area || 0, +b.occupants || 0,
+      const id = Number(db.prepare(`INSERT INTO units(number,floor,area,occupants,common_units,resident_name,phone,occupied,monthly_charge,note,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(b.number.trim(), +b.floor || 0, +b.area || 0, +b.occupants || 0, +b.commonUnits || 0,
           (b.residentName || '').trim(), (b.phone || '').trim(), b.occupied === false ? 0 : 1,
           b.monthlyCharge != null && b.monthlyCharge !== '' ? Math.round(+b.monthlyCharge) : null,
           (b.note || '').trim(), nowISO()).lastInsertRowid)
@@ -1693,9 +1839,9 @@ const server = createServer(async (req, res) => {
       const id = +unitM[1], b = await jbody(req)
       const cur = db.prepare(`SELECT * FROM units WHERE id=?`).get(id)
       if (!cur) return sendJSON(res, 404, { error: 'واحد یافت نشد' })
-      db.prepare(`UPDATE units SET number=?,floor=?,area=?,occupants=?,resident_name=?,phone=?,occupied=?,monthly_charge=?,active=?,note=? WHERE id=?`)
+      db.prepare(`UPDATE units SET number=?,floor=?,area=?,occupants=?,common_units=?,resident_name=?,phone=?,occupied=?,monthly_charge=?,active=?,note=? WHERE id=?`)
         .run((b.number ?? cur.number).trim(), b.floor != null ? +b.floor : cur.floor, b.area != null ? +b.area : cur.area,
-          b.occupants != null ? +b.occupants : cur.occupants, b.residentName ?? cur.resident_name, b.phone ?? cur.phone,
+          b.occupants != null ? +b.occupants : cur.occupants, b.commonUnits != null ? +b.commonUnits : cur.common_units, b.residentName ?? cur.resident_name, b.phone ?? cur.phone,
           b.occupied != null ? (b.occupied ? 1 : 0) : cur.occupied,
           b.monthlyCharge !== undefined ? (b.monthlyCharge === '' || b.monthlyCharge == null ? null : Math.round(+b.monthlyCharge)) : cur.monthly_charge,
           b.active != null ? (b.active ? 1 : 0) : cur.active, b.note ?? cur.note, id)
@@ -2206,6 +2352,11 @@ const server = createServer(async (req, res) => {
         db.prepare(`UPDATE users SET active=? WHERE id=?`).run(b.active ? 1 : 0, uid)
       }
       if (b.displayName) db.prepare(`UPDATE users SET display_name=? WHERE id=?`).run(b.displayName.trim(), uid)
+      if (b.username && b.username.trim()) {
+        const un = b.username.trim()
+        if (db.prepare(`SELECT 1 FROM users WHERE username=? AND id!=?`).get(un, uid)) return sendJSON(res, 400, { error: 'این نام کاربری قبلاً وجود دارد' })
+        db.prepare(`UPDATE users SET username=? WHERE id=?`).run(un, uid)
+      }
       if (b.role && ROLES.includes(b.role)) {
         if (uid === user.id && b.role !== 'admin') return sendJSON(res, 400, { error: 'نقش خودتان را نمی‌توانید از مدیر بردارید' })
         db.prepare(`UPDATE users SET role=? WHERE id=?`).run(b.role, uid)
@@ -2292,6 +2443,12 @@ const server = createServer(async (req, res) => {
       if (path === '/print/summary') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(printSummaryHtml(Q.period, Q.names === '1'))
+      }
+      if (path === '/print/expenses') {
+        const r = expensesReport({ mode: Q.mode, from: Q.from, to: Q.to, projectId: Q.projectId, ids: Q.ids })
+        if (r.error) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">داده‌ای نیست</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(printExpensesHtml(r))
       }
       const mtM = /^\/print\/meeting\/(\d+)$/.exec(path)
       if (mtM) {
