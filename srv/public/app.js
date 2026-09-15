@@ -550,7 +550,7 @@ VIEWS.payments = async () => {
   const rows = await api('/api/payments')
   const total = rows.reduce((s, p) => s + p.amount, 0)
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
-    adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
+    adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx">
       <thead><tr><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr>
@@ -569,6 +569,95 @@ VIEWS.payments = async () => {
     const p = rows.find(x => x.id === +b.dataset.editpay); if (p) paymentForm(null, p)
   })
   if ($('#newPay')) $('#newPay').onclick = () => paymentForm()
+  if ($('#bulkPay')) $('#bulkPay').onclick = () => bulkPaymentForm()
+}
+
+// دریافت گروهی: یک مبلغ، تیکِ واحدهایی که دادن، بابت یک فاکتور مشخص یا بدهی کلی
+function bulkPaymentForm() {
+  const bpRow = (uid, num, resident, ref, prefill, checked) =>
+    `<tr data-bp="${uid}">
+      <td><input type="checkbox" class="bpChk" ${checked ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)"></td>
+      <td><b>${escFa(num)}</b>${resident ? ` <span class="hint">${esc(resident)}</span>` : ''}</td>
+      <td class="num ${ref > 0 ? 'amt-out' : ''}">${ref > 0 ? money(ref) : '—'}</td>
+      <td><input class="inp num bpAmt" data-money="" inputmode="numeric" value="${prefill > 0 ? sep(Math.round(r2d(prefill))) : ''}"></td></tr>`
+  const body = openModal('👥 دریافت گروهی شارژ', `<div class="form">
+    <div class="frow">
+      <label class="f">صندوق مقصد<select class="inp" id="bpFund">${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
+      <label class="f">تاریخ${dateBoxHtml('bp')}</label>
+    </div>
+    <div class="frow">
+      <label class="f">بابت<select class="inp" id="bpInvoice"><option value="0">بدهی کلی (خودکار از قدیمی‌ترین)</option></select></label>
+      <label class="f">روش پرداخت<select class="inp" id="bpMethod"><option value="">—</option>${META.payMethods.map(m => `<option>${esc(m)}</option>`).join('')}</select></label>
+    </div>
+    <div class="frow" style="align-items:end">
+      <label class="f">مبلغ پیش‌فرض هر واحد (${curFa()})<input class="inp num" id="bpDefault" data-money="bpDefHint" inputmode="numeric"><span class="hint" id="bpDefHint"></span></label>
+      <button type="button" class="btn" id="bpApplyAll">اعمال به تیک‌خورده‌ها</button>
+    </div>
+    <div class="panel" style="margin:0;background:var(--panel-2)">
+      <div class="phead"><label class="check" style="margin:0"><input type="checkbox" id="bpAll"> انتخاب همه</label><span class="hint strong" id="bpSum"></span></div>
+      <div class="tablewrap" id="bpList"><div class="empty">در حال بارگذاری…</div></div>
+    </div></div>`,
+    `<button class="btn primary" id="bpSave">ثبت دریافتی‌ها</button><button class="btn" id="bpCancel">انصراف</button>`)
+  wireToday(body); wireMoney(body)
+  $('#bpCancel').onclick = closeModal
+
+  const updateSum = () => {
+    let n = 0, t = 0
+    body.querySelectorAll('tr[data-bp]').forEach(tr => {
+      if (tr.querySelector('.bpChk').checked) { const a = readMoney(tr.querySelector('.bpAmt')); if (a > 0) { n++; t += a } }
+    })
+    $('#bpSum').textContent = n ? `${faDigit(n)} واحد · جمع ${moneyU(t)}` : ''
+  }
+  const bindRows = () => {
+    body.querySelectorAll('tr[data-bp]').forEach(tr => {
+      const chk = tr.querySelector('.bpChk'), amt = tr.querySelector('.bpAmt')
+      chk.onchange = () => { if (chk.checked && !readMoney(amt)) { const def = readMoney($('#bpDefault')); if (def > 0) { amt.value = sep(Math.round(r2d(def))) } } updateSum() }
+      amt.addEventListener('input', updateSum)
+    })
+  }
+  const renderList = guard(async () => {
+    const invId = +$('#bpInvoice').value
+    let rowsHtml
+    if (invId) {
+      const d = await api('/api/invoice/' + invId)
+      const debtors = d.shares.filter(s => s.remaining > 0)
+      rowsHtml = debtors.length ? debtors.map(s => bpRow(s.unit_id, s.number, s.resident_name, s.remaining, s.remaining, true)).join('')
+        : `<tr><td colspan="4"><div class="empty">همه‌ی واحدهای این فاکتور تسویه‌اند</div></td></tr>`
+    } else {
+      rowsHtml = META.units.filter(u => u.active).map(u => bpRow(u.id, u.number, u.resident_name, u.debt, 0, false)).join('')
+    }
+    $('#bpList').innerHTML = `<table class="tx"><thead><tr><th></th><th>واحد</th><th>${invId ? 'سهم مانده' : 'بدهی فعلی'}</th><th>مبلغ دریافتی</th></tr></thead><tbody>${rowsHtml}</tbody></table>`
+    wireMoney($('#bpList')); bindRows(); $('#bpAll').checked = false; updateSum()
+  })
+
+  ;(async () => {
+    const rows = await api('/api/invoices')
+    const sel = $('#bpInvoice')
+    rows.filter(i => i.remaining > 0).forEach(i => {
+      const o = document.createElement('option'); o.value = i.id
+      o.textContent = `${i.title} — ${faDigit(i.j_date)} (مانده ${money(i.remaining)})`; sel.appendChild(o)
+    })
+  })()
+  $('#bpInvoice').onchange = renderList
+  $('#bpAll').onchange = () => { const on = $('#bpAll').checked; body.querySelectorAll('.bpChk').forEach(c => { c.checked = on; c.dispatchEvent(new Event('change')) }) }
+  $('#bpApplyAll').onclick = () => {
+    const def = readMoney($('#bpDefault')); if (!(def > 0)) return toast('اول مبلغ پیش‌فرض را وارد کنید', true)
+    body.querySelectorAll('tr[data-bp]').forEach(tr => { if (tr.querySelector('.bpChk').checked) tr.querySelector('.bpAmt').value = sep(Math.round(r2d(def))) })
+    updateSum()
+  }
+  renderList()
+  $('#bpSave').onclick = guard(async () => {
+    const items = []
+    body.querySelectorAll('tr[data-bp]').forEach(tr => {
+      if (tr.querySelector('.bpChk').checked) { const a = readMoney(tr.querySelector('.bpAmt')); if (a > 0) items.push({ unitId: +tr.dataset.bp, amount: a }) }
+    })
+    if (!items.length) throw new Error('هیچ واحدی با مبلغ معتبر انتخاب نشد')
+    const r = await post('/api/payments/bulk', {
+      fundId: +$('#bpFund').value, invoiceId: +$('#bpInvoice').value || null,
+      method: $('#bpMethod').value, items, ...readDate('bp')
+    })
+    closeModal(); toast(`${faDigit(r.count)} دریافتی ثبت شد — جمع ${moneyU(r.total)}`); refresh()
+  })
 }
 
 function paymentForm(presetUnit, pay) {

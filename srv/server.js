@@ -1908,6 +1908,28 @@ const server = createServer(async (req, res) => {
       const allocated = allocatePayment(id, targets)
       return sendJSON(res, 200, { ok: true, id, allocated, credit: amount - allocated })
     }
+    // ثبت گروهی دریافتی — چند واحد با هم، بابت یک فاکتور مشخص یا بدهی کلی (FIFO)
+    if (path === '/api/payments/bulk' && M === 'POST') {
+      const b = await jbody(req)
+      const fundId = +b.fundId
+      if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(fundId)) return sendJSON(res, 400, { error: 'صندوق مقصد را انتخاب کنید' })
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      const targets = +b.invoiceId ? [+b.invoiceId] : null
+      const note = (b.note || '').trim()
+      let count = 0, total = 0
+      for (const it of (Array.isArray(b.items) ? b.items : [])) {
+        const unitId = +it.unitId, amount = Math.round(+it.amount)
+        if (!(amount > 0)) continue
+        const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId); if (!u) continue
+        const id = Number(db.prepare(`INSERT INTO payments(unit_id,amount,g_date,j_date,fund_id,method,doc_file,note,created_by,created_at)
+          VALUES(?,?,?,?,?,?,?,?,?,?)`).run(unitId, amount, d.g_date, d.j_date, fundId, b.method || '', '', note || 'دریافت گروهی', user.id, nowISO()).lastInsertRowid)
+        addFundTxn(fundId, 'in', amount, { ...d, payId: id, note: `دریافتی واحد ${u.number}`, by: user.id })
+        allocatePayment(id, targets)
+        count++; total += amount
+      }
+      if (!count) return sendJSON(res, 400, { error: 'هیچ واحدی با مبلغ معتبر انتخاب نشد' })
+      return sendJSON(res, 200, { ok: true, count, total })
+    }
     const payM = /^\/api\/payments\/(\d+)$/.exec(path)
     if (payM && M === 'DELETE') {
       const p = db.prepare(`SELECT * FROM payments WHERE id=?`).get(+payM[1])
