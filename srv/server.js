@@ -197,6 +197,7 @@ function migrate() {
   addCol('contractor_invoices', 'kind', `TEXT DEFAULT 'purchase'`) // purchase=خرید(هزینه) | sale=فروش(درآمد)
   addCol('invoices', 'payer', `TEXT DEFAULT 'tenant'`)    // بر عهدهٔ: tenant=مستاجر/ساکن | owner=مالک
   addCol('projects', 'charge_kind', `TEXT DEFAULT 'operational'`) // جاری=current | عملیاتی=operational
+  addCol('invoices', 'doc_no', `TEXT DEFAULT ''`)         // شماره سند (روی سند فیزیکی صندوق‌دار)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -231,10 +232,10 @@ const daysBetween = (gFrom, gTo) => Math.floor((Date.parse(gTo + 'T00:00:00Z') -
 const todayG = () => { const j = todayJ(); return gDateStr(j.jy, j.jm, j.jd) }
 
 // ---------- ثابت‌ها ----------
-const METHODS = ['equal', 'area', 'occupants', 'common', 'per_unit_charge', 'custom']
+const METHODS = ['equal', 'area', 'occupants', 'common', 'occ_common', 'per_unit_charge', 'custom']
 const METHOD_FA = {
   equal: 'مساوی', area: 'بر اساس متراژ', occupants: 'بر اساس نفرات',
-  common: 'بر اساس مشاعات', per_unit_charge: 'شارژ هر واحد', custom: 'دستی'
+  common: 'بر اساس مشاعات', occ_common: 'نفرات + مشاعات (سرانه)', per_unit_charge: 'شارژ هر واحد', custom: 'دستی'
 }
 const EXPENSE_KINDS = ['fixed', 'variable', 'unexpected']
 const EXPENSE_KIND_FA = { fixed: 'ثابت', variable: 'متغیر', unexpected: 'پیش‌بینی‌نشده' }
@@ -428,9 +429,13 @@ function computeShares(units, method, amount, opts = {}) {
   let raw
   if (method === 'equal') {
     raw = units.map(u => ({ unit_id: u.id, v: amount / units.length }))
-  } else if (method === 'area' || method === 'occupants' || method === 'common') {
-    // common = نفرات مشاعات؛ اگر برای واحدی تعیین نشده باشد، از نفرات واقعی استفاده می‌شود
-    const val = u => method === 'common' ? (+u.common_units || +u.occupants || 0) : (+u[method === 'area' ? 'area' : 'occupants'] || 0)
+  } else if (method === 'area' || method === 'occupants' || method === 'common' || method === 'occ_common') {
+    // common = نفرات مشاعات؛ occ_common = نفرات + نفرات مشاعات
+    // نکته: در occ_common، واحدِ خالی (بدون ساکن) نفراتش صفر حساب می‌شود و فقط سهمِ مشاعات می‌دهد
+    const val = u => method === 'area' ? (+u.area || 0)
+      : method === 'occupants' ? (+u.occupants || 0)
+      : method === 'common' ? (+u.common_units || +u.occupants || 0)
+      : ((u.occupied ? (+u.occupants || 0) : 0) + (+u.common_units || 0))
     const total = units.reduce((s, u) => s + val(u), 0)
     // اگر مجموع صفر باشد (هنوز وارد نشده)، به تسهیم مساوی برمی‌گردیم تا فاکتور بی‌سهم نماند
     raw = total > 0
@@ -1455,6 +1460,31 @@ function printSummaryHtml(period, showNames) {
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
 }
 
+// صورت‌ریز تقسیم یک فاکتور (به‌ویژه روش نفرات+مشاعات) برای ارائه به مدیر
+function printInvoiceHtml(id) {
+  const inv = db.prepare(`SELECT i.*, c.name category FROM invoices i LEFT JOIN expense_categories c ON c.id=i.category_id WHERE i.id=?`).get(id)
+  if (!inv) return null
+  const combined = inv.method === 'occ_common'
+  const shares = db.prepare(`SELECT s.*, u.number, u.resident_name, u.occupants, u.common_units, u.occupied FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(id)
+    .map(s => { const oc = s.occupied ? (+s.occupants || 0) : 0, cm = +s.common_units || 0, w = oc + cm; const occShare = w > 0 ? Math.round(s.share_amount * oc / w) : 0; return { ...s, oc, cm, occShare, comShare: s.share_amount - occShare } })
+  const U = pUnitFa()
+  const head = combined ? `<th>واحد</th><th>ساکن</th><th>نفرات</th><th>مشاعات</th><th>سهم نفرات</th><th>سهم مشاعات</th><th>سهم کل</th>`
+    : `<th>واحد</th><th>ساکن</th><th>سهم</th>`
+  const rows = shares.map(s => combined
+    ? `<tr><td class="num">${faNum(s.number)}</td><td>${hEsc(s.resident_name || '—')}</td><td class="num">${faNum(s.oc)}</td><td class="num">${faNum(s.cm)}</td><td class="num">${pMoney(s.occShare)}</td><td class="num">${pMoney(s.comShare)}</td><td class="num"><b>${pMoney(s.share_amount)}</b></td></tr>`
+    : `<tr><td class="num">${faNum(s.number)}</td><td>${hEsc(s.resident_name || '—')}</td><td class="num">${pMoney(s.share_amount)}</td></tr>`).join('')
+  const totOcc = shares.reduce((a, s) => a + s.occShare, 0), totCom = shares.reduce((a, s) => a + s.comShare, 0)
+  const inner = `
+    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
+    <div class="sub">صورت‌ریز تقسیم فاکتور: ${hEsc(inv.title)}${inv.category ? ' — ' + hEsc(inv.category) : ''} · تاریخ: ${faNum(inv.j_date)} · روش: ${METHOD_FA[inv.method] || inv.method}${inv.doc_no ? ' · سند: ' + faNum(inv.doc_no) : ''}</div>
+    <div class="big">مبلغ کل فاکتور: ${pMoney(inv.amount)} ${U}${combined ? ` · جمع سهمِ نفرات: ${pMoney(totOcc)} · جمع سهمِ مشاعات: ${pMoney(totCom)}` : ''}</div>
+    <table><thead><tr>${head}</tr></thead><tbody>${rows}
+      <tr class="tot">${combined ? `<td colspan="4">جمع</td><td class="num">${pMoney(totOcc)}</td><td class="num">${pMoney(totCom)}</td><td class="num">${pMoney(inv.amount)}</td>` : `<td colspan="2">جمع</td><td class="num">${pMoney(inv.amount)}</td>`}</tr>
+    </tbody></table>
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+  return printLayout('صورت‌ریز فاکتور — ' + inv.title, inner)
+}
+
 function printExpensesHtml(r) {
   const U = pUnitFa()
   const kpi = (k, v, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`
@@ -2002,6 +2032,23 @@ const server = createServer(async (req, res) => {
       const r = await saveInvoice(null, b, user)
       return r.error ? sendJSON(res, 400, r) : sendJSON(res, 200, r)
     }
+    // ثبت گروهی هزینه‌ها (فرم صندوق‌دار) — هر ردیف یک فاکتور با روش پیش‌فرضِ دسته‌اش
+    if (path === '/api/invoices/batch' && M === 'POST') {
+      const b = await jbody(req)
+      const rows = Array.isArray(b.rows) ? b.rows : []
+      const out = []
+      for (const row of rows) {
+        if (!(row && (row.title || '').trim() && +row.amount > 0)) continue
+        const r = await saveInvoice(null, {
+          title: row.title, categoryId: +row.categoryId, amount: +row.amount,
+          jy: row.jy, jm: row.jm, jd: row.jd, docNo: row.docNo, note: row.note, doc: row.doc
+        }, user)
+        out.push(r.error ? { error: r.error, title: row.title } : { ok: true, id: r.id, title: row.title })
+      }
+      const okN = out.filter(x => x.ok).length
+      if (!okN) return sendJSON(res, 400, { error: 'هیچ ردیف معتبری ثبت نشد', results: out })
+      return sendJSON(res, 200, { ok: true, count: okN, fail: out.length - okN, results: out })
+    }
     const invM = /^\/api\/invoices\/(\d+)$/.exec(path)
     if (invM && M === 'PUT') {
       const b = await jbody(req)
@@ -2019,7 +2066,7 @@ const server = createServer(async (req, res) => {
     if (invGetM && M === 'GET') {
       const inv = db.prepare(`SELECT * FROM invoices WHERE id=?`).get(+invGetM[1])
       if (!inv) return sendJSON(res, 404, { error: 'فاکتور یافت نشد' })
-      const shares = db.prepare(`SELECT s.*, u.number, u.resident_name, u.area, u.occupants, u.occupied
+      const shares = db.prepare(`SELECT s.*, u.number, u.resident_name, u.area, u.occupants, u.common_units, u.occupied
         FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(inv.id)
         .map(s => {
           const paid = shareAllocated(s.id)
@@ -2471,6 +2518,13 @@ const server = createServer(async (req, res) => {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(printExpensesHtml(r))
       }
+      const piM = /^\/print\/invoice\/(\d+)$/.exec(path)
+      if (piM) {
+        const html = printInvoiceHtml(+piM[1])
+        if (!html) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">فاکتور یافت نشد</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(html)
+      }
       const mtM = /^\/print\/meeting\/(\d+)$/.exec(path)
       if (mtM) {
         const html = printMeetingHtml(+mtM[1])
@@ -2530,7 +2584,8 @@ async function saveInvoice(id, b, user) {
   // تاریخ خالی موقع ثبت ⇒ امروز؛ موقع ویرایش ⇒ تاریخ قبلی حفظ می‌شود
   const d = (b.jy || !cur) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }
   if (d.error) return d
-  const units = eligibleUnits(!!includeVacant)
+  // در روش «نفرات+مشاعات»، واحدهای خالی هم وارد می‌شوند (سهمِ مشاعات می‌دهند؛ نفراتشان صفر)
+  const units = eligibleUnits(!!includeVacant || method === 'occ_common')
   if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد (ابتدا واحدها را وارد کنید)' }
 
   let amount = Math.round(+b.amount) || (cur && b.amount == null ? cur.amount : 0)
@@ -2554,19 +2609,20 @@ async function saveInvoice(id, b, user) {
   let docFile = cur ? cur.doc_file : ''
   if (b.doc && b.doc.dataUrl) docFile = await saveDoc(b.doc, 'فاکتورها/' + safeFolder(cat.name))
 
+  const docNo = b.docNo != null ? String(b.docNo).trim() : (cur ? cur.doc_no : '')
   let invId
   if (cur) {
     db.prepare(`UPDATE invoices SET title=?,category_id=?,amount=?,g_date=?,j_date=?,method=?,include_vacant=?,fund_id=?,
-      paid_by_manager=?,expense_kind=?,vendor=?,note=?,doc_file=? WHERE id=?`)
+      paid_by_manager=?,expense_kind=?,vendor=?,note=?,doc_file=?,doc_no=? WHERE id=?`)
       .run(title, catId, amount, d.g_date, d.j_date, method, includeVacant, fundId, paidByManager, kind,
-        b.vendor ?? cur.vendor, b.note ?? cur.note, docFile, id)
+        b.vendor ?? cur.vendor, b.note ?? cur.note, docFile, docNo, id)
     invId = id
   } else {
     invId = Number(db.prepare(`INSERT INTO invoices
-      (title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,status,created_by,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`)
+      (title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,doc_no,status,created_by,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`)
       .run(title, catId, amount, d.g_date, d.j_date, method, includeVacant, fundId, paidByManager, kind,
-        (b.vendor || '').trim(), (b.note || '').trim(), docFile, user.id, nowISO()).lastInsertRowid)
+        (b.vendor || '').trim(), (b.note || '').trim(), docFile, docNo, user.id, nowISO()).lastInsertRowid)
   }
   // مدل تفکیک: ثبت فاکتور فقط تعهد است و پولی از صندوق خارج نمی‌کند.
   // پرداخت هزینه از صندوق جداگانه از بخش «پرداخت از صندوق» انجام می‌شود.

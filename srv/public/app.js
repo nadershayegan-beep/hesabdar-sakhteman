@@ -396,6 +396,7 @@ VIEWS.invoices = async () => {
       async () => { await api(`/api/invoices/${b.dataset.delinv}`, { method: 'DELETE' }); toast('فاکتور حذف شد'); refresh() })
   })
   if ($('#newInv')) $('#newInv').onclick = () => invoiceForm()
+  if ($('#batchInv')) $('#batchInv').onclick = () => batchExpenseForm()
 }
 function debounce(fn, ms) { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms) } }
 
@@ -484,6 +485,45 @@ function invoiceForm(inv) {
   })
 }
 
+// ---------- فرم صندوق‌دار: ثبت گروهی هزینه‌های ماهانه ----------
+function batchExpenseForm() {
+  const cats = (META.categories || []).filter(c => !c.is_charge_cat)
+  if (!cats.length) { toast('اول یک دستهٔ هزینه بسازید', true); return }
+  const docs = {}; let rid = 0
+  const newRow = () => { const i = ++rid; return `<tr data-ber="${i}">
+    <td><input class="inp" id="beT${i}" placeholder="مثلاً نظافت آبان"></td>
+    <td><select class="inp" id="beC${i}">${cats.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></td>
+    <td><input class="inp num beA" data-money="" inputmode="numeric" id="beA${i}" style="max-width:130px"></td>
+    <td><input class="inp num" id="beN${i}" placeholder="سند" style="max-width:80px"></td>
+    <td class="rowact"><button type="button" class="btn tiny" data-bedoc="${i}" title="پیوست سند">📎</button><button type="button" class="btn tiny" data-bedel="${i}">🗑</button></td></tr>` }
+  openModal('🧾 ثبت گروهی هزینه‌ها (صندوق‌دار)', `<div class="form">
+    <label class="f">تاریخ تحویل / ماه${dateBoxHtml('beDate')}</label>
+    <div class="tablewrap"><table class="tx"><thead><tr><th>عنوان هزینه</th><th>دسته</th><th>مبلغ (${curFa()})</th><th>شماره سند</th><th></th></tr></thead><tbody id="beRows">${newRow()}${newRow()}${newRow()}</tbody></table></div>
+    <div style="padding:8px 0"><button type="button" class="btn small" id="beAdd">＋ ردیف</button><span class="hint strong" id="beSum" style="margin-inline-start:10px"></span></div>
+    <p class="hint">هر ردیف یک فاکتور هزینه می‌شود و بر اساس روشِ پیش‌فرضِ دسته بین واحدها تقسیم می‌شود. شمارهٔ سند را روی سند فیزیکی هم بنویسید. 📎 برای پیوست عکس/اسکن سند.</p>
+  </div>`, `<button class="btn primary" id="beSave">ثبت همه</button><button class="btn" id="beCancel">انصراف</button>`)
+  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  const updateSum = () => { let s = 0; document.querySelectorAll('#beRows tr').forEach(tr => { const a = tr.querySelector('.beA'); if (a) s += readMoney(a) }); $('#beSum').textContent = s ? 'جمع: ' + moneyU(s) : '' }
+  const wireRows = () => {
+    document.querySelectorAll('[data-bedel]').forEach(b => b.onclick = () => { if (document.querySelectorAll('#beRows tr').length > 1) { const tr = document.querySelector(`tr[data-ber="${b.dataset.bedel}"]`); delete docs[b.dataset.bedel]; tr.remove(); updateSum() } })
+    document.querySelectorAll('[data-bedoc]').forEach(b => b.onclick = () => { const i = b.dataset.bedoc; const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'image/*,application/pdf'; inp.onchange = guard(async () => { const f = inp.files[0]; if (!f) return; const c = await maybeCompress(f); docs[i] = { name: c.name, dataUrl: await readFileDataUrl(c) }; b.textContent = '✅' }); inp.click() })
+    document.querySelectorAll('.beA').forEach(a => { if (!a.dataset.sum) { a.dataset.sum = '1'; a.addEventListener('input', updateSum) } })
+  }
+  $('#beCancel').onclick = closeModal
+  $('#beAdd').onclick = () => { $('#beRows').insertAdjacentHTML('beforeend', newRow()); wireMoney($('#modalBody')); wireRows() }
+  wireRows()
+  $('#beSave').onclick = guard(async () => {
+    const dt = readDate('beDate'); const rows = []
+    document.querySelectorAll('#beRows tr').forEach(tr => {
+      const i = tr.dataset.ber, title = $('#beT' + i).value.trim(), amount = readMoney($('#beA' + i))
+      if (title && amount > 0) rows.push({ title, categoryId: +$('#beC' + i).value, amount, docNo: $('#beN' + i).value.trim(), jy: dt.jy, jm: dt.jm, jd: dt.jd, doc: docs[i] || null })
+    })
+    if (!rows.length) throw new Error('حداقل یک ردیف با عنوان و مبلغ وارد کنید')
+    const r = await post('/api/invoices/batch', { rows })
+    closeModal(); toast(`${faDigit(r.count)} هزینه ثبت شد${r.fail ? ` (${faDigit(r.fail)} ناموفق)` : ''}`); refresh()
+  })
+}
+
 // ---------- جزئیات فاکتور ----------
 const showInvoice = guard(async id => {
   const d = await api(`/api/invoice/${id}`)
@@ -501,13 +541,16 @@ const showInvoice = guard(async id => {
     <div class="pline"><span>پرداخت از جیب مدیر</span><b>${i.paid_by_manager ? 'بله' : 'خیر'}</b></div>
     ${i.vendor ? `<div class="pline"><span>پیمانکار</span><b>${esc(i.vendor)}</b></div>` : ''}
     ${i.note ? `<div class="pline"><span>توضیح</span><b>${esc(i.note)}</b></div>` : ''}
+    ${i.doc_no ? `<div class="pline"><span>شماره سند</span><b class="num">${escFa(i.doc_no)}</b></div>` : ''}
     ${i.doc_file ? `<div class="pline"><span>سند</span><a class="doclink" href="/uploads/${encodeURI(i.doc_file)}" target="_blank">مشاهده‌ی سند 📎</a></div>` : ''}
-    <h4 style="margin:16px 0 8px">ریز سهم واحدها</h4>
-    <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
-      ${d.shares.map(s => `<tr><td><b>${escFa(s.number)}</b>${s.occupied ? '' : ' <span class="badge b-vacant">خالی</span>'}</td><td>${esc(s.resident_name || '—')}</td>
+    <h4 style="margin:16px 0 8px">ریز سهم واحدها${i.method === 'occ_common' ? ' — تفکیک نفرات و مشاعات' : ''}
+      ${i.method === 'occ_common' ? `<a class="btn tiny" id="invBreakdownPdf" style="float:left">${IS_DESKTOP ? '📄 صورت‌ریز PDF' : '🖨 صورت‌ریز'}</a>` : ''}</h4>
+    <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th>${i.method === 'occ_common' ? '<th>نفرات</th><th>مشاعات</th><th>سهم نفرات</th><th>سهم مشاعات</th>' : ''}<th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
+      ${d.shares.map(s => { const oc = s.occupied ? (+s.occupants || 0) : 0, cm = +s.common_units || 0, w = oc + cm; const occShare = w > 0 ? Math.round(s.share_amount * oc / w) : 0; const comShare = s.share_amount - occShare; return `<tr><td><b>${escFa(s.number)}</b>${s.occupied ? '' : ' <span class="badge b-vacant">خالی</span>'}</td><td>${esc(s.resident_name || '—')}</td>
+        ${i.method === 'occ_common' ? `<td class="num">${faDigit(oc)}</td><td class="num">${faDigit(cm)}</td><td class="num">${money(occShare)}</td><td class="num">${money(comShare)}</td>` : ''}
         <td class="num">${money(s.share_amount)}</td><td class="num amt-in">${money(s.paid)}</td>
-        <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${money(s.remaining)}</td></tr>`).join('')}
-      </tbody><tfoot><tr><td colspan="2">جمع</td><td class="num">${money(i.amount)}</td><td class="num">${money(i.collected)}</td><td class="num">${money(i.remaining)}</td></tr></tfoot></table></div>
+        <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${money(s.remaining)}</td></tr>` }).join('')}
+      </tbody><tfoot><tr><td colspan="${i.method === 'occ_common' ? 6 : 2}">جمع</td><td class="num">${money(i.amount)}</td><td class="num">${money(i.collected)}</td><td class="num">${money(i.remaining)}</td></tr></tfoot></table></div>
     ${d.debtors.length ? `<h4 style="margin:16px 0 8px">بدهکاران این فاکتور (${faDigit(d.debtors.length)})</h4>
       <div class="tablewrap"><table class="tx"><tbody>${d.debtors.map(s => `<tr><td><b>واحد ${escFa(s.number)}</b> ${esc(s.resident_name || '')}</td><td class="num amt-out">${money(s.remaining)}</td></tr>`).join('')}</tbody></table></div>` : ''}
     ${i.payable ? `<h4 style="margin:18px 0 8px">پرداخت این هزینه از صندوق</h4>
@@ -523,6 +566,11 @@ const showInvoice = guard(async id => {
   $('#invClose').onclick = closeModal
   if ($('#invEdit')) $('#invEdit').onclick = () => { closeModal(); invoiceForm(i) }
   if ($('#invPay')) $('#invPay').onclick = () => payExpenseForm(i, d.funds)
+  if ($('#invBreakdownPdf')) $('#invBreakdownPdf').onclick = () => {
+    const rel = '/print/invoice/' + i.id
+    if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت صورت‌ریز…'); window.hesabdar.savePdf(rel, `صورت‌ریز ${i.title}`).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
+    else window.open(rel, '_blank')
+  }
   document.querySelectorAll('[data-delep]').forEach(b => b.onclick = () => confirmBox('این پرداخت از صندوق حذف شود؟ پول به صندوق برمی‌گردد.',
     async () => { await api(`/api/expense-payments/${b.dataset.delep}`, { method: 'DELETE' }); toast('پرداخت حذف شد'); closeModal(); refresh(); showInvoice(i.id) }))
 })
