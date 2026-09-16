@@ -334,8 +334,21 @@ VIEWS.dashboard = async () => {
           <td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td><td class="num amt-out">${money(i.remaining)}</td></tr>`).join('')
         : emptyRow(4, 'فاکتور بازی نیست')}
         </tbody></table></div></div>
-    </div>`
+    </div>
+    <div class="panel"><div class="phead"><b>تفکیک صندوق‌ها</b><span class="hint">ورودی و خرج‌شده از هر صندوق</span><button class="link" data-go="funds">مدیریت صندوق‌ها</button></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>صندوق</th><th>موجودی فعلی</th><th>جمع ورودی</th><th>جمع خرج‌شده</th></tr></thead><tbody>
+      ${(d.fundStats || []).map(x => `<tr><td><b>${esc(x.name)}</b>${x.kindFa ? ` <span class="catpill">${esc(x.kindFa)}</span>` : ''}</td>
+        <td class="num ${x.balance < 0 ? 'amt-out' : 'amt-in'}">${money(x.balance)}</td><td class="num amt-in">${money(x.received)}</td><td class="num amt-out">${money(x.spent)}</td></tr>`).join('') || emptyRow(4, 'صندوقی ثبت نشده')}
+      </tbody></table></div></div>
+    ${(d.projectSummaries && d.projectSummaries.length) ? `<div class="panel"><div class="phead"><b>خلاصهٔ پروژه‌ها — یک نگاه</b><button class="link" data-go="projects">همهٔ پروژه‌ها</button></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>پروژه</th><th>برآورد مصوب</th><th>هزینهٔ واقعی</th><th>وصول از ساکنین</th><th>بدهی ساکنین</th><th>سهم واقعی هر واحد</th><th>مازاد/کسری صندوق</th></tr></thead><tbody>
+      ${d.projectSummaries.map(s => `<tr class="clickable" data-proj="${s.id}"><td><b>${esc(s.title)}</b> <span class="badge ${projStatusCls(s.status)}">${esc(s.statusFa)}</span></td>
+        <td class="num">${money(s.budget)}</td><td class="num">${money(s.netCost)}</td><td class="num amt-in">${money(s.collected)}</td>
+        <td class="num ${s.debt > 0 ? 'amt-out' : ''}">${money(s.debt)}</td><td class="num">${money(s.perUnitFinal)}</td>
+        <td class="num">${s.fundBalance >= 0 ? `<span class="amt-in">مازاد ${money(s.fundBalance)}</span>` : `<span class="amt-out">کسری ${money(-s.fundBalance)}</span>`}</td></tr>`).join('')}
+      </tbody></table></div></div>` : ''}`
   wireCommon()
+  document.querySelectorAll('[data-proj]').forEach(c => c.onclick = () => showProject(+c.dataset.proj))
   if ($('#issueAll')) $('#issueAll').onclick = guard(async () => {
     for (const m of missing) await post('/api/charge/issue', { period: m.period })
     toast('شارژ ماه‌های جامانده صادر شد'); refresh()
@@ -1967,11 +1980,18 @@ const PROJECT_STATUS_FA = { proposed: 'پیشنهادی', approved: 'تصویب�
 const projStatusCls = s => ({ approved: 'b-ok', in_progress: 'b-open', done: 'b-done', canceled: 'b-no', proposed: 'b-open' }[s] || 'b-open')
 
 function projectCard(p) {
+  const s = p.summary
   return `<button class="pcard" data-proj="${p.id}">
     <div class="pctop"><span class="pn">${esc(p.title)}</span><span class="badge ${projStatusCls(p.status)}">${esc(p.statusFa)}</span></div>
-    ${p.budget ? `<div class="pline"><span>بودجه مصوب</span><b class="num">${money(p.budget)} ${curFa()}</b></div>` : ''}
-    <div class="pline"><span>استعلام‌ها</span><b class="num">${faDigit(p.quoteCount)}</b></div>
-    ${p.selectedAmount ? `<div class="pline"><span>مبلغ انتخابی</span><b class="num amt-in">${money(p.selectedAmount)} ${curFa()}</b></div>` : ''}
+    ${p.budget ? `<div class="pline"><span>برآورد مصوب</span><b class="num">${money(p.budget)} ${curFa()}</b></div>` : ''}
+    ${s && s.hasCharge ? `
+      <div class="pline"><span>هزینهٔ واقعی</span><b class="num">${money(s.netCost)}</b></div>
+      <div class="pline"><span>وصول از ساکنین</span><b class="num amt-in">${money(s.collected)}</b></div>
+      <div class="pline"><span>بدهی ساکنین</span><b class="num ${s.debt > 0 ? 'amt-out' : ''}">${money(s.debt)}</b></div>
+      <div class="pline"><span>سهم واقعی هر واحد</span><b class="num">${money(s.perUnitFinal)}</b></div>
+      <div class="pline"><span>صندوق پروژه</span>${s.fundBalance >= 0 ? `<b class="num amt-in">مازاد ${money(s.fundBalance)}</b>` : `<b class="num amt-out">کسری ${money(-s.fundBalance)}</b>`}</div>`
+    : `<div class="pline"><span>استعلام‌ها</span><b class="num">${faDigit(p.quoteCount)}</b></div>
+    ${p.selectedAmount ? `<div class="pline"><span>مبلغ انتخابی</span><b class="num amt-in">${money(p.selectedAmount)} ${curFa()}</b></div>` : ''}`}
     ${p.decisionTitle ? `<div class="pfoot">📋 مصوبه: ${esc(p.decisionTitle)}</div>` : ''}</button>`
 }
 VIEWS.projects = async () => {
@@ -2019,14 +2039,15 @@ const showProject = guard(async id => {
         ${d.reconciled ? kpi('مبلغ نهایی مخارج', money(d.box.final.total), 'انحراف از برآورد: ' + signed(d.box.final.deviation) + ' · سهم نهایی هر واحد: ' + money(d.box.final.perUnit), d.box.final.deviation > 0 ? 'warn' : 'good') : ''}
       </div>
       ${d.reconciled ? `<div class="notice printhide" style="border-color:${d.box.fund.balance >= 0 ? 'var(--accent)' : 'var(--out)'}">جمع‌بندی صندوقِ پروژه: وصول ${money(d.box.fund.collected)} − مخارج نهایی ${money(d.box.fund.finalCost)} = ${d.box.fund.balance >= 0 ? `<b class="amt-in">صندوق بستانکار (مازاد) ${money(d.box.fund.balance)}</b>` : `<b class="amt-out">صندوق بدهکار (کسری) ${money(-d.box.fund.balance)}</b>`} ${curFa()}</div>` : ''}
-      <div class="tablewrap"><table class="tx"><thead><tr><th>ردیف</th><th>واحد</th><th>ساکن</th><th>سهم برآوردی</th>${d.reconciled ? '<th>سهم نهایی</th>' : ''}<th>پرداختی</th><th>${d.reconciled ? 'بدهی/بستانکار (نسبت به نهایی)' : 'بدهی/بستانکار (نسبت به برآورد)'}</th>${adminOnly('<th></th>')}</tr></thead><tbody>
-      ${d.chargeShares.map(s => { const bal = d.reconciled ? s.balByFinal : s.balByBudget; return `<tr>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>ردیف</th><th>واحد</th><th>ساکن</th><th>سهم مصوبه</th>${d.reconciled ? '<th>سهم نهایی (مخارج)</th>' : ''}<th>پرداختی</th><th>بدهی/طلب طبق مصوبه</th>${d.reconciled ? '<th>بدهی/طلب طبق مخارج</th>' : ''}${adminOnly('<th></th>')}</tr></thead><tbody>
+      ${d.chargeShares.map(s => { const badge = v => v > 0 ? `<span class="badge b-no">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="badge b-done">طلبکار ${money(-v)}</span>` : `<span class="badge b-ok">تسویه</span>`; return `<tr>
         <td class="num">${faDigit(s.row)}</td><td><b>واحد ${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
         <td class="num">${money(s.budgetShare)}</td>${d.reconciled ? `<td class="num">${money(s.finalShare)}</td>` : ''}
         <td class="num amt-in">${money(s.paid)}</td>
-        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">طلبکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td>
+        <td>${badge(s.balByBudget)}</td>${d.reconciled ? `<td>${badge(s.balByFinal)}</td>` : ''}
         ${adminOnly(`<td class="rowact"><button class="btn tiny" data-pjpay="${s.unit_id}" title="ثبت پرداخت این واحد">＋ پرداخت</button></td>`)}</tr>` }).join('')}
       </tbody></table></div>
+      ${d.reconciled ? `<div class="hint" style="margin-top:4px">«طبق مصوبه» = آنچه هر واحد باید بدهد (برآورد اولیه). «طبق مخارج» = نسبت به هزینهٔ واقعی؛ اگر واحدی مصوبه را کامل داده، مازادش طلبِ او از صندوق است.</div>` : ''}
       ${adminOnly(`<div style="padding:10px 0 0; display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn small" id="pjChargeEdit">✏️ ویرایش مبلغ شارژ</button>
         <button class="btn small primary" id="pjReconcile">✅ اتمام و ثبت کامل هزینه‌ها</button></div>`)}`
