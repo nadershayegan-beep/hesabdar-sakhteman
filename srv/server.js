@@ -408,9 +408,10 @@ const listUnits = (onlyActive = false) =>
   db.prepare(`SELECT * FROM units ${onlyActive ? 'WHERE active=1' : ''} ORDER BY active DESC, floor, CAST(number AS INTEGER), number, id`).all()
 const unitLabel = u => u ? `واحد ${u.number}${u.resident_name ? ' — ' + u.resident_name : ''}` : '—'
 
-// واحدهای مشمول یک فاکتور: فعال، و اگر واحد خالی معاف باشد فقط واحدهای پر
-const eligibleUnits = includeVacant =>
-  db.prepare(`SELECT * FROM units WHERE active=1 ${includeVacant ? '' : 'AND occupied=1'} ORDER BY id`).all()
+// واحدهای مشمول یک فاکتور: همه‌ی واحدهای فعال.
+// «خالی» بودن واحد فقط در روش‌های مصرفی (نفرات) سهمش را صفر می‌کند؛ در مساوی/متراژ/عمرانی کامل سهم می‌دهد.
+const eligibleUnits = () =>
+  db.prepare(`SELECT * FROM units WHERE active=1 ORDER BY id`).all()
 
 // ---------- مبلغ شارژ ----------
 function chargeAmountAt(period) {
@@ -433,7 +434,7 @@ function computeShares(units, method, amount, opts = {}) {
     // common = نفرات مشاعات؛ occ_common = نفرات + نفرات مشاعات
     // نکته: در occ_common، واحدِ خالی (بدون ساکن) نفراتش صفر حساب می‌شود و فقط سهمِ مشاعات می‌دهد
     const val = u => method === 'area' ? (+u.area || 0)
-      : method === 'occupants' ? (+u.occupants || 0)
+      : method === 'occupants' ? (u.occupied ? (+u.occupants || 0) : 0)
       : method === 'common' ? (+u.common_units || +u.occupants || 0)
       : ((u.occupied ? (+u.occupants || 0) : 0) + (+u.common_units || 0))
     const total = units.reduce((s, u) => s + val(u), 0)
@@ -1215,11 +1216,12 @@ function projectInvoices(pid) {
 }
 // هزینهٔ واقعی خالص پروژه = جمع خریدها − جمع فروش‌ها
 function projectNetCost(pid) {
-  const r = db.prepare(`SELECT COALESCE(SUM(CASE WHEN kind='sale' THEN -amount ELSE amount END),0) net,
+  const r = db.prepare(`SELECT
     COALESCE(SUM(CASE WHEN kind='sale' THEN 0 ELSE amount END),0) buy,
     COALESCE(SUM(CASE WHEN kind='sale' THEN amount ELSE 0 END),0) sell,
-    COALESCE(SUM(CASE WHEN paid=1 THEN (CASE WHEN kind='sale' THEN -amount ELSE amount END) ELSE 0 END),0) paidNet FROM contractor_invoices WHERE project_id=?`).get(pid)
-  return { net: r.net, purchase: r.buy, sale: r.sell, paid: r.paidNet }
+    COALESCE(SUM(CASE WHEN kind!='sale' AND paid=1 THEN amount ELSE 0 END),0) buyPaid
+    FROM contractor_invoices WHERE project_id=?`).get(pid)
+  return { net: r.buy - r.sell, purchase: r.buy, sale: r.sell, paid: r.buyPaid, outstanding: r.buy - r.buyPaid }
 }
 // فاکتور شارژِ ساکنین برای یک پروژه (is_billing=1، لینک‌شده به پروژه)
 const projectChargeInvoice = pid => db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_billing=1 ORDER BY id DESC LIMIT 1`).get(pid)
@@ -1235,31 +1237,39 @@ function setProjectCharge(project, { method, includeVacant, amount, payer, charg
   if (!METHODS.includes(method) || method === 'custom' || method === 'per_unit_charge') return { error: 'روش تقسیم نامعتبر است' }
   const py = payer === 'owner' ? 'owner' : 'tenant'
   const ck = chargeKind === 'current' ? 'current' : 'operational'
-  const units = eligibleUnits(!!includeVacant)
-  if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد' }
-  const shares = computeShares(units, method, amt, {})
   db.prepare(`UPDATE projects SET charge_kind=? WHERE id=?`).run(ck, project.id)
   const inv = projectChargeInvoice(project.id)
   if (inv) {
-    db.prepare(`UPDATE invoices SET amount=?,method=?,include_vacant=?,payer=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, includeVacant ? 1 : 0, py, d.g_date, d.j_date, inv.id)
+    // ویرایش: روی همان واحدهایی که از ابتدا شارژ شده‌اند بازمحاسبه شود (حذف نشوند)
+    const units = invoiceUnits(inv.id)
+    if (!units.length) return { error: 'شارژ این پروژه واحدی ندارد' }
+    const shares = computeShares(units, method, amt, {})
+    db.prepare(`UPDATE invoices SET amount=?,method=?,payer=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, py, d.g_date, d.j_date, inv.id)
     writeShares(inv.id, shares)
     return { ok: true, invoiceId: inv.id, amount: amt, updated: true }
   }
+  const units = eligibleUnits(!!includeVacant)
+  if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد' }
+  const shares = computeShares(units, method, amt, {})
   const id = Number(db.prepare(`INSERT INTO invoices(title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,status,is_charge,is_billing,project_id,payer,created_by,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,'open',0,1,?,?,?,?)`)
     .run(`شارژ پروژه: ${project.title}`, 0, amt, d.g_date, d.j_date, method, includeVacant ? 1 : 0, 0, 0, 'variable', '', '', '', project.id, py, userId, nowISO()).lastInsertRowid)
   writeShares(id, shares)
   return { ok: true, invoiceId: id, amount: amt }
 }
+// واحدهایی که هم‌اکنون در یک فاکتور سهم دارند (مجموعهٔ ثابتِ همان فاکتور)
+const invoiceUnits = invId => db.prepare(`SELECT u.* FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(invId)
 // اتمام و ثبت کامل هزینه‌ها: شارژِ ساکنین روی هزینهٔ واقعیِ نهایی تنظیم و سهم هر واحد بازمحاسبه می‌شود
 // مبنا: مبلغ نهاییِ دستی (اگر وارد شده) وگرنه هزینهٔ خالصِ فاکتورهای پروژه (خرید − فروش)
+// مهم: فقط روی همان واحدهایی که از ابتدا شارژ شده‌اند بازمحاسبه می‌شود؛ تغییرِ بعدیِ خالی/فعال واحد، آن را از پروژه حذف نمی‌کند
 function reconcileProjectCharge(project) {
   const inv = projectChargeInvoice(project.id)
   if (!inv) return { error: 'اول شارژ پروژه را صادر کنید' }
   const net = projectNetCost(project.id).net
   const fa = Math.round(project.final_amount || 0) || net
   if (!(fa > 0)) return { error: 'ابتدا فاکتورهای پروژه را ثبت کنید یا «مبلغ نهایی» را وارد کنید' }
-  const units = eligibleUnits(!!inv.include_vacant)
+  const units = invoiceUnits(inv.id)
+  if (!units.length) return { error: 'شارژ این پروژه واحدی ندارد' }
   const shares = computeShares(units, inv.method, fa, {})
   db.prepare(`UPDATE invoices SET amount=? WHERE id=?`).run(fa, inv.id)
   writeShares(inv.id, shares)
@@ -1274,13 +1284,32 @@ function projectDetail(id) {
   const chargeCollected = charge ? invoiceCollected(charge.id) : 0
   const nc = projectNetCost(id)
   const finalBasis = (p.final_amount || 0) || nc.net
+  const reconciled = p.status === 'done' && !!charge
+  const chargedU = charge ? invoiceUnits(charge.id) : []
+  const n = chargedU.length || 1
+  // سهم برآوردی و نهاییِ هر واحد (روی همان واحدهای شارژشده)
+  const bMap = charge && p.budget ? Object.fromEntries(computeShares(chargedU, charge.method, p.budget, {}).map(s => [s.unit_id, s.share_amount])) : {}
+  const fMap = charge && finalBasis ? Object.fromEntries(computeShares(chargedU, charge.method, finalBasis, {}).map(s => [s.unit_id, s.share_amount])) : {}
+  const chargeShares = projectChargeShares(charge).map((s, i) => {
+    const budgetShare = bMap[s.unit_id] || 0, finalShare = fMap[s.unit_id] || 0
+    return { ...s, row: i + 1, budgetShare, finalShare, balByBudget: budgetShare - s.paid, balByFinal: finalShare - s.paid }
+  })
+  const residentDebt = chargeShares.reduce((a, s) => a + Math.max(0, s.remaining), 0)
   return {
     project: projectRow(p), quotes: projectQuotes(id), invoices, attachments: listAttachments('project', id),
     invoiceTotal: nc.net, purchaseTotal: nc.purchase, saleTotal: nc.sale, invoicePaid: nc.paid,
-    finalAmount: p.final_amount || 0, netCost: nc.net, finalBasis,
+    finalAmount: p.final_amount || 0, netCost: nc.net, finalBasis, reconciled,
     deviation: finalBasis && p.budget ? (finalBasis - p.budget) : 0,
     charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, payer: charge.payer, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: charge.amount - chargeCollected } : null,
-    chargeShares: projectChargeShares(charge)
+    chargeShares,
+    // دادهٔ کارت‌ها
+    box: {
+      estimate: { total: p.budget || 0, perUnit: p.budget ? Math.round(p.budget / n) : 0 },
+      collection: { collected: chargeCollected, debt: residentDebt },
+      expenses: { total: nc.purchase, paid: nc.paid, outstanding: nc.outstanding, sale: nc.sale },
+      final: { total: finalBasis, deviation: finalBasis && p.budget ? finalBasis - p.budget : 0, perUnit: finalBasis ? Math.round(finalBasis / n) : 0 },
+      fund: { collected: chargeCollected, finalCost: finalBasis, balance: chargeCollected - finalBasis }
+    }
   }
 }
 // گزارش‌ها: خرجِ هر پروژه و هر پیمانکار (فقط بایگانی — روی صندوق اثری ندارد)

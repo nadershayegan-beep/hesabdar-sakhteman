@@ -708,7 +708,7 @@ function bulkPaymentForm() {
   })
 }
 
-function paymentForm(presetUnit, pay) {
+function paymentForm(presetUnit, pay, after) {
   const store = { doc: null }
   const units = META.units.filter(u => u.active || (pay && u.id === pay.unit_id))
   const selUnit = pay ? pay.unit_id : presetUnit
@@ -754,14 +754,14 @@ function paymentForm(presetUnit, pay) {
     }
     if (pay) {
       await post(`/api/payments/${pay.id}`, payload, 'PUT')
-      closeModal(); toast('دریافتی ویرایش شد'); refresh(); return
+      closeModal(); toast('دریافتی ویرایش شد'); after ? after() : refresh(); return
     }
     const invoiceIds = [...$('#pyOpen').querySelectorAll('input[type=checkbox]:checked')].map(c => +c.dataset.inv)
     payload.invoiceIds = invoiceIds.length ? invoiceIds : null
     const r = await post('/api/payments', payload)
     closeModal()
     toast(r.credit > 0 ? `ثبت شد — ${moneyU(r.allocated)} تسویه و ${moneyU(r.credit)} بستانکار شد` : `دریافتی ثبت و ${moneyU(r.allocated)} تسویه شد`)
-    refresh()
+    after ? after() : refresh()
   })
 }
 
@@ -1970,20 +1970,24 @@ const showProject = guard(async id => {
   const p = d.project, refresh = () => showProject(id)
   $('#view').innerHTML =
     `<button class="btn small back printhide" id="backBtn">→ بازگشت به پروژه‌ها</button>` +
-    head('پروژه: ' + p.title, `${p.statusFa}${p.budget ? ` · برآورد اولیه: ${money(p.budget)} ${curFa()}` : ''}${d.finalAmount ? ` · نهایی: ${money(d.finalAmount)} · انحراف: ${signed(d.deviation)}` : ''}${p.decisionTitle ? ` · مصوبه: ${p.decisionTitle}` : ''}`,
-      adminOnly(`<button class="btn primary" id="pjQuote">＋ استعلام</button><button class="btn" id="pjEdit">✏️ ویرایش</button><button class="btn danger" id="pjDel">🗑 حذف</button>`)) +
+    head('پروژه: ' + p.title, `${p.statusFa}${p.budget ? ` · برآورد اولیه: ${money(p.budget)} ${curFa()}` : ''}${d.reconciled ? ` · نهایی: ${money(d.finalBasis)} · انحراف: ${signed(d.deviation)}` : ''}${p.decisionTitle ? ` · مصوبه: ${p.decisionTitle}` : ''}`,
+      `<button class="btn" id="pjReport">📄 گزارش پروژه</button>` + adminOnly(`<button class="btn primary" id="pjQuote">＋ استعلام</button><button class="btn" id="pjEdit">✏️ ویرایش</button><button class="btn danger" id="pjDel">🗑 حذف</button>`)) +
     (p.note ? `<div class="panel" style="padding:12px 16px">${esc(p.note).replace(/\n/g, '<br>')}</div>` : '') +
-    `<div class="panel"><div class="phead"><b>شارژ ساکنین (شارژ عمرانی پروژه)</b>
-      <span class="hint">برآورد اولیه: ${money(p.budget)} ${curFa()}${d.finalAmount ? ` · نهایی: ${money(d.finalAmount)} · انحراف: ${signed(d.deviation)}` : ''}</span></div>
+    `<div class="panel"><div class="phead"><b>وضعیت مالی پروژه</b><span class="hint">روش تقسیم: ${d.charge ? d.charge.methodFa : '—'}${d.charge ? ' · بر عهدهٔ ' + (d.charge.payer === 'owner' ? 'مالک' : 'مستاجر') : ''}</span></div>
       ${d.charge ? `<div class="kpis">
-        ${kpi('مبلغ شارژ فعلی', money(d.charge.amount), 'روش: ' + d.charge.methodFa)}
-        ${kpi('وصول‌شده', money(d.charge.collected), '', 'good')}
-        ${kpi('مانده بدهی ساکنین', money(d.charge.remaining), '', d.charge.remaining > 0 ? 'bad' : 'good')}
+        ${kpi('برآورد اولیه', money(d.box.estimate.total), 'سهم هر واحد: ' + money(d.box.estimate.perUnit))}
+        ${kpi('وصول از ساکنین', money(d.box.collection.collected), 'مانده بدهی ساکنین: ' + money(d.box.collection.debt), 'good')}
+        ${kpi('مخارج کلی پروژه', money(d.box.expenses.total), 'پرداخت به پیمانکار: ' + money(d.box.expenses.paid) + ' · مانده طلب: ' + money(d.box.expenses.outstanding), 'bad')}
+        ${d.reconciled ? kpi('مبلغ نهایی مخارج', money(d.box.final.total), 'انحراف از برآورد: ' + signed(d.box.final.deviation) + ' · سهم نهایی هر واحد: ' + money(d.box.final.perUnit), d.box.final.deviation > 0 ? 'warn' : 'good') : ''}
       </div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
-      ${d.chargeShares.map(s => { const bal = s.share - s.paid; return `<tr><td><b>${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
-        <td class="num">${money(s.share)}</td><td class="num amt-in">${money(s.paid)}</td>
-        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">بستانکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td></tr>` }).join('')}
+      ${d.reconciled ? `<div class="notice printhide" style="border-color:${d.box.fund.balance >= 0 ? 'var(--accent)' : 'var(--out)'}">جمع‌بندی صندوقِ پروژه: وصول ${money(d.box.fund.collected)} − مخارج نهایی ${money(d.box.fund.finalCost)} = ${d.box.fund.balance >= 0 ? `<b class="amt-in">صندوق بستانکار (مازاد) ${money(d.box.fund.balance)}</b>` : `<b class="amt-out">صندوق بدهکار (کسری) ${money(-d.box.fund.balance)}</b>`} ${curFa()}</div>` : ''}
+      <div class="tablewrap"><table class="tx"><thead><tr><th>ردیف</th><th>واحد</th><th>ساکن</th><th>سهم برآوردی</th>${d.reconciled ? '<th>سهم نهایی</th>' : ''}<th>پرداختی</th><th>${d.reconciled ? 'بدهی/بستانکار (نسبت به نهایی)' : 'بدهی/بستانکار (نسبت به برآورد)'}</th>${adminOnly('<th></th>')}</tr></thead><tbody>
+      ${d.chargeShares.map(s => { const bal = d.reconciled ? s.balByFinal : s.balByBudget; return `<tr>
+        <td class="num">${faDigit(s.row)}</td><td><b>واحد ${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
+        <td class="num">${money(s.budgetShare)}</td>${d.reconciled ? `<td class="num">${money(s.finalShare)}</td>` : ''}
+        <td class="num amt-in">${money(s.paid)}</td>
+        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">بستانکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td>
+        ${adminOnly(`<td class="rowact"><button class="btn tiny" data-pjpay="${s.unit_id}" title="ثبت پرداخت این واحد">＋ پرداخت</button></td>`)}</tr>` }).join('')}
       </tbody></table></div>
       ${adminOnly(`<div style="padding:10px 0 0; display:flex; gap:8px; flex-wrap:wrap">
         <button class="btn small" id="pjChargeEdit">✏️ ویرایش مبلغ شارژ</button>
@@ -2004,6 +2008,12 @@ const showProject = guard(async id => {
       <div class="hint" style="margin-top:6px">این فاکتورها فقط بایگانی می‌شوند و روی موجودی صندوق‌ها اثری ندارند.</div></div>
     <div class="panel"><div class="phead"><b>اسناد پروژه</b></div>${attachRow({ id: p.id, attachments: d.attachments }, 'project')}</div>`
   $('#backBtn').onclick = () => { VIEW = 'projects'; render() }
+  if ($('#pjReport')) $('#pjReport').onclick = () => {
+    const rel = '/print/expenses?mode=project&projectId=' + id
+    if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت گزارش…'); window.hesabdar.savePdf(rel, `گزارش پروژه ${p.title}`).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
+    else window.open(rel, '_blank')
+  }
+  document.querySelectorAll('[data-pjpay]').forEach(b => b.onclick = () => paymentForm(+b.dataset.pjpay, null, refresh))
   if ($('#pjQuote')) $('#pjQuote').onclick = () => quoteForm(id, null, refresh)
   if ($('#pjEdit')) $('#pjEdit').onclick = () => projectForm(p, refresh)
   if ($('#pjChargeNew')) $('#pjChargeNew').onclick = () => projectChargeForm(p, null, refresh)
@@ -2073,16 +2083,15 @@ function projectChargeForm(project, charge, after) {
       <label class="f">بر عهدهٔ<select class="inp" id="pcPayer"><option value="owner" ${(charge ? charge.payer : 'owner') === 'owner' ? 'selected' : ''}>مالک</option><option value="tenant" ${charge && charge.payer === 'tenant' ? 'selected' : ''}>مستاجر / ساکن</option></select></label>
       <label class="f">نوع هزینه<select class="inp" id="pcKind"><option value="operational" ${(project.charge_kind || 'operational') === 'operational' ? 'selected' : ''}>عملیاتی (پروژه‌ای)</option><option value="current" ${project.charge_kind === 'current' ? 'selected' : ''}>جاری</option></select></label>
     </div>
-    <label class="check"><input type="checkbox" id="pcVacant" ${charge && charge.includeVacant ? 'checked' : ''}> واحدهای خالی هم سهم بدهند</label>
     <label class="f">تاریخ${dateBoxHtml('pc')}</label>
-    <p class="hint">با ذخیره، بدهی همه‌ی واحدها بر اساس روش انتخابی بازمحاسبه می‌شود؛ پرداخت‌های قبلی حفظ می‌مانند. برای «تقسیم مشاعات»، نفرات مشاعاتِ هر واحد را در بخش واحدها تعیین کنید.</p>
+    <p class="hint">شارژ بین همه‌ی واحدها تقسیم می‌شود (واحد خالی هم سهم عمرانی می‌دهد). با ذخیره، سهم هر واحد بازمحاسبه می‌شود؛ پرداخت‌های قبلی حفظ می‌مانند.</p>
   </div>`, `<button class="btn primary" id="pcSave">ذخیره</button><button class="btn" id="pcCancel">انصراف</button>`)
   wireToday($('#modalBody')); wireMoney($('#modalBody'))
   $('#pcCancel').onclick = closeModal
   $('#pcSave').onclick = guard(async () => {
     const amount = readMoney($('#pcAmount')); if (!(amount > 0)) throw new Error('مبلغ را وارد کنید')
     const dt = readDate('pc')
-    await post('/api/projects/' + project.id + '/charge', { amount, method: $('#pcMethod').value, payer: $('#pcPayer').value, chargeKind: $('#pcKind').value, includeVacant: $('#pcVacant').checked, jy: dt.jy, jm: dt.jm, jd: dt.jd })
+    await post('/api/projects/' + project.id + '/charge', { amount, method: $('#pcMethod').value, payer: $('#pcPayer').value, chargeKind: $('#pcKind').value, includeVacant: true, jy: dt.jy, jm: dt.jm, jd: dt.jd })
     closeModal(); toast(charge ? 'شارژ به‌روزرسانی شد' : 'شارژ صادر شد'); after ? after() : render()
   })
 }
