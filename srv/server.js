@@ -1329,15 +1329,26 @@ function vendorsReport() {
 // گزارش حرفه‌ای هزینه‌کرد — سه حالت: بازه‌ی تاریخ | پروژه | انتخاب فاکتورها
 const gToJStr = g => { if (!g) return ''; const [y, m, d] = g.split('-').map(Number); const j = toJalaali(y, m, d); return jStr(j.jy, j.jm, j.jd) }
 function expensesReport(opts) {
-  let invRows = [], project = null, contractor = null, scopeLabel = ''
+  let invRows = [], project = null, contractor = null, scopeLabel = '', projInvoices = null
   if (opts.mode === 'project' && +opts.projectId) {
     const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+opts.projectId)
     if (!p) return { error: 'پروژه یافت نشد' }
-    invRows = db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_opening=0 ORDER BY id`).all(p.id)
-    const ci = db.prepare(`SELECT COALESCE(SUM(amount),0) t, COALESCE(SUM(CASE WHEN paid=1 THEN amount ELSE 0 END),0) paid FROM contractor_invoices WHERE project_id=?`).get(p.id)
-    contractor = { total: ci.t, paid: ci.paid, outstanding: ci.t - ci.paid }
-    project = { title: p.title, budget: p.budget, finalAmount: p.final_amount || 0, deviation: (p.final_amount || 0) && p.budget ? (p.final_amount - p.budget) : 0 }
+    const nc = projectNetCost(p.id)
+    contractor = { total: nc.purchase, paid: nc.paid, outstanding: nc.outstanding, sale: nc.sale }
+    const finalBasis = p.final_amount || nc.net
+    project = { title: p.title, budget: p.budget, finalAmount: finalBasis, deviation: finalBasis && p.budget ? (finalBasis - p.budget) : 0 }
     scopeLabel = 'پروژه: ' + p.title
+    // ریز فاکتورها در حالت پروژه = فاکتورهای خرید/فروش پیمانکار (هزینه‌های واقعی)
+    const ciRows = db.prepare(`SELECT * FROM contractor_invoices WHERE project_id=? ORDER BY id`).all(p.id)
+    projInvoices = ciRows.map(c => ({
+      id: c.id, title: c.title || (c.kind === 'sale' ? 'فروش' : 'خرید'),
+      category: c.vendor_name || (c.kind === 'sale' ? 'فروش/داغی' : 'پیمانکار'),
+      j_date: c.j_date, methodFa: c.note ? c.note : (c.kind === 'sale' ? 'درآمد' : 'هزینه'),
+      amount: c.amount, collected: c.paid ? c.amount : 0, remaining: c.paid ? 0 : c.amount, isSale: c.kind === 'sale'
+    }))
+    // تفکیک هر واحد از فاکتور شارژ ساکنین
+    const chargeInv = projectChargeInvoice(p.id)
+    invRows = chargeInv ? [chargeInv] : []
   } else if (opts.mode === 'invoices' && opts.ids) {
     const ids = String(opts.ids).split(',').map(Number).filter(Boolean)
     invRows = ids.length ? db.prepare(`SELECT * FROM invoices WHERE id IN (${ids.map(() => '?').join(',')}) AND is_opening=0`).all(...ids) : []
@@ -1347,12 +1358,15 @@ function expensesReport(opts) {
     invRows = db.prepare(`SELECT * FROM invoices WHERE is_opening=0 AND g_date>=? AND g_date<=? ORDER BY g_date, id`).all(from, to)
     scopeLabel = `بازه‌ی ${gToJStr(from)} تا ${gToJStr(to)}`
   }
-  const invoices = invRows.map(inv => {
+  const invoices = projInvoices || invRows.map(inv => {
     const collected = invoiceCollected(inv.id)
     const cat = inv.category_id ? ((db.prepare(`SELECT name FROM expense_categories WHERE id=?`).get(inv.category_id) || {}).name || '') : ''
     return { id: inv.id, title: inv.title, category: cat || '—', j_date: inv.j_date, methodFa: METHOD_FA[inv.method] || inv.method, amount: inv.amount, collected, remaining: inv.amount - collected, isBilling: !!inv.is_billing }
   })
-  const totals = { amount: invoices.reduce((s, i) => s + i.amount, 0), collected: invoices.reduce((s, i) => s + i.collected, 0), remaining: invoices.reduce((s, i) => s + i.remaining, 0) }
+  // در حالت پروژه جمعِ ریز فاکتورها = خالص (خرید − فروش)
+  const totals = projInvoices
+    ? { amount: invoices.reduce((s, i) => s + (i.isSale ? -i.amount : i.amount), 0), collected: invoices.reduce((s, i) => s + (i.isSale ? -i.collected : i.collected), 0), remaining: invoices.reduce((s, i) => s + (i.isSale ? -i.remaining : i.remaining), 0) }
+    : { amount: invoices.reduce((s, i) => s + i.amount, 0), collected: invoices.reduce((s, i) => s + i.collected, 0), remaining: invoices.reduce((s, i) => s + i.remaining, 0) }
   const um = {}
   for (const inv of invRows)
     for (const s of db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(inv.id)) {
@@ -1364,6 +1378,7 @@ function expensesReport(opts) {
     .sort((a, b) => numOf(a.number) - numOf(b.number))
   return {
     scopeLabel, invoices, totals, units, project, contractor,
+    residentCollected: projInvoices ? units.reduce((s, u) => s + u.paid, 0) : totals.collected,
     unitDebt: units.reduce((s, u) => s + Math.max(0, u.balance), 0),
     unitCredit: units.reduce((s, u) => s + Math.max(0, -u.balance), 0),
     buildingName: getSetting('buildingName'), today: (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
@@ -1522,7 +1537,7 @@ function printExpensesHtml(r) {
     <div class="sub">گزارش هزینه‌کرد و شفاف‌سازی · ${hEsc(r.scopeLabel)} · تاریخ صدور: ${faNum(r.today)}</div>
     <div class="kpis">
       ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
-      ${kpi('وصول از ساکنین', pMoney(r.totals.collected) + ' ' + U, 'ok')}
+      ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U, 'ok')}
       ${kpi('مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
       ${r.unitCredit ? kpi('بستانکاری ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
@@ -1531,8 +1546,8 @@ function printExpensesHtml(r) {
     ${r.project ? `<div class="big" style="font-size:13px">مسیر مالی پروژه: برآورد اولیه <b>${pMoney(r.project.budget)}</b> ← مبلغ نهایی <b>${pMoney(r.project.finalAmount)}</b> ${r.project.deviation ? `· انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${r.project.deviation > 0 ? '+' : '−'}${pMoney(Math.abs(r.project.deviation))}</b>` : ''} ${U}</div>` : ''}
     <div class="sech">ریز فاکتورها — بابت چه چیزی</div>
     <table><thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
-    ${r.invoices.length ? r.invoices.map(i => `<tr><td>${hEsc(i.title)}</td><td>${hEsc(i.category)}</td><td class="num">${i.j_date ? faNum(i.j_date) : '—'}</td>
-      <td>${hEsc(i.methodFa)}</td><td class="num">${pMoney(i.amount)}</td><td class="num amt-in">${pMoney(i.collected)}</td><td class="num amt-out">${pMoney(i.remaining)}</td></tr>`).join('')
+    ${r.invoices.length ? r.invoices.map(i => `<tr><td>${hEsc(i.title)}${i.isSale ? ' <span class="amt-in">(فروش)</span>' : ''}</td><td>${hEsc(i.category)}</td><td class="num">${i.j_date ? faNum(i.j_date) : '—'}</td>
+      <td>${hEsc(i.methodFa)}</td><td class="num ${i.isSale ? 'amt-in' : ''}">${i.isSale ? '−' : ''}${pMoney(i.amount)}</td><td class="num amt-in">${pMoney(i.collected)}</td><td class="num amt-out">${pMoney(i.remaining)}</td></tr>`).join('')
     : '<tr><td colspan="7" style="text-align:center;color:#888">فاکتوری در این محدوده نیست</td></tr>'}
     <tr class="tot"><td>جمع</td><td></td><td></td><td></td><td class="num">${pMoney(r.totals.amount)}</td><td class="num">${pMoney(r.totals.collected)}</td><td class="num">${pMoney(r.totals.remaining)}</td></tr>
     </tbody></table>
