@@ -501,12 +501,13 @@ function allocatePayment(paymentId, targetInvoiceIds = null) {
     const inv = projectChargeInvoice(pay.project_id)
     if (inv) queue.push(...openSharesOfUnit(pay.unit_id, [inv.id]))
   } else {
-    // پرداخت عمومی: سهم‌های شارژِ پروژه مستثنا هستند و فقط با پرداختِ مخصوص پروژه تسویه می‌شوند
-    const gen = openSharesOfUnit(pay.unit_id).filter(s => !s.proj_id)
-    if (targetInvoiceIds && targetInvoiceIds.length) {
-      queue.push(...gen.filter(s => targetInvoiceIds.includes(s.invoice_id)))
-      queue.push(...gen.filter(s => !targetInvoiceIds.includes(s.invoice_id)))
-    } else queue.push(...gen)
+    // پرداخت عمومی: انتخابِ صریحِ کاربر محترم است (حتی اگر شارژِ پروژه را هدف بگیرد)؛
+    // ولی تسویهٔ خودکارِ (FIFO) شارژِ پروژه انجام نمی‌شود تا با پرداختِ ماهانه قاطی نشود.
+    const all = openSharesOfUnit(pay.unit_id)
+    const tset = new Set(targetInvoiceIds && targetInvoiceIds.length ? targetInvoiceIds : [])
+    const targeted = tset.size ? all.filter(s => tset.has(s.invoice_id)) : []
+    const general = all.filter(s => !s.proj_id && !tset.has(s.invoice_id))
+    queue.push(...targeted, ...general)
   }
   const ins = db.prepare(`INSERT INTO payment_allocations(payment_id,share_id,amount) VALUES(?,?,?)`)
   const touched = new Set()
@@ -1475,7 +1476,7 @@ function vendorsReport() {
 // گزارش حرفه‌ای هزینه‌کرد — سه حالت: بازه‌ی تاریخ | پروژه | انتخاب فاکتورها
 const gToJStr = g => { if (!g) return ''; const [y, m, d] = g.split('-').map(Number); const j = toJalaali(y, m, d); return jStr(j.jy, j.jm, j.jd) }
 function expensesReport(opts) {
-  let invRows = [], project = null, contractor = null, scopeLabel = '', projInvoices = null, projPid = 0, projBudgetMap = null
+  let invRows = [], project = null, contractor = null, scopeLabel = '', projInvoices = null, projPid = 0, projBudgetMap = null, projFinalMap = null
   if (opts.mode === 'project' && +opts.projectId) {
     const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+opts.projectId)
     if (!p) return { error: 'پروژه یافت نشد' }
@@ -1496,11 +1497,12 @@ function expensesReport(opts) {
     const chargeInv = projectChargeInvoice(p.id)
     invRows = chargeInv ? [chargeInv] : []
     projPid = p.id
-    // نگاشت سهمِ برآوردی (مصوبه) برای هر واحد — برای ستونِ «بدهی طبق برآورد»
-    if (chargeInv && p.budget) {
+    // نگاشتِ سهمِ برآوردی (مصوبه) و سهمِ نهایی (هزینهٔ واقعیِ خالص) برای هر واحد — دو ستونِ متفاوت
+    if (chargeInv) {
       const cu = invoiceUnits(chargeInv.id)
-      projBudgetMap = Object.fromEntries(computeShares(cu, chargeInv.method, p.budget, {}).map(s => [s.unit_id, s.share_amount]))
-    } else projBudgetMap = {}
+      projBudgetMap = p.budget ? Object.fromEntries(computeShares(cu, chargeInv.method, p.budget, {}).map(s => [s.unit_id, s.share_amount])) : {}
+      projFinalMap = finalBasis ? Object.fromEntries(computeShares(cu, chargeInv.method, finalBasis, {}).map(s => [s.unit_id, s.share_amount])) : {}
+    } else { projBudgetMap = {}; projFinalMap = {} }
   } else if (opts.mode === 'invoices' && opts.ids) {
     const ids = String(opts.ids).split(',').map(Number).filter(Boolean)
     invRows = ids.length ? db.prepare(`SELECT * FROM invoices WHERE id IN (${ids.map(() => '?').join(',')}) AND is_opening=0`).all(...ids) : []
@@ -1527,14 +1529,19 @@ function expensesReport(opts) {
     }
   const numOf = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
   const units = Object.values(um).map(e => {
-    // در حالت پروژه: دو مدل بدهی — طبق برآورد (مصوبه) و طبق مخارجِ نهایی
-    const budgetShare = projBudgetMap ? (projBudgetMap[e.unit_id] || 0) : 0
-    return { ...e, balance: e.share - e.paid, budgetShare, balBudget: budgetShare - e.paid, balExpense: e.share - e.paid }
+    if (projPid) {
+      // دو ستونِ متفاوت: «سهم برآوردی (مصوبه)» و «سهم نهایی (هزینهٔ واقعی)»
+      const budgetShare = projBudgetMap[e.unit_id] || 0
+      const finalShare = projFinalMap[e.unit_id] || 0
+      return { ...e, share: finalShare, budgetShare, balance: finalShare - e.paid, balBudget: budgetShare - e.paid, balExpense: finalShare - e.paid }
+    }
+    return { ...e, balance: e.share - e.paid, budgetShare: 0, balBudget: e.share - e.paid, balExpense: e.share - e.paid }
   }).sort((a, b) => numOf(a.number) - numOf(b.number))
   return {
     scopeLabel, invoices, totals, units, project, contractor, isProject: !!projPid,
     residentCollected: projInvoices ? units.reduce((s, u) => s + u.paid, 0) : totals.collected,
-    unitDebt: units.reduce((s, u) => s + Math.max(0, u.balance), 0),
+    // در حالت پروژه: بدهیِ اصلی طبق مصوبه، و «مازاد» = طلب نسبت به هزینهٔ واقعی
+    unitDebt: units.reduce((s, u) => s + Math.max(0, projPid ? u.balBudget : u.balance), 0),
     unitCredit: units.reduce((s, u) => s + Math.max(0, -u.balance), 0),
     buildingName: getSetting('buildingName'), today: (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
   }
@@ -1693,8 +1700,8 @@ function printExpensesHtml(r) {
     <div class="kpis">
       ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
       ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U, 'ok')}
-      ${kpi('مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
-      ${r.unitCredit ? kpi('بستانکاری ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
+      ${kpi(r.isProject ? 'مانده بدهی ساکنین (طبق مصوبه)' : 'مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
+      ${r.unitCredit ? kpi(r.isProject ? 'مازاد نسبت به هزینهٔ واقعی' : 'بستانکاری ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, r.contractor.outstanding > 0 ? 'warn' : 'ok') : ''}
     </div>
