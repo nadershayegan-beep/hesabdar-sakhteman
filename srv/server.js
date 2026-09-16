@@ -198,6 +198,7 @@ function migrate() {
   addCol('invoices', 'payer', `TEXT DEFAULT 'tenant'`)    // بر عهدهٔ: tenant=مستاجر/ساکن | owner=مالک
   addCol('projects', 'charge_kind', `TEXT DEFAULT 'operational'`) // جاری=current | عملیاتی=operational
   addCol('invoices', 'doc_no', `TEXT DEFAULT ''`)         // شماره سند (روی سند فیزیکی صندوق‌دار)
+  addCol('fund_txns', 'ref_cinvoice_id', 'INTEGER')       // پیوند تراکنش صندوق به فاکتور پیمانکار (خرید/فروش پروژه)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -583,8 +584,32 @@ function addFundTxn(fundId, type, amount, extra = {}) {
   if (!(amount > 0)) return
   const g = extra.g_date || todayG()
   const j = extra.j_date || (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
-  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,g_date,j_date,note,created_by,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, g, j, extra.note || '', extra.by || null, nowISO())
+  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,g_date,j_date,note,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, g, j, extra.note || '', extra.by || null, nowISO())
+}
+// صندوق اصلی (اولین صندوق) — مقصد پیش‌فرض خرید/فروش پروژه
+const mainFundId = () => { const f = db.prepare(`SELECT id FROM funds ORDER BY id LIMIT 1`).get(); return f ? f.id : null }
+// هم‌گام‌سازی اثر یک فاکتور پیمانکار روی صندوق: خریدِ پرداخت‌شده = خروج، فروشِ دریافت‌شده = ورود، پرداخت‌نشده = بدون تراکنش
+// idempotent: تراکنش قبلیِ همین فاکتور حذف و در صورت لزوم دوباره ساخته می‌شود
+function syncContractorFundTxn(ci, by) {
+  db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(ci.id)
+  if (!ci.paid || !(ci.amount > 0)) return
+  const fundId = ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : mainFundId()
+  if (!fundId) return
+  const isSale = ci.kind === 'sale'
+  addFundTxn(fundId, isSale ? 'in' : 'out', ci.amount, {
+    g_date: ci.g_date, j_date: ci.j_date, cinvId: ci.id, by,
+    note: (isSale ? 'درآمد فروش پروژه: ' : 'پرداخت هزینهٔ پروژه: ') + (ci.title || (isSale ? 'فروش' : 'خرید'))
+  })
+}
+// عطف‌به‌ماسبق: برای فاکتورهای پیمانکارِ پرداخت‌شده‌ای که هنوز تراکنش صندوق ندارند، تراکنش ساخته می‌شود (یک‌بار)
+function backfillContractorFundTxns() {
+  if (getSetting('cinvoiceFundBackfill') === '1') return
+  const rows = db.prepare(`SELECT * FROM contractor_invoices WHERE paid=1 AND amount>0
+    AND id NOT IN (SELECT ref_cinvoice_id FROM fund_txns WHERE ref_cinvoice_id IS NOT NULL)`).all()
+  for (const ci of rows) syncContractorFundTxn(ci, null)
+  setSetting('cinvoiceFundBackfill', '1')
+  if (rows.length) console.log(`✓ اثر صندوقِ ${rows.length} فاکتور پیمانکارِ قبلی اعمال شد`)
 }
 
 // ---------- طلب مدیر ----------
@@ -1240,8 +1265,8 @@ function setProjectCharge(project, { method, includeVacant, amount, payer, charg
   db.prepare(`UPDATE projects SET charge_kind=? WHERE id=?`).run(ck, project.id)
   const inv = projectChargeInvoice(project.id)
   if (inv) {
-    // ویرایش: روی همان واحدهایی که از ابتدا شارژ شده‌اند بازمحاسبه شود (حذف نشوند)
-    const units = invoiceUnits(inv.id)
+    // ویرایش: روی همهٔ واحدهای فعال + واحدهای قبلاً شارژ‌شده بازمحاسبه شود (واحدِ جاافتاده دوباره اضافه می‌شود)
+    const units = projectChargeUnits(inv)
     if (!units.length) return { error: 'شارژ این پروژه واحدی ندارد' }
     const shares = computeShares(units, method, amt, {})
     db.prepare(`UPDATE invoices SET amount=?,method=?,payer=?,g_date=?,j_date=? WHERE id=?`).run(amt, method, py, d.g_date, d.j_date, inv.id)
@@ -1259,16 +1284,25 @@ function setProjectCharge(project, { method, includeVacant, amount, payer, charg
 }
 // واحدهایی که هم‌اکنون در یک فاکتور سهم دارند (مجموعهٔ ثابتِ همان فاکتور)
 const invoiceUnits = invId => db.prepare(`SELECT u.* FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(invId)
+// مجموعهٔ واحدهای یک شارژ پروژه هنگام ویرایش/تعدیل: همهٔ واحدهای فعال (تگ «خالی» در پروژه‌ها بی‌اثر است)
+// به‌علاوهٔ هر واحدی که از قبل در فاکتور سهم دارد (حتی اگر غیرفعال شده) تا هیچ بدهکار/پرداخت‌کننده‌ای حذف نشود.
+// این کار واحدهایی را که در نسخه‌های قدیمی اشتباهاً حذف شده بودند دوباره به پروژه اضافه می‌کند.
+function projectChargeUnits(inv) {
+  const active = eligibleUnits()
+  const seen = new Set(active.map(u => u.id))
+  const extra = invoiceUnits(inv.id).filter(u => !seen.has(u.id))
+  return [...active, ...extra]
+}
 // اتمام و ثبت کامل هزینه‌ها: شارژِ ساکنین روی هزینهٔ واقعیِ نهایی تنظیم و سهم هر واحد بازمحاسبه می‌شود
 // مبنا: مبلغ نهاییِ دستی (اگر وارد شده) وگرنه هزینهٔ خالصِ فاکتورهای پروژه (خرید − فروش)
-// مهم: فقط روی همان واحدهایی که از ابتدا شارژ شده‌اند بازمحاسبه می‌شود؛ تغییرِ بعدیِ خالی/فعال واحد، آن را از پروژه حذف نمی‌کند
+// مهم: روی همهٔ واحدهای فعال (+ واحدهای قبلاً شارژ‌شده) بازمحاسبه می‌شود؛ هیچ واحدی حذف نمی‌شود و واحدِ جاافتاده دوباره اضافه می‌گردد
 function reconcileProjectCharge(project) {
   const inv = projectChargeInvoice(project.id)
   if (!inv) return { error: 'اول شارژ پروژه را صادر کنید' }
   const net = projectNetCost(project.id).net
   const fa = Math.round(project.final_amount || 0) || net
   if (!(fa > 0)) return { error: 'ابتدا فاکتورهای پروژه را ثبت کنید یا «مبلغ نهایی» را وارد کنید' }
-  const units = invoiceUnits(inv.id)
+  const units = projectChargeUnits(inv)
   if (!units.length) return { error: 'شارژ این پروژه واحدی ندارد' }
   const shares = computeShares(units, inv.method, fa, {})
   db.prepare(`UPDATE invoices SET amount=? WHERE id=?`).run(fa, inv.id)
@@ -1858,7 +1892,7 @@ const server = createServer(async (req, res) => {
       return sendJSON(res, 200, { ok: true })
     }
 
-    // ---- فاکتورهای پیمانکار (بایگانی — بدون اثر روی صندوق) ----
+    // ---- فاکتورهای پیمانکار (خریدِ پرداخت‌شده از صندوق کم و فروشِ دریافت‌شده به صندوق اضافه می‌شود) ----
     if (path === '/api/contractor-invoices' && M === 'POST') {
       const b = await jbody(req)
       const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
@@ -1867,6 +1901,7 @@ const server = createServer(async (req, res) => {
       const kind = b.kind === 'sale' ? 'sale' : 'purchase'
       const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,note,kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
         .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), Math.round(+b.amount), d.g_date, d.j_date, b.paid ? 1 : 0, (b.note || '').trim(), kind, nowISO()).lastInsertRowid)
+      syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(id), user.id)
       return sendJSON(res, 200, { ok: true, id })
     }
     const ciM = /^\/api\/contractor-invoices\/(\d+)$/.exec(path)
@@ -1879,11 +1914,13 @@ const server = createServer(async (req, res) => {
           b.amount != null ? Math.round(+b.amount) : cur.amount, d.g_date, d.j_date,
           b.paid != null ? (b.paid ? 1 : 0) : cur.paid, (b.note ?? cur.note).trim(),
           b.kind ? (b.kind === 'sale' ? 'sale' : 'purchase') : cur.kind, +ciM[1])
+      syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]), user.id)
       return sendJSON(res, 200, { ok: true })
     }
     if (ciM && M === 'DELETE') {
       for (const a of listAttachments('cinvoice', +ciM[1])) await rm(join(UP_DIR, a.file), { force: true })
       db.prepare(`DELETE FROM attachments WHERE entity_type='cinvoice' AND entity_id=?`).run(+ciM[1])
+      db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(+ciM[1]) // اثر صندوقِ این فاکتور هم حذف شود
       db.prepare(`DELETE FROM contractor_invoices WHERE id=?`).run(+ciM[1])
       return sendJSON(res, 200, { ok: true })
     }
@@ -2690,6 +2727,7 @@ function listenWithFallback(port, tries = 15) {
     if (process.send) { try { process.send({ type: 'ready', port: PORT }) } catch { } }
   })
 }
+try { backfillContractorFundTxns() } catch (e) { console.error('backfill صندوق پیمانکار ناموفق:', e.message) }
 listenWithFallback(PORT)
 
 if (process.env.NO_PKG !== '1' && !PACKAGED) { try { await refreshPackage() } catch (e) { console.error('ساخت بسته ناموفق:', e.message) } }
