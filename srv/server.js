@@ -199,6 +199,7 @@ function migrate() {
   addCol('projects', 'charge_kind', `TEXT DEFAULT 'operational'`) // جاری=current | عملیاتی=operational
   addCol('invoices', 'doc_no', `TEXT DEFAULT ''`)         // شماره سند (روی سند فیزیکی صندوق‌دار)
   addCol('fund_txns', 'ref_cinvoice_id', 'INTEGER')       // پیوند تراکنش صندوق به فاکتور پیمانکار (خرید/فروش پروژه)
+  addCol('payments', 'project_id', 'INTEGER DEFAULT 0')   // پرداختِ علامت‌خوردهٔ پروژه (دفترِ مجزا؛ مازاد = طلبِ پروژه)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -474,7 +475,7 @@ const paymentLeftover = pay => pay.amount - paymentAllocated(pay.id)
 
 // سهم‌های تسویه‌نشده‌ی یک واحد، از قدیمی‌ترین فاکتور (مانده‌ی اولیه همیشه اول است)
 function openSharesOfUnit(unitId, onlyIds = null) {
-  const rows = db.prepare(`SELECT s.*, i.g_date, i.id inv_id FROM invoice_shares s
+  const rows = db.prepare(`SELECT s.*, i.g_date, i.id inv_id, i.project_id proj_id FROM invoice_shares s
     JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=?
     ORDER BY i.g_date, i.id, s.id`).all(unitId)
   const filtered = onlyIds ? rows.filter(r => onlyIds.includes(r.id) || onlyIds.includes(r.invoice_id)) : rows
@@ -488,10 +489,18 @@ function allocatePayment(paymentId, targetInvoiceIds = null) {
   let left = paymentLeftover(pay)
   if (left <= 0) return 0
   const queue = []
-  if (targetInvoiceIds && targetInvoiceIds.length) {
-    queue.push(...openSharesOfUnit(pay.unit_id, targetInvoiceIds))
-    queue.push(...openSharesOfUnit(pay.unit_id).filter(s => !targetInvoiceIds.includes(s.invoice_id)))
-  } else queue.push(...openSharesOfUnit(pay.unit_id))
+  if (pay.project_id) {
+    // پرداختِ مخصوص پروژه: فقط به سهمِ فاکتور شارژِ همان پروژه می‌نشیند؛ مازاد به‌صورت طلبِ پروژه باقی می‌ماند (سرریز نمی‌کند)
+    const inv = projectChargeInvoice(pay.project_id)
+    if (inv) queue.push(...openSharesOfUnit(pay.unit_id, [inv.id]))
+  } else {
+    // پرداخت عمومی: سهم‌های شارژِ پروژه مستثنا هستند و فقط با پرداختِ مخصوص پروژه تسویه می‌شوند
+    const gen = openSharesOfUnit(pay.unit_id).filter(s => !s.proj_id)
+    if (targetInvoiceIds && targetInvoiceIds.length) {
+      queue.push(...gen.filter(s => targetInvoiceIds.includes(s.invoice_id)))
+      queue.push(...gen.filter(s => !targetInvoiceIds.includes(s.invoice_id)))
+    } else queue.push(...gen)
+  }
   const ins = db.prepare(`INSERT INTO payment_allocations(payment_id,share_id,amount) VALUES(?,?,?)`)
   const touched = new Set()
   for (const s of queue) {
@@ -610,6 +619,27 @@ function backfillContractorFundTxns() {
   for (const ci of rows) syncContractorFundTxn(ci, null)
   setSetting('cinvoiceFundBackfill', '1')
   if (rows.length) console.log(`✓ اثر صندوقِ ${rows.length} فاکتور پیمانکارِ قبلی اعمال شد`)
+}
+// عطف‌به‌ماسبق: پرداخت‌هایی که در گذشته بابت شارژِ یک پروژه داده شده‌اند علامت‌دار می‌شوند (project_id)
+// تا در دفترِ مجزای پروژه، «پرداختی ناخالص» و «طلب/بدهی نسبت به سهم نهایی» درست محاسبه شود.
+function backfillProjectPayments() {
+  if (getSetting('projectPaymentBackfill') === '1') return
+  const charges = db.prepare(`SELECT id, project_id FROM invoices WHERE project_id>0 AND is_billing=1`).all()
+  let n = 0
+  for (const inv of charges) {
+    const pays = db.prepare(`SELECT DISTINCT p.id FROM payments p
+      JOIN payment_allocations a ON a.payment_id=p.id
+      JOIN invoice_shares s ON s.id=a.share_id
+      WHERE s.invoice_id=? AND COALESCE(p.project_id,0)=0`).all(inv.id)
+    for (const p of pays) {
+      // فقط اگر این پرداخت به هیچ سهمِ فاکتورِ دیگری تخصیص نخورده باشد (تا ناخالص دوباره‌شماری نشود)
+      const other = db.prepare(`SELECT COUNT(*) c FROM payment_allocations a
+        JOIN invoice_shares s ON s.id=a.share_id WHERE a.payment_id=? AND s.invoice_id<>?`).get(p.id, inv.id).c
+      if (other === 0) { db.prepare(`UPDATE payments SET project_id=? WHERE id=?`).run(inv.project_id, p.id); n++ }
+    }
+  }
+  setSetting('projectPaymentBackfill', '1')
+  if (n) console.log(`✓ ${n} پرداختِ پروژه‌ای علامت‌گذاری شد`)
 }
 
 // ---------- طلب مدیر ----------
@@ -1250,10 +1280,29 @@ function projectNetCost(pid) {
 }
 // فاکتور شارژِ ساکنین برای یک پروژه (is_billing=1، لینک‌شده به پروژه)
 const projectChargeInvoice = pid => db.prepare(`SELECT * FROM invoices WHERE project_id=? AND is_billing=1 ORDER BY id DESC LIMIT 1`).get(pid)
+// پولی که یک واحد بابت یک پروژه پرداخت کرده =
+//   آنچه به سهمِ شارژِ پروژه تخصیص خورده  +  مازادِ پرداخت‌های علامت‌خوردهٔ پروژه (روی سهم ننشسته = طلبِ پروژه)
+// این هم برای پرداخت‌های ترکیبیِ قدیمی درست است و هم برای پرداختِ اختصاصیِ جدید (مازاد به‌صورت طلب می‌ماند، نه سرریز)
+function unitProjectPaid(unitId, pid) {
+  if (!pid) return 0
+  const inv = projectChargeInvoice(pid); if (!inv) return 0
+  const alloc = db.prepare(`SELECT COALESCE(SUM(a.amount),0) t FROM payment_allocations a
+    JOIN invoice_shares s ON s.id=a.share_id WHERE s.invoice_id=? AND s.unit_id=?`).get(inv.id, unitId).t
+  const emk = db.prepare(`SELECT COALESCE(SUM(amount),0) g FROM payments WHERE unit_id=? AND project_id=?`).get(unitId, pid).g
+  const emkAlloc = db.prepare(`SELECT COALESCE(SUM(a.amount),0) t FROM payment_allocations a
+    WHERE a.payment_id IN (SELECT id FROM payments WHERE unit_id=? AND project_id=?)`).get(unitId, pid).t
+  return alloc + Math.max(0, emk - emkAlloc)
+}
+// کل وصولِ یک پروژه از ساکنین
+function projectCollected(pid) {
+  const inv = pid ? projectChargeInvoice(pid) : null; if (!inv) return 0
+  return invoiceUnits(inv.id).reduce((a, u) => a + unitProjectPaid(u.id, pid), 0)
+}
 function projectChargeShares(inv) {
   if (!inv) return []
+  const pid = inv.project_id
   return db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(inv.id)
-    .map(s => { const paid = shareAllocated(s.id); return { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: s.share_amount, paid, remaining: s.share_amount - paid } })
+    .map(s => { const paid = pid ? unitProjectPaid(s.unit_id, pid) : shareAllocated(s.id); return { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: s.share_amount, paid, remaining: s.share_amount - paid } })
 }
 // صدور یا ویرایش شارژ پروژه (وسط‌کار قابل افزایش) — بدهیِ واحدها بازمحاسبه می‌شود
 function setProjectCharge(project, { method, includeVacant, amount, payer, chargeKind, d }, userId) {
@@ -1315,7 +1364,7 @@ function projectDetail(id) {
   if (!p) return null
   const invoices = projectInvoices(id)
   const charge = projectChargeInvoice(id)
-  const chargeCollected = charge ? invoiceCollected(charge.id) : 0
+  const chargeCollected = charge ? projectCollected(id) : 0  // وصولِ ناخالصِ علامت‌خوردهٔ پروژه
   const nc = projectNetCost(id)
   const finalBasis = (p.final_amount || 0) || nc.net
   const reconciled = p.status === 'done' && !!charge
@@ -1328,18 +1377,20 @@ function projectDetail(id) {
     const budgetShare = bMap[s.unit_id] || 0, finalShare = fMap[s.unit_id] || 0
     return { ...s, row: i + 1, budgetShare, finalShare, balByBudget: budgetShare - s.paid, balByFinal: finalShare - s.paid }
   })
-  const residentDebt = chargeShares.reduce((a, s) => a + Math.max(0, s.remaining), 0)
+  // بدهی/بستانکاریِ ساکنین نسبت به سهمِ نهایی (پرداختی ناخالص − سهم نهایی)
+  const residentDebt = chargeShares.reduce((a, s) => a + Math.max(0, s.balByFinal), 0)
+  const residentCredit = chargeShares.reduce((a, s) => a + Math.max(0, -s.balByFinal), 0)
   return {
     project: projectRow(p), quotes: projectQuotes(id), invoices, attachments: listAttachments('project', id),
     invoiceTotal: nc.net, purchaseTotal: nc.purchase, saleTotal: nc.sale, invoicePaid: nc.paid,
     finalAmount: p.final_amount || 0, netCost: nc.net, finalBasis, reconciled,
     deviation: finalBasis && p.budget ? (finalBasis - p.budget) : 0,
-    charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, payer: charge.payer, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: charge.amount - chargeCollected } : null,
+    charge: charge ? { id: charge.id, amount: charge.amount, method: charge.method, methodFa: METHOD_FA[charge.method] || charge.method, payer: charge.payer, includeVacant: charge.include_vacant, collected: chargeCollected, remaining: finalBasis - chargeCollected } : null,
     chargeShares,
     // دادهٔ کارت‌ها
     box: {
       estimate: { total: p.budget || 0, perUnit: p.budget ? Math.round(p.budget / n) : 0 },
-      collection: { collected: chargeCollected, debt: residentDebt },
+      collection: { collected: chargeCollected, debt: residentDebt, credit: residentCredit },
       expenses: { total: nc.purchase, paid: nc.paid, outstanding: nc.outstanding, sale: nc.sale },
       final: { total: finalBasis, deviation: finalBasis && p.budget ? finalBasis - p.budget : 0, perUnit: finalBasis ? Math.round(finalBasis / n) : 0 },
       fund: { collected: chargeCollected, finalCost: finalBasis, balance: chargeCollected - finalBasis }
@@ -1363,7 +1414,7 @@ function vendorsReport() {
 // گزارش حرفه‌ای هزینه‌کرد — سه حالت: بازه‌ی تاریخ | پروژه | انتخاب فاکتورها
 const gToJStr = g => { if (!g) return ''; const [y, m, d] = g.split('-').map(Number); const j = toJalaali(y, m, d); return jStr(j.jy, j.jm, j.jd) }
 function expensesReport(opts) {
-  let invRows = [], project = null, contractor = null, scopeLabel = '', projInvoices = null
+  let invRows = [], project = null, contractor = null, scopeLabel = '', projInvoices = null, projPid = 0
   if (opts.mode === 'project' && +opts.projectId) {
     const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+opts.projectId)
     if (!p) return { error: 'پروژه یافت نشد' }
@@ -1383,6 +1434,7 @@ function expensesReport(opts) {
     // تفکیک هر واحد از فاکتور شارژ ساکنین
     const chargeInv = projectChargeInvoice(p.id)
     invRows = chargeInv ? [chargeInv] : []
+    projPid = p.id
   } else if (opts.mode === 'invoices' && opts.ids) {
     const ids = String(opts.ids).split(',').map(Number).filter(Boolean)
     invRows = ids.length ? db.prepare(`SELECT * FROM invoices WHERE id IN (${ids.map(() => '?').join(',')}) AND is_opening=0`).all(...ids) : []
@@ -1405,7 +1457,7 @@ function expensesReport(opts) {
   for (const inv of invRows)
     for (const s of db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(inv.id)) {
       const e = um[s.unit_id] || (um[s.unit_id] = { unit_id: s.unit_id, number: s.number, resident_name: s.resident_name, share: 0, paid: 0 })
-      e.share += s.share_amount; e.paid += shareAllocated(s.id)
+      e.share += s.share_amount; e.paid += projPid ? unitProjectPaid(s.unit_id, projPid) : shareAllocated(s.id)
     }
   const numOf = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
   const units = Object.values(um).map(e => ({ ...e, balance: e.share - e.paid }))
@@ -1586,11 +1638,12 @@ function printExpensesHtml(r) {
     <tr class="tot"><td>جمع</td><td></td><td></td><td></td><td class="num">${pMoney(r.totals.amount)}</td><td class="num">${pMoney(r.totals.collected)}</td><td class="num">${pMoney(r.totals.remaining)}</td></tr>
     </tbody></table>
     <div class="sech">تفکیک هر واحد</div>
-    <table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
+    <table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم هر واحد</th><th>پرداختی</th><th>بدهکار / طلبکار</th></tr></thead><tbody>
     ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
       <td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td>
-      <td class="num">${u.balance > 0 ? `<span class="amt-out">بدهکار ${pMoney(u.balance)}</span>` : u.balance < 0 ? `<span class="amt-in">بستانکار ${pMoney(-u.balance)}</span>` : 'تسویه'}</td></tr>`).join('')
+      <td class="num">${u.balance > 0 ? `<span class="amt-out">بدهکار ${pMoney(u.balance)}</span>` : u.balance < 0 ? `<span class="amt-in">طلبکار ${pMoney(-u.balance)}</span>` : 'تسویه'}</td></tr>`).join('')
     : '<tr><td colspan="5" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
+    <tr class="tot"><td>جمع</td><td></td><td class="num">${pMoney(r.units.reduce((a,u)=>a+u.share,0))}</td><td class="num">${pMoney(r.units.reduce((a,u)=>a+u.paid,0))}</td><td class="num">${(()=>{const d=r.units.reduce((a,u)=>a+Math.max(0,u.balance),0),c=r.units.reduce((a,u)=>a+Math.max(0,-u.balance),0);return (d?`<span class="amt-out">بدهکار ${pMoney(d)}</span>`:'')+(d&&c?' · ':'')+(c?`<span class="amt-in">طلبکار ${pMoney(c)}</span>`:'')||'۰'})()}</td></tr>
     </tbody></table>
     <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout('گزارش هزینه‌کرد', inner)
@@ -2196,9 +2249,10 @@ const server = createServer(async (req, res) => {
       const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
       const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId)
       const docFile = await saveDoc(b.doc, `واحد ${safeFolder(u.number)}`)
-      const id = Number(db.prepare(`INSERT INTO payments(unit_id,amount,g_date,j_date,fund_id,method,doc_file,note,created_by,created_at)
-        VALUES(?,?,?,?,?,?,?,?,?,?)`).run(unitId, amount, d.g_date, d.j_date, fundId, b.method || '', docFile, (b.note || '').trim(), user.id, nowISO()).lastInsertRowid)
-      addFundTxn(fundId, 'in', amount, { ...d, payId: id, note: `دریافتی واحد ${u.number}`, by: user.id })
+      const projectId = +b.projectId || 0
+      const id = Number(db.prepare(`INSERT INTO payments(unit_id,amount,g_date,j_date,fund_id,method,doc_file,note,project_id,created_by,created_at)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)`).run(unitId, amount, d.g_date, d.j_date, fundId, b.method || '', docFile, (b.note || '').trim(), projectId, user.id, nowISO()).lastInsertRowid)
+      addFundTxn(fundId, 'in', amount, { ...d, payId: id, note: (projectId ? 'دریافتیِ پروژه — واحد ' : 'دریافتی واحد ') + u.number, by: user.id })
       const targets = Array.isArray(b.invoiceIds) ? b.invoiceIds.map(Number).filter(Boolean) : null
       const allocated = allocatePayment(id, targets)
       return sendJSON(res, 200, { ok: true, id, allocated, credit: amount - allocated })
@@ -2728,6 +2782,7 @@ function listenWithFallback(port, tries = 15) {
   })
 }
 try { backfillContractorFundTxns() } catch (e) { console.error('backfill صندوق پیمانکار ناموفق:', e.message) }
+try { backfillProjectPayments() } catch (e) { console.error('backfill پرداخت پروژه ناموفق:', e.message) }
 listenWithFallback(PORT)
 
 if (process.env.NO_PKG !== '1' && !PACKAGED) { try { await refreshPackage() } catch (e) { console.error('ساخت بسته ناموفق:', e.message) } }

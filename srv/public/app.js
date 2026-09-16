@@ -708,8 +708,9 @@ function bulkPaymentForm() {
   })
 }
 
-function paymentForm(presetUnit, pay, after) {
+function paymentForm(presetUnit, pay, after, presetProject) {
   const store = { doc: null }
+  const forProject = +presetProject || 0
   const units = META.units.filter(u => u.active || (pay && u.id === pay.unit_id))
   const selUnit = pay ? pay.unit_id : presetUnit
   const payJ = pay ? { jy: +pay.j_date.slice(0, 4), jm: +pay.j_date.slice(5, 7), jd: +pay.j_date.slice(8, 10) } : null
@@ -738,6 +739,11 @@ function paymentForm(presetUnit, pay, after) {
   wireToday(body); wireMoney(body); wireDocPicker('pyDoc', store)
   $('#pyCancel').onclick = closeModal
   const loadOpen = guard(async () => {
+    if (forProject) {
+      $('#pyCredit').textContent = ''
+      $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت «طلبِ پروژه» برای واحد می‌ماند.</div>'
+      return
+    }
     const d = await api(`/api/unit/${$('#pyUnit').value}/open`)
     $('#pyCredit').textContent = d.credit > 0 ? `بستانکاری فعلی: ${moneyU(d.credit)}` : ''
     $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th>${pay ? '' : ''}</th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
@@ -756,11 +762,13 @@ function paymentForm(presetUnit, pay, after) {
       await post(`/api/payments/${pay.id}`, payload, 'PUT')
       closeModal(); toast('دریافتی ویرایش شد'); after ? after() : refresh(); return
     }
+    if (forProject) payload.projectId = forProject
     const invoiceIds = [...$('#pyOpen').querySelectorAll('input[type=checkbox]:checked')].map(c => +c.dataset.inv)
     payload.invoiceIds = invoiceIds.length ? invoiceIds : null
     const r = await post('/api/payments', payload)
     closeModal()
-    toast(r.credit > 0 ? `ثبت شد — ${moneyU(r.allocated)} تسویه و ${moneyU(r.credit)} بستانکار شد` : `دریافتی ثبت و ${moneyU(r.allocated)} تسویه شد`)
+    toast(forProject ? (r.credit > 0 ? `پرداختِ پروژه ثبت شد — ${moneyU(r.allocated)} بابت سهم و ${moneyU(r.credit)} طلبِ پروژه` : `پرداختِ پروژه ثبت شد`)
+      : (r.credit > 0 ? `ثبت شد — ${moneyU(r.allocated)} تسویه و ${moneyU(r.credit)} بستانکار شد` : `دریافتی ثبت و ${moneyU(r.allocated)} تسویه شد`))
     after ? after() : refresh()
   })
 }
@@ -1986,7 +1994,7 @@ const showProject = guard(async id => {
         <td class="num">${faDigit(s.row)}</td><td><b>واحد ${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
         <td class="num">${money(s.budgetShare)}</td>${d.reconciled ? `<td class="num">${money(s.finalShare)}</td>` : ''}
         <td class="num amt-in">${money(s.paid)}</td>
-        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">بستانکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td>
+        <td>${bal > 0 ? `<span class="badge b-no">بدهکار ${money(bal)}</span>` : bal < 0 ? `<span class="badge b-done">طلبکار ${money(-bal)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td>
         ${adminOnly(`<td class="rowact"><button class="btn tiny" data-pjpay="${s.unit_id}" title="ثبت پرداخت این واحد">＋ پرداخت</button></td>`)}</tr>` }).join('')}
       </tbody></table></div>
       ${adminOnly(`<div style="padding:10px 0 0; display:flex; gap:8px; flex-wrap:wrap">
@@ -2005,7 +2013,7 @@ const showProject = guard(async id => {
       ${d.invoices.length ? d.invoices.map(cInvoiceRow).join('') : emptyRow(6, 'فاکتوری بایگانی نشده')}
       </tbody></table></div>
       ${adminOnly(`<div style="padding:10px 0 0"><button class="btn small" id="ciNew">＋ فاکتور پیمانکار</button></div>`)}
-      <div class="hint" style="margin-top:6px">این فاکتورها فقط بایگانی می‌شوند و روی موجودی صندوق‌ها اثری ندارند.</div></div>
+      <div class="hint" style="margin-top:6px">فاکتور خریدِ «پرداخت‌شده» از صندوق اصلی کسر و فروشِ «دریافت‌شده» به آن اضافه می‌شود.</div></div>
     <div class="panel"><div class="phead"><b>اسناد پروژه</b></div>${attachRow({ id: p.id, attachments: d.attachments }, 'project')}</div>`
   $('#backBtn').onclick = () => { VIEW = 'projects'; render() }
   if ($('#pjReport')) $('#pjReport').onclick = () => {
@@ -2013,7 +2021,7 @@ const showProject = guard(async id => {
     if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت گزارش…'); window.hesabdar.savePdf(rel, `گزارش پروژه ${p.title}`).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
     else window.open(rel, '_blank')
   }
-  document.querySelectorAll('[data-pjpay]').forEach(b => b.onclick = () => paymentForm(+b.dataset.pjpay, null, refresh))
+  document.querySelectorAll('[data-pjpay]').forEach(b => b.onclick = () => paymentForm(+b.dataset.pjpay, null, refresh, id))
   if ($('#pjQuote')) $('#pjQuote').onclick = () => quoteForm(id, null, refresh)
   if ($('#pjEdit')) $('#pjEdit').onclick = () => projectForm(p, refresh)
   if ($('#pjChargeNew')) $('#pjChargeNew').onclick = () => projectChargeForm(p, null, refresh)
