@@ -80,6 +80,13 @@ const SCHEMA_SQL = `
   );
   CREATE INDEX IF NOT EXISTS idx_alloc_p ON payment_allocations(payment_id);
   CREATE INDEX IF NOT EXISTS idx_alloc_s ON payment_allocations(share_id);
+  CREATE TABLE IF NOT EXISTS credit_uses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    unit_id INTEGER NOT NULL, invoice_id INTEGER DEFAULT 0, amount INTEGER DEFAULT 0,
+    g_date TEXT DEFAULT '', j_date TEXT DEFAULT '', note TEXT DEFAULT '',
+    created_by INTEGER, created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_credituse_unit ON credit_uses(unit_id);
   CREATE TABLE IF NOT EXISTS fund_txns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     fund_id INTEGER NOT NULL, type TEXT NOT NULL, amount INTEGER NOT NULL,
@@ -526,6 +533,29 @@ const unitCredit = unitId => {
     JOIN payments p ON p.id=a.payment_id WHERE p.unit_id=?`).get(unitId).s
   return paid - alloc
 }
+// «پرداخت از محل طلبِ واحد»: بستانکاریِ موجود (پرداخت‌های تخصیص‌نیافته) را تا سقفِ cap روی سهم‌های هدف می‌نشاند.
+// این عبورِ دستی از ایزولهٔ پروژه است (طلبِ یک پروژه می‌تواند خرجِ بدهیِ دیگر شود). پول نقدِ جدیدی وارد صندوق نمی‌شود.
+function useCreditForShares(unitId, targetShares, cap) {
+  let left = Math.max(0, Math.round(cap))
+  const pays = db.prepare(`SELECT * FROM payments WHERE unit_id=? ORDER BY g_date, id`).all(unitId)
+  const ins = db.prepare(`INSERT INTO payment_allocations(payment_id,share_id,amount) VALUES(?,?,?)`)
+  const touched = new Set()
+  for (const s of targetShares) {
+    if (left <= 0) break
+    let need = Math.min(left, s.share_amount - shareAllocated(s.id))
+    if (need <= 0) continue
+    for (const p of pays) {
+      if (need <= 0) break
+      const lo = paymentLeftover(p)
+      if (lo <= 0) continue
+      const amt = Math.min(lo, need)
+      ins.run(p.id, s.id, amt)
+      need -= amt; left -= amt; touched.add(s.invoice_id)
+    }
+  }
+  for (const iid of touched) refreshInvoiceStatus(iid)
+  return Math.round(cap) - left
+}
 
 // کم کردن تخصیص‌های یک سهم تا سقف تازه (از جدیدترین تخصیص) — پول آزادشده دوباره در گردش می‌افتد
 function trimShareAllocations(shareId, maxAmount) {
@@ -848,10 +878,12 @@ function unitCard(unitId) {
   const payments = db.prepare(`SELECT p.*, f.name fund_name FROM payments p LEFT JOIN funds f ON f.id=p.fund_id
     WHERE p.unit_id=? ORDER BY p.g_date DESC, p.id DESC`).all(unitId)
     .map(p => ({ ...p, allocated: paymentAllocated(p.id), leftover: p.amount - paymentAllocated(p.id) }))
+  const creditUses = db.prepare(`SELECT cu.*, i.title FROM credit_uses cu LEFT JOIN invoices i ON i.id=cu.invoice_id
+    WHERE cu.unit_id=? ORDER BY cu.g_date DESC, cu.id DESC`).all(unitId)
   const debt = unitDebt(unitId)
   return {
     unit: { ...u, label: unitLabel(u), chargeAmount: unitChargeAt(u, curPeriod()) },
-    shares, payments, debt, credit: debt < 0 ? -debt : 0,
+    shares, payments, creditUses, debt, credit: debt < 0 ? -debt : 0,
     totalShares: shares.reduce((s, r) => s + r.share_amount, 0),
     totalPaid: payments.reduce((s, r) => s + r.amount, 0),
     aging: debt > 0 ? agingBucket(unitId) : null,
@@ -2256,6 +2288,26 @@ const server = createServer(async (req, res) => {
       const targets = Array.isArray(b.invoiceIds) ? b.invoiceIds.map(Number).filter(Boolean) : null
       const allocated = allocatePayment(id, targets)
       return sendJSON(res, 200, { ok: true, id, allocated, credit: amount - allocated })
+    }
+    // پرداخت از محل طلبِ واحد — بدون ورود نقدینگی به صندوق؛ بستانکاریِ موجود روی بدهیِ هدف می‌نشیند
+    if (path === '/api/pay-from-credit' && M === 'POST') {
+      const b = await jbody(req)
+      const unitId = +b.unitId
+      const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId)
+      if (!u) return sendJSON(res, 400, { error: 'واحد را انتخاب کنید' })
+      const avail = unitCredit(unitId)
+      if (!(avail > 0)) return sendJSON(res, 400, { error: 'این واحد طلبی (بستانکاری) ندارد' })
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      let ids = Array.isArray(b.invoiceIds) ? b.invoiceIds.map(Number).filter(Boolean) : null
+      if ((!ids || !ids.length) && +b.projectId) { const inv = projectChargeInvoice(+b.projectId); if (inv) ids = [inv.id] }
+      const shares = ids && ids.length ? openSharesOfUnit(unitId, ids) : openSharesOfUnit(unitId)
+      if (!shares.length) return sendJSON(res, 400, { error: 'بدهیِ بازی برای این واحد نیست' })
+      const cap = b.amount != null ? Math.min(Math.round(+b.amount), avail) : avail
+      const used = useCreditForShares(unitId, shares, cap)
+      if (!(used > 0)) return sendJSON(res, 400, { error: 'مبلغی از طلب قابل استفاده نبود' })
+      db.prepare(`INSERT INTO credit_uses(unit_id,invoice_id,amount,g_date,j_date,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+        .run(unitId, ids && ids.length ? ids[0] : 0, used, d.g_date, d.j_date, (b.note || '').trim(), user.id, nowISO())
+      return sendJSON(res, 200, { ok: true, used, creditLeft: unitCredit(unitId) })
     }
     // ثبت گروهی دریافتی — چند واحد با هم، بابت یک فاکتور مشخص یا بدهی کلی (FIFO)
     if (path === '/api/payments/bulk' && M === 'POST') {

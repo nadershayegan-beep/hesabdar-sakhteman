@@ -720,15 +720,19 @@ function paymentForm(presetUnit, pay, after, presetProject) {
         <label class="f">واحد<select class="inp" id="pyUnit">${units.map(u => `<option value="${u.id}" ${selUnit === u.id ? 'selected' : ''}>واحد ${escFa(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''}</option>`).join('')}</select></label>
         <label class="f">مبلغ (${curFa()})<input class="inp num" id="pyAmount" data-money="pyHint" inputmode="numeric" value="${pay ? sep(Math.round(r2d(pay.amount))) : ''}"><span class="hint" id="pyHint"></span></label>
       </div>
+      ${!pay ? `<div class="frow"><label class="f">منبع پرداخت<select class="inp" id="pySource">
+        <option value="cash">واریز نقدی (به صندوق)</option>
+        <option value="credit">پرداخت از محل طلبِ واحد</option></select></label>
+        <label class="f" id="pyCreditWrap" style="display:none">طلبِ موجودِ واحد<input class="inp" id="pyCreditAvail" disabled></label></div>` : ''}
       <div class="frow">
         <label class="f">تاریخ${dateBoxHtml('py', payJ)}</label>
-        <label class="f">صندوق مقصد<select class="inp" id="pyFund">${META.funds.map(f => `<option value="${f.id}" ${pay && pay.fund_id === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
+        <label class="f" id="pyFundWrap">صندوق مقصد<select class="inp" id="pyFund">${META.funds.map(f => `<option value="${f.id}" ${pay && pay.fund_id === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
       </div>
-      <div class="frow">
+      <div class="frow" id="pyMethodRow">
         <label class="f">روش پرداخت<select class="inp" id="pyMethod"><option value="">—</option>${META.payMethods.map(m => `<option ${pay && pay.method === m ? 'selected' : ''}>${esc(m)}</option>`).join('')}</select></label>
         <label class="f">توضیح<input class="inp" id="pyNote" placeholder="مثلاً: بابت شارژ مرداد" value="${esc(pay ? pay.note : '')}"></label>
       </div>
-      ${docPickerHtml('pyDoc')}
+      <div id="pyDocWrap">${docPickerHtml('pyDoc')}</div>
       <div class="panel" style="margin:0;background:var(--panel-2)">
         <div class="phead"><b>بدهی‌های باز این واحد</b><span class="hint strong" id="pyCredit"></span></div>
         <p class="hint" style="margin:0 0 8px">${pay ? 'با ذخیرهٔ ویرایش، مبلغ دوباره از قدیمی‌ترین بدهی تسویه می‌شود (FIFO).' : 'اگر هیچ فاکتوری تیک نخورد، مبلغ به‌صورت خودکار از قدیمی‌ترین بدهی تسویه می‌شود (FIFO).'}</p>
@@ -738,21 +742,43 @@ function paymentForm(presetUnit, pay, after, presetProject) {
     `<button class="btn primary" id="pySave">${pay ? 'ذخیرهٔ تغییرات' : 'ثبت دریافتی'}</button><button class="btn" id="pyCancel">انصراف</button>`)
   wireToday(body); wireMoney(body); wireDocPicker('pyDoc', store)
   $('#pyCancel').onclick = closeModal
+  const srcEl = () => $('#pySource'), isCredit = () => srcEl() && srcEl().value === 'credit'
+  store.credit = 0
+  const syncSource = () => {
+    const c = isCredit()
+    if ($('#pyFundWrap')) $('#pyFundWrap').style.display = c ? 'none' : ''
+    if ($('#pyMethodRow')) $('#pyMethodRow').style.display = c ? 'none' : ''
+    if ($('#pyDocWrap')) $('#pyDocWrap').style.display = c ? 'none' : ''
+    if ($('#pyCreditWrap')) $('#pyCreditWrap').style.display = c ? '' : 'none'
+    if ($('#pyCreditAvail')) $('#pyCreditAvail').value = moneyU(store.credit)
+    $('#pySave').textContent = c ? 'پرداخت از طلب' : 'ثبت دریافتی'
+  }
   const loadOpen = guard(async () => {
-    if (forProject) {
-      $('#pyCredit').textContent = ''
-      $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت «طلبِ پروژه» برای واحد می‌ماند.</div>'
-      return
-    }
     const d = await api(`/api/unit/${$('#pyUnit').value}/open`)
-    $('#pyCredit').textContent = d.credit > 0 ? `بستانکاری فعلی: ${moneyU(d.credit)}` : ''
-    $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th>${pay ? '' : ''}</th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
+    store.credit = d.credit || 0
+    $('#pyCredit').textContent = d.credit > 0 ? `طلبِ فعلیِ واحد: ${moneyU(d.credit)}` : ''
+    if (forProject && !isCredit()) $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت «طلبِ پروژه» برای واحد می‌ماند.</div>'
+    else $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th></th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
       ${d.rows.map(r => `<tr><td>${pay ? '' : `<input type="checkbox" data-inv="${r.invoice_id}" style="width:16px;height:16px;accent-color:var(--accent)">`}</td>
         <td>${esc(r.title)}</td><td class="num">${r.is_opening ? 'انتقالی' : faDigit(r.j_date)}</td><td class="num amt-out">${money(r.remaining)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">این واحد بدهی بازی ندارد — مبلغ به‌عنوان بستانکاری ثبت می‌شود</div>'
+    syncSource()
   })
+  if (srcEl()) srcEl().onchange = () => { syncSource(); loadOpen() }
   $('#pyUnit').onchange = loadOpen; loadOpen()
   $('#pySave').onclick = guard(async () => {
+    if (!pay && isCredit()) {
+      if (!(store.credit > 0)) throw new Error('این واحد طلبی ندارد')
+      const amt = readMoney($('#pyAmount'))
+      const invoiceIds = [...$('#pyOpen').querySelectorAll('input[type=checkbox]:checked')].map(c => +c.dataset.inv)
+      const payload = { unitId: +$('#pyUnit').value, ...readDate('py'), note: $('#pyNote').value.trim() }
+      if (amt > 0) payload.amount = amt
+      if (forProject) payload.projectId = forProject
+      else if (invoiceIds.length) payload.invoiceIds = invoiceIds
+      const r = await post('/api/pay-from-credit', payload)
+      closeModal(); toast(`از طلب پرداخت شد — ${moneyU(r.used)} تسویه${r.creditLeft > 0 ? ` · ${moneyU(r.creditLeft)} طلبِ باقی‌مانده` : ''}`)
+      after ? after() : refresh(); return
+    }
     const amount = readMoney($('#pyAmount')); if (!(amount > 0)) throw new Error('مبلغ را وارد کنید')
     const payload = {
       unitId: +$('#pyUnit').value, amount, fundId: +$('#pyFund').value,
@@ -878,6 +904,10 @@ const showUnitCard = guard(async id => {
         <td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td></tr>`).join('') : emptyRow(7, 'پرداختی ثبت نشده')}
       </tbody></table></div></div>
+    ${d.creditUses && d.creditUses.length ? `<div class="panel printhide"><div class="phead"><b>پرداخت از محل طلب</b><span class="hint">استفاده از بستانکاریِ واحد بابت بدهی‌های دیگر (بدون ورود نقدینگی)</span></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>بابت</th><th>توضیح</th></tr></thead><tbody>
+      ${d.creditUses.map(c => `<tr><td class="num">${faDigit(c.j_date)}</td><td class="num amt-in">${money(c.amount)}</td><td>${esc(c.title || '—')}</td><td>${esc(c.note || '—')}</td></tr>`).join('')}
+      </tbody></table></div></div>` : ''}
     <div class="printarea" id="stmtArea"></div>`
   wireCommon()
   $('#backBtn').onclick = () => { VIEW = 'units'; render() }
