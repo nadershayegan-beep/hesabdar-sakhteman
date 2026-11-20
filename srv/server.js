@@ -483,7 +483,7 @@ const paymentLeftover = pay => pay.amount - paymentAllocated(pay.id)
 
 // سهم‌های تسویه‌نشده‌ی یک واحد، از قدیمی‌ترین فاکتور (مانده‌ی اولیه همیشه اول است)
 function openSharesOfUnit(unitId, onlyIds = null) {
-  const rows = db.prepare(`SELECT s.*, i.g_date, i.id inv_id, i.project_id proj_id FROM invoice_shares s
+  const rows = db.prepare(`SELECT s.*, i.g_date, i.id inv_id, i.project_id proj_id, i.is_charge chg, i.is_opening opn, i.is_billing bill FROM invoice_shares s
     JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=?
     ORDER BY i.g_date, i.id, s.id`).all(unitId)
   const filtered = onlyIds ? rows.filter(r => onlyIds.includes(r.id) || onlyIds.includes(r.invoice_id)) : rows
@@ -502,13 +502,15 @@ function allocatePayment(paymentId, targetInvoiceIds = null) {
     const inv = projectChargeInvoice(pay.project_id)
     if (inv) queue.push(...openSharesOfUnit(pay.unit_id, [inv.id]))
   } else {
-    // پرداخت عمومی: انتخابِ صریحِ کاربر محترم است (حتی اگر شارژِ پروژه را هدف بگیرد)؛
-    // ولی تسویهٔ خودکارِ (FIFO) شارژِ پروژه انجام نمی‌شود تا با پرداختِ ماهانه قاطی نشود.
+    // پرداخت عمومی: انتخابِ صریحِ کاربر محترم است (حتی اگر قبوض/پروژه را هدف بگیرد)؛
+    // ولی تسویهٔ خودکارِ (FIFO) فقط روی سبدِ «شارژ/جاری» می‌نشیند (شارژ ماهانه، انتقالی، جریمه)،
+    // نه قبوض/متفرقه و نه پروژه — تا اعتبارِ واحد خودبه‌خود روی قبض‌ها پخش نشود.
     const all = openSharesOfUnit(pay.unit_id)
     const tset = new Set(targetInvoiceIds && targetInvoiceIds.length ? targetInvoiceIds : [])
+    const isChargeBucket = s => s.chg || s.opn || (s.bill && !s.proj_id)
     const targeted = tset.size ? all.filter(s => tset.has(s.invoice_id)) : []
-    const general = all.filter(s => !s.proj_id && !tset.has(s.invoice_id))
-    queue.push(...targeted, ...general)
+    const auto = all.filter(s => !tset.has(s.invoice_id) && !s.proj_id && isChargeBucket(s))
+    queue.push(...targeted, ...auto)
   }
   const ins = db.prepare(`INSERT INTO payment_allocations(payment_id,share_id,amount) VALUES(?,?,?)`)
   const touched = new Set()
