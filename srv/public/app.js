@@ -514,7 +514,7 @@ function invoiceForm(inv) {
       if (store.custom[i.dataset.cu] == null) store.custom[i.dataset.cu] = d2r(+enDigit(i.value).replace(/[^\d]/g, '') || 0)
     })
   }), 300)
-  ;['#ivAmount', '#ivMethod', '#ivVacant'].forEach(s => { $(s).addEventListener('input', () => { if (fromFund()) mirrorPaid(); else preview() }); $(s).addEventListener('change', () => { if (!fromFund()) preview() }) })
+  ;['#ivAmount', '#ivMethod', '#ivVacant'].forEach(s => { $(s).addEventListener('input', () => { mirrorPaid(); if (!fromFund()) preview() }); $(s).addEventListener('change', () => { if (!fromFund()) preview() }) })
   $('#ivMethod').onchange = () => { store.custom = {}; if (!fromFund()) preview() }
   if (!inv) applyDefaultFund()
   syncMode(); if (!fromFund()) preview()
