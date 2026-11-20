@@ -1022,13 +1022,20 @@ function autoIssueRecurring() {
 // گزارشِ تفکیکیِ بدهیِ هر واحد در سه سبد: شارژ(جاری) | صندوق عمرانی(فیش‌ها/تقسیمی) | پروژه‌ها(بدهی/طلب)
 function unitLedgerReport() {
   const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  // نگاشتِ سهمِ هزینهٔ واقعیِ هر واحد در هر پروژه — ستونِ پروژه نسبت به «مخارجِ واقعی» سنجیده می‌شود (طلبِ مازاد دیده شود)
+  const projFinal = {}
+  for (const inv of db.prepare(`SELECT * FROM invoices WHERE project_id>0 AND is_billing=1`).all()) {
+    const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(inv.project_id)
+    const basis = (p && p.final_amount) || projectNetCost(inv.project_id).net || inv.amount
+    projFinal[inv.project_id] = Object.fromEntries(computeShares(invoiceUnits(inv.id), inv.method, basis, {}).map(s => [s.unit_id, s.share_amount]))
+  }
   const units = listUnits().filter(u => u.active)
   const rows = units.map(u => {
     const shares = db.prepare(`SELECT s.id, s.share_amount, i.is_charge, i.is_billing, i.is_opening, i.from_fund, i.project_id
       FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=?`).all(u.id)
     let charge = 0, omrani = 0, project = 0
     for (const s of shares) {
-      if (s.is_billing && s.project_id) project += s.share_amount - unitProjectPaid(u.id, s.project_id) // علامت‌دار: بدهی(+)/طلب(−)
+      if (s.is_billing && s.project_id) { const fin = (projFinal[s.project_id] || {})[u.id] || 0; project += fin - unitProjectPaid(u.id, s.project_id) } // نسبت به هزینهٔ واقعی؛ علامت‌دار: بدهی(+)/طلب(−)
       else if (s.is_charge || s.is_opening || s.is_billing) charge += Math.max(0, s.share_amount - shareAllocated(s.id))
       else if (!s.from_fund) omrani += Math.max(0, s.share_amount - shareAllocated(s.id))
     }
