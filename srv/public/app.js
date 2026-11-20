@@ -1079,7 +1079,7 @@ function settleForm(funds, debt) {
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
+  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['ledger', 'بدهی تفکیکی واحدها'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
   $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
     `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -1323,6 +1323,29 @@ const saveDebtorsBatchPdf = guard(async rows => {
   const badN = (r.results || []).length - okN
   toast(`${faDigit(okN)} صورت‌حساب در پوشه‌ی «اسناد صادرشده» ذخیره شد${badN ? ` (${faDigit(badN)} ناموفق)` : ''}`, badN > 0)
 })
+REPORTS.ledger = async () => {
+  const r = await api('/api/report/unit-ledger')
+  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${money(-v)}</span>` : '۰'
+  $('#repBody').innerHTML = `
+    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
+    <div class="kpis">
+      ${kpi('جمع بدهی شارژ', money(r.total.charge), 'جاری', 'bad')}
+      ${kpi('جمع بدهی عمرانی', money(r.total.omrani), 'فیش‌ها/تقسیمی', 'bad')}
+      ${kpi('جمعِ پروژه‌ها', bal(r.total.project), 'بدهی/طلب', '')}
+    </div>
+    <div class="panel"><div class="tablewrap"><table class="tx">
+      <thead><tr><th>واحد</th><th>ساکن</th><th>بدهی شارژ (جاری)</th><th>بدهی صندوق عمرانی</th><th>بدهی/طلب پروژه‌ها</th><th>جمع خالص</th></tr></thead><tbody>
+      ${r.rows.length ? r.rows.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>واحد ${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
+        <td class="num ${u.charge > 0 ? 'amt-out' : ''}">${u.charge > 0 ? money(u.charge) : '۰'}</td>
+        <td class="num ${u.omrani > 0 ? 'amt-out' : ''}">${u.omrani > 0 ? money(u.omrani) : '۰'}</td>
+        <td class="num">${bal(u.project)}</td>
+        <td class="num ${u.net > 0 ? 'amt-out' : u.net < 0 ? 'amt-in' : ''}">${u.net > 0 ? money(u.net) : u.net < 0 ? 'طلبکار ' + money(-u.net) : '۰'}</td></tr>`).join('')
+      : emptyRow(6, 'واحدی ثبت نشده')}
+      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.project)}</td><td class="num">${bal(r.total.net)}</td></tr></tfoot>
+    </table></div></div>`
+  wireCommon()
+}
 REPORTS.invoices = async () => {
   const rows = await api('/api/invoices')
   const t = rows.reduce((a, i) => ({ a: a.a + i.amount, c: a.c + i.collected, r: a.r + i.remaining }), { a: 0, c: 0, r: 0 })

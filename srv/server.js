@@ -1000,6 +1000,25 @@ function autoIssueRecurring() {
   } catch (e) { console.error('صدور خودکار هزینهٔ دوره‌ای ناموفق:', e.message) }
 }
 
+// گزارشِ تفکیکیِ بدهیِ هر واحد در سه سبد: شارژ(جاری) | صندوق عمرانی(فیش‌ها/تقسیمی) | پروژه‌ها(بدهی/طلب)
+function unitLedgerReport() {
+  const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  const units = listUnits().filter(u => u.active)
+  const rows = units.map(u => {
+    const shares = db.prepare(`SELECT s.id, s.share_amount, i.is_charge, i.is_billing, i.is_opening, i.from_fund, i.project_id
+      FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=?`).all(u.id)
+    let charge = 0, omrani = 0, project = 0
+    for (const s of shares) {
+      if (s.is_billing && s.project_id) project += s.share_amount - unitProjectPaid(u.id, s.project_id) // علامت‌دار: بدهی(+)/طلب(−)
+      else if (s.is_charge || s.is_opening || s.is_billing) charge += Math.max(0, s.share_amount - shareAllocated(s.id))
+      else if (!s.from_fund) omrani += Math.max(0, s.share_amount - shareAllocated(s.id))
+    }
+    return { id: u.id, number: u.number, resident_name: u.resident_name, charge, omrani, project, net: charge + omrani + project }
+  }).sort((a, b) => faToEn(a.number) - faToEn(b.number))
+  const total = rows.reduce((a, r) => ({ charge: a.charge + r.charge, omrani: a.omrani + r.omrani, project: a.project + r.project, net: a.net + r.net }), { charge: 0, omrani: 0, project: 0, net: 0 })
+  return { rows, total }
+}
+
 // ---------- ضریب تأخیر در پرداخت ----------
 const gMinusDays = (g, days) => { const d = new Date(Date.parse(g + 'T00:00:00Z') - days * 86400000); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}` }
 function lateFeeCategoryId() {
@@ -2571,6 +2590,7 @@ const server = createServer(async (req, res) => {
     // ---- گزارش‌ها ----
     if (path === '/api/report/dashboard' && M === 'GET') return sendJSON(res, 200, dashboard())
     if (path === '/api/report/debtors' && M === 'GET') return sendJSON(res, 200, debtorsReport())
+    if (path === '/api/report/unit-ledger' && M === 'GET') return sendJSON(res, 200, unitLedgerReport())
     if (path === '/api/report/manager' && M === 'GET') return sendJSON(res, 200, managerReport(Q.from, Q.to))
     if (path === '/api/report/balance' && M === 'GET') return sendJSON(res, 200, balanceCheck())
     if (path === '/api/report/fundpay' && M === 'GET') return sendJSON(res, 200, fundPaymentsReport(Q.from, Q.to))
