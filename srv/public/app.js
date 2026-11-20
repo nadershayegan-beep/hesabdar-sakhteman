@@ -946,7 +946,10 @@ const showUnitCard = guard(async id => {
         <td><span class="catpill">${esc(s.category || '—')}</span></td><td class="num">${s.is_opening ? '—' : faDigit(s.j_date)}</td>
         <td class="num">${money(s.share_amount)}</td><td class="num amt-in">${money(s.paid)}</td>
         <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${money(s.remaining)}</td></tr>`).join('') : emptyRow(6, 'سهمی ثبت نشده')}
-      </tbody></table></div></div>
+      </tbody><tfoot><tr><td colspan="3">جمع</td>
+        <td class="num">${money(d.shares.reduce((a, s) => a + s.share_amount, 0))}</td>
+        <td class="num amt-in">${money(d.shares.reduce((a, s) => a + s.paid, 0))}</td>
+        <td class="num amt-out">${money(d.shares.reduce((a, s) => a + Math.max(0, s.remaining), 0))}</td></tr></tfoot></table></div></div>
     <div class="panel printhide"><div class="phead"><b>پرداخت‌ها</b></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th></tr></thead><tbody>
       ${d.payments.length ? d.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td class="num amt-in">${money(p.amount)}</td>
@@ -1330,6 +1333,7 @@ REPORTS.ledger = async () => {
     <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
     <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
     <div class="kpis">
+      ${kpi('جمع کل بدهیِ واحدها', bal(r.total.net), 'شارژ + قبوض + پروژه', 'hero bad')}
       ${kpi('جمع بدهی شارژ', money(r.total.charge), 'جاری', 'bad')}
       ${kpi('جمع بدهی قبوض و متفرقه', money(r.total.omrani), 'آب/برق/گاز و هزینه‌های جزئی', 'bad')}
       ${kpi('جمعِ پروژه‌ها (عمرانی)', bal(r.total.project), 'بدهی/طلب', '')}
