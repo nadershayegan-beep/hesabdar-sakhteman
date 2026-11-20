@@ -384,19 +384,19 @@ VIEWS.invoices = async () => {
       <div class="chips">${[['', 'همه'], ['open', 'باز'], ['settled', 'تسویه']].map(([v, t]) => `<button class="chip ${invFilter.status === v ? 'on' : ''}" data-st="${v}">${t}</button>`).join('')}</div>
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>مبلغ</th><th>تسهیم</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
+      <thead><tr><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تسهیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}">
         <td><b>${esc(i.title)}</b>${i.is_charge ? ' <span class="badge b-charge">شارژ</span>' : ''}${i.from_fund ? ' <span class="badge b-charge">جاری — از صندوق</span>' : ''}${i.paid_by_manager ? ' <span class="badge b-mgr">جیب مدیر</span>' : ''}${(i.payable && i.fundUnpaid > 0) ? ' <span class="badge b-open">از صندوق پرداخت‌نشده</span>' : (i.payable && i.fundPaid > 0 ? ' <span class="badge b-settled">از صندوق پرداخت‌شده</span>' : '')}${i.vendor ? `<br><span class="dim" style="font-size:11px;color:var(--faint)">${esc(i.vendor)}</span>` : ''}</td>
         <td><span class="catpill">${esc(i.categoryName)}</span></td>
         <td class="num">${faDigit(i.j_date)}</td>
-        <td class="num">${money(i.amount)}</td>
         <td>${i.from_fund ? '<span class="dim">—</span>' : `<span class="catpill">${esc(i.methodFa)}</span>`}</td>
+        <td class="num">${money(i.amount)}</td>
         <td class="num amt-in">${money(i.payable ? i.fundPaid : i.collected)}</td>
         <td class="num ${(i.payable ? i.fundUnpaid : i.remaining) > 0 ? 'amt-out' : ''}">${money(i.payable ? i.fundUnpaid : i.remaining)}</td>
         <td>${statusBadge(i.status)}</td>
         ${adminOnly(`<td class="rowact"><button class="btn tiny" data-editinv="${i.id}" title="ویرایش">✏️</button> <button class="del" data-delinv="${i.id}" title="حذف">🗑</button></td>`)}</tr>`).join('')
       : emptyRow(isAdmin() ? 9 : 8, 'هنوز فاکتوری ثبت نشده است')}</tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="3">جمع (${faDigit(rows.length)} فاکتور)</td><td class="num">${money(totals.amount)}</td><td></td>
+      ${rows.length ? `<tfoot><tr><td colspan="3">جمع (${faDigit(rows.length)} فاکتور)</td><td></td><td class="num">${money(totals.amount)}</td>
         <td class="num">${money(totals.collected)}</td><td class="num">${money(totals.remaining)}</td><td colspan="${isAdmin() ? 2 : 1}"></td></tr></tfoot>` : ''}
     </table></div></div>`
   wireCommon()
