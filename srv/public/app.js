@@ -470,6 +470,10 @@ function invoiceForm(inv) {
     vendor: $('#ivVendor').value.trim(), note: $('#ivNote').value.trim(),
     custom: store.custom, ...readDate('iv')
   })
+  // صندوقِ پیش‌فرض بر اساس نحوهٔ تأمین: «از محل شارژ» → صندوق شارژ/جاری · «تقسیم بین واحدها» → صندوق عمرانی/تعمیرات
+  const pickFund = ff => { const by = re => (funds.find(x => re.test(x.name)) || {}).id
+    return ff ? (by(/شارژ|جاری/) || (funds[0] || {}).id) : (by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
+  const applyDefaultFund = () => { const id = pickFund(fromFund()); if (id && $('#ivFund')) $('#ivFund').value = id }
   const paidVisible = () => { const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
   const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
   const syncMode = () => {
@@ -481,14 +485,14 @@ function invoiceForm(inv) {
   }
   if ($('#ivPaidNow')) $('#ivPaidNow').addEventListener('input', () => { store.paidNowEdited = true })
   if ($('#ivMgr')) $('#ivMgr').addEventListener('change', syncMode)
-  $('#ivFromFund').onchange = () => { syncMode(); if (!fromFund()) preview() }
+  $('#ivFromFund').onchange = () => { applyDefaultFund(); syncMode(); if (!fromFund()) preview() }
   // انتخاب دسته ⇒ روش و صندوق و شمول واحد خالیِ پیش‌فرضِ همان دسته
   $('#ivCat').onchange = () => {
     const c = catById(+$('#ivCat').value); if (!c) return
     $('#ivMethod').value = c.default_method
-    if (c.default_fund_id) $('#ivFund').value = c.default_fund_id
+    applyDefaultFund() // صندوق بر اساس نحوهٔ تأمین تعیین می‌شود، نه دسته
     $('#ivVacant').checked = !!c.include_vacant
-    preview()
+    if (!fromFund()) preview()
   }
   const preview = debounce(guard(async () => {
     const f = readForm()
@@ -512,6 +516,7 @@ function invoiceForm(inv) {
   }), 300)
   ;['#ivAmount', '#ivMethod', '#ivVacant'].forEach(s => { $(s).addEventListener('input', () => { if (fromFund()) mirrorPaid(); else preview() }); $(s).addEventListener('change', () => { if (!fromFund()) preview() }) })
   $('#ivMethod').onchange = () => { store.custom = {}; if (!fromFund()) preview() }
+  if (!inv) applyDefaultFund()
   syncMode(); if (!fromFund()) preview()
 
   $('#ivSave').onclick = guard(async () => {
