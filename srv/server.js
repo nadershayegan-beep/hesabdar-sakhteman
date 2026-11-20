@@ -1045,7 +1045,9 @@ function unitLedgerReport() {
       else if (s.is_charge || s.is_opening || s.is_billing) charge += Math.max(0, s.share_amount - shareAllocated(s.id))
       else if (!s.from_fund) omrani += Math.max(0, s.share_amount - shareAllocated(s.id))
     }
-    return { id: u.id, number: u.number, resident_name: u.resident_name, charge, omrani, projectDue, projectBal, project: projectBal, net: charge + omrani + projectBal }
+    // جمع خالص = بدهیِ قابلِ وصول (شارژ + قبوض + تعهدِ باقی‌ماندهٔ پروژه)؛ طلبِ مازادِ پروژه حساب نمی‌شود (بدون تصمیم هیئت‌مدیره برنمی‌گردد)
+    const net = charge + omrani + Math.max(0, projectDue)
+    return { id: u.id, number: u.number, resident_name: u.resident_name, charge, omrani, projectDue, projectBal, project: projectBal, net }
   }).sort((a, b) => faToEn(a.number) - faToEn(b.number))
   const total = rows.reduce((a, r) => ({ charge: a.charge + r.charge, omrani: a.omrani + r.omrani, projectDue: a.projectDue + r.projectDue, projectBal: a.projectBal + r.projectBal, project: a.project + r.projectBal, net: a.net + r.net }), { charge: 0, omrani: 0, projectDue: 0, projectBal: 0, project: 0, net: 0 })
   return { rows, total }
