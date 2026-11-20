@@ -394,7 +394,7 @@ VIEWS.invoices = async () => {
         <td class="num amt-in">${money(i.from_fund ? i.fundPaid : i.collected)}</td>
         <td class="num ${(i.from_fund ? i.fundUnpaid : i.remaining) > 0 ? 'amt-out' : ''}">${money(i.from_fund ? i.fundUnpaid : i.remaining)}</td>
         <td>${statusBadge(i.status)}</td>
-        ${adminOnly(`<td><button class="del" data-delinv="${i.id}" title="حذف">🗑</button></td>`)}</tr>`).join('')
+        ${adminOnly(`<td class="rowact"><button class="btn tiny" data-editinv="${i.id}" title="ویرایش">✏️</button> <button class="del" data-delinv="${i.id}" title="حذف">🗑</button></td>`)}</tr>`).join('')
       : emptyRow(isAdmin() ? 9 : 8, 'هنوز فاکتوری ثبت نشده است')}</tbody>
       ${rows.length ? `<tfoot><tr><td colspan="3">جمع (${faDigit(rows.length)} فاکتور)</td><td class="num">${money(totals.amount)}</td><td></td>
         <td class="num">${money(totals.collected)}</td><td class="num">${money(totals.remaining)}</td><td colspan="${isAdmin() ? 2 : 1}"></td></tr></tfoot>` : ''}
@@ -403,6 +403,11 @@ VIEWS.invoices = async () => {
   $('#fq').oninput = debounce(() => { invFilter.q = $('#fq').value.trim(); render() }, 350)
   $('#fcat').onchange = () => { invFilter.category_id = $('#fcat').value; render() }
   document.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { invFilter.status = b.dataset.st; render() })
+  document.querySelectorAll('[data-editinv]').forEach(b => b.onclick = e => {
+    e.stopPropagation()
+    const inv = rows.find(r => r.id == b.dataset.editinv)
+    if (inv) invoiceForm(inv)
+  })
   document.querySelectorAll('[data-delinv]').forEach(b => b.onclick = e => {
     e.stopPropagation()
     confirmBox('این فاکتور و همه‌ی سهم‌هایش حذف شود؟ پرداخت‌های تخصیص‌یافته آزاد و به بدهی‌های دیگر منتقل می‌شوند.',
