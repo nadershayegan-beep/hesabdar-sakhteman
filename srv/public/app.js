@@ -472,7 +472,7 @@ function invoiceForm(inv) {
   })
   // صندوقِ پیش‌فرض بر اساس نحوهٔ تأمین: «از محل شارژ» → صندوق شارژ/جاری · «تقسیم بین واحدها» → صندوق عمرانی/تعمیرات
   const pickFund = ff => { const by = re => (funds.find(x => re.test(x.name)) || {}).id
-    return ff ? (by(/شارژ|جاری/) || (funds[0] || {}).id) : (by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
+    return ff ? (by(/شارژ|جاری/) || (funds[0] || {}).id) : (by(/قبوض|متفرقه/) || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
   const applyDefaultFund = () => { const id = pickFund(fromFund()); if (id && $('#ivFund')) $('#ivFund').value = id }
   const paidVisible = () => { const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
   const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
@@ -1331,11 +1331,11 @@ REPORTS.ledger = async () => {
     <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
     <div class="kpis">
       ${kpi('جمع بدهی شارژ', money(r.total.charge), 'جاری', 'bad')}
-      ${kpi('جمع بدهی عمرانی', money(r.total.omrani), 'فیش‌ها/تقسیمی', 'bad')}
-      ${kpi('جمعِ پروژه‌ها', bal(r.total.project), 'بدهی/طلب', '')}
+      ${kpi('جمع بدهی قبوض و متفرقه', money(r.total.omrani), 'آب/برق/گاز و هزینه‌های جزئی', 'bad')}
+      ${kpi('جمعِ پروژه‌ها (عمرانی)', bal(r.total.project), 'بدهی/طلب', '')}
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>بدهی شارژ (جاری)</th><th>بدهی صندوق عمرانی</th><th>بدهی/طلب پروژه‌ها</th><th>جمع خالص</th></tr></thead><tbody>
+      <thead><tr><th>واحد</th><th>ساکن</th><th>بدهی شارژ (جاری)</th><th>بدهی قبوض و متفرقه</th><th>بدهی/طلب پروژه‌ها (عمرانی)</th><th>جمع خالص</th></tr></thead><tbody>
       ${r.rows.length ? r.rows.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>واحد ${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num ${u.charge > 0 ? 'amt-out' : ''}">${u.charge > 0 ? money(u.charge) : '۰'}</td>
         <td class="num ${u.omrani > 0 ? 'amt-out' : ''}">${u.omrani > 0 ? money(u.omrani) : '۰'}</td>
