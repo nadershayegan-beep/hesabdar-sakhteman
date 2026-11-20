@@ -424,12 +424,14 @@ function invoiceForm(inv) {
   const cats = META.categories, funds = META.funds
   const c0 = inv ? catById(inv.category_id) : (cats.find(c => !c.is_charge_cat) || cats[0])
   const j = inv ? { jy: +inv.j_date.slice(0, 4), jm: +inv.j_date.slice(5, 7), jd: +inv.j_date.slice(8, 10) } : null
+  const initMode = inv ? (inv.from_fund ? 'charge' : (/عمران/.test(inv.fundName || '') ? 'omrani' : 'bills')) : 'charge'
   const body = openModal(inv ? 'ویرایش فاکتور' : 'ثبت فاکتور جدید', `
     <div class="form">
       <label class="f">عنوان فاکتور<input class="inp" id="ivTitle" placeholder="مثلاً: تعمیر مشعل موتورخانه" value="${esc(inv ? inv.title : '')}"></label>
       <label class="f">نحوهٔ تأمین هزینه<select class="inp" id="ivFromFund">
-        <option value="1" ${(inv ? (inv.from_fund ? 1 : 0) : 1) === 1 ? 'selected' : ''}>از محل شارژ — کسر از صندوق (بدون بدهکار کردن واحدها)</option>
-        <option value="0" ${(inv ? (inv.from_fund ? 1 : 0) : 1) === 0 ? 'selected' : ''}>تقسیم جداگانه بین واحدها (هزینهٔ فوق‌العاده)</option>
+        <option value="charge" ${initMode === 'charge' ? 'selected' : ''}>از محل شارژ (صندوق شارژ) — بدون تقسیم بین واحدها</option>
+        <option value="bills" ${initMode === 'bills' ? 'selected' : ''}>قبوض و متفرقه — تقسیم بین واحدها (صندوق قبوض)</option>
+        <option value="omrani" ${initMode === 'omrani' ? 'selected' : ''}>عمرانی — تقسیم بین واحدها (صندوق عمرانی)</option>
       </select></label>
       <div class="frow">
         <label class="f">دسته‌ی هزینه<select class="inp" id="ivCat">${cats.map(c => `<option value="${c.id}" ${c0 && c0.id === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select></label>
@@ -461,7 +463,7 @@ function invoiceForm(inv) {
   wireToday(body); wireMoney(body); wireDocPicker('ivDoc', store)
   $('#ivCancel').onclick = closeModal
 
-  const fromFund = () => $('#ivFromFund').value === '1'
+  const fromFund = () => $('#ivFromFund').value === 'charge'
   const readForm = () => ({
     title: $('#ivTitle').value.trim(), categoryId: +$('#ivCat').value, amount: readMoney($('#ivAmount')),
     method: $('#ivMethod').value, includeVacant: $('#ivVacant').checked, fundId: +$('#ivFund').value,
@@ -471,9 +473,12 @@ function invoiceForm(inv) {
     custom: store.custom, ...readDate('iv')
   })
   // صندوقِ پیش‌فرض بر اساس نحوهٔ تأمین: «از محل شارژ» → صندوق شارژ/جاری · «تقسیم بین واحدها» → صندوق عمرانی/تعمیرات
-  const pickFund = ff => { const by = re => (funds.find(x => re.test(x.name)) || {}).id
-    return ff ? (by(/شارژ|جاری/) || (funds[0] || {}).id) : (by(/قبوض|متفرقه/) || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
-  const applyDefaultFund = () => { const id = pickFund(fromFund()); if (id && $('#ivFund')) $('#ivFund').value = id }
+  const by = re => (funds.find(x => re.test(x.name)) || {}).id
+  const pickFund = () => { const v = $('#ivFromFund').value
+    return v === 'charge' ? (by(/شارژ|جاری/) || (funds[0] || {}).id)
+      : v === 'omrani' ? (by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id)
+      : (by(/قبوض|متفرقه/) || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
+  const applyDefaultFund = () => { const id = pickFund(); if (id && $('#ivFund')) $('#ivFund').value = id }
   store.paidNowEdited = !!inv // در ویرایش، مقدارِ فعلیِ پرداختِ صندوق حفظ شود و با تغییرِ مبلغ بازنویسی نشود
   const paidVisible = () => { if (inv && !inv.payable) return false; const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
   const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
