@@ -2246,7 +2246,7 @@ const server = createServer(async (req, res) => {
       const uMap = {}; for (const u of units) uMap[u.id] = u
       return sendJSON(res, 200, {
         amount, total: sumShares(shares),
-        rows: shares.map(s => ({ ...s, number: uMap[s.unit_id].number, resident: uMap[s.unit_id].resident_name, area: uMap[s.unit_id].area, occupants: uMap[s.unit_id].occupants, occupied: uMap[s.unit_id].occupied }))
+        rows: shares.map(s => ({ ...s, number: uMap[s.unit_id].number, resident: uMap[s.unit_id].resident_name, area: uMap[s.unit_id].area, occupants: uMap[s.unit_id].occupants, common_units: uMap[s.unit_id].common_units, occupied: uMap[s.unit_id].occupied }))
       })
     }
     if (path === '/api/invoices' && M === 'POST') {

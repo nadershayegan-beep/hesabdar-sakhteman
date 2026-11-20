@@ -498,11 +498,12 @@ function invoiceForm(inv) {
     const f = readForm()
     const r = await post('/api/invoices/preview', { amount: f.amount, method: f.method, includeVacant: f.includeVacant, custom: f.custom })
     const isCustom = f.method === 'custom'
+    const isOC = f.method === 'occ_common'
     $('#ivSum').textContent = `${faDigit(r.rows.length)} واحد · جمع سهم‌ها: ${moneyU(r.total)}`
-    $('#ivPreview').innerHTML = r.rows.length ? `<table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>متراژ</th><th>نفرات</th><th>سهم (${curFa()})</th></tr></thead><tbody>
-      ${r.rows.map(x => `<tr><td><b>${escFa(x.number)}</b>${x.occupied ? '' : ' <span class="badge b-vacant">خالی</span>'}</td><td>${esc(x.resident || '—')}</td>
-        <td class="num">${faDigit(x.area || 0)}</td><td class="num">${faDigit(x.occupants || 0)}</td>
-        <td class="num">${isCustom ? `<input class="inp num" style="width:130px;padding:6px 8px" data-cu="${x.unit_id}" value="${sep(Math.round(r2d(x.share_amount)))}" inputmode="numeric">` : money(x.share_amount)}</td></tr>`).join('')}
+    $('#ivPreview').innerHTML = r.rows.length ? `${isOC ? '<div class="hint" style="margin:0 0 6px">هر واحد = نفرات + <b>۱ سهم مشاعات</b>؛ واحد خالی فقط مشاعات را می‌دهد.</div>' : ''}<table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>نفرات</th>${isOC ? '<th>مشاعات</th><th>وزن</th>' : '<th>متراژ</th>'}<th>سهم (${curFa()})</th></tr></thead><tbody>
+      ${r.rows.map(x => { const oc = x.occupied ? (+x.occupants || 0) : 0, cm = +x.common_units || 0, w = oc + cm; return `<tr><td><b>${escFa(x.number)}</b>${x.occupied ? '' : ' <span class="badge b-vacant">خالی</span>'}</td><td>${esc(x.resident || '—')}</td>
+        <td class="num">${faDigit(oc)}</td>${isOC ? `<td class="num">${faDigit(cm)}</td><td class="num"><b>${faDigit(w)}</b></td>` : `<td class="num">${faDigit(x.area || 0)}</td>`}
+        <td class="num">${isCustom ? `<input class="inp num" style="width:130px;padding:6px 8px" data-cu="${x.unit_id}" value="${sep(Math.round(r2d(x.share_amount)))}" inputmode="numeric">` : money(x.share_amount)}</td></tr>` }).join('')}
       </tbody></table>` : '<div class="empty">هیچ واحد مشمولی نیست — ابتدا واحدها را وارد کنید</div>'
     if (isCustom) $('#ivPreview').querySelectorAll('[data-cu]').forEach(i => {
       i.oninput = () => {
