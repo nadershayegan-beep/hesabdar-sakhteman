@@ -244,7 +244,7 @@ const todayG = () => { const j = todayJ(); return gDateStr(j.jy, j.jm, j.jd) }
 // ---------- ثابت‌ها ----------
 const METHODS = ['equal', 'area', 'occupants', 'common', 'occ_common', 'per_unit_charge', 'custom']
 const METHOD_FA = {
-  equal: 'مساوی', area: 'بر اساس متراژ', occupants: 'بر اساس نفرات',
+  equal: 'مساوی بین واحدها', area: 'بر اساس متراژ', occupants: 'بر اساس نفرات',
   common: 'بر اساس مشاعات', occ_common: 'نفرات + مشاعات (سرانه)', per_unit_charge: 'شارژ هر واحد', custom: 'دستی'
 }
 const EXPENSE_KINDS = ['fixed', 'variable', 'unexpected']
