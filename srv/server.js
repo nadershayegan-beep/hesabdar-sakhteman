@@ -628,14 +628,16 @@ function addFundTxn(fundId, type, amount, extra = {}) {
   db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,g_date,j_date,note,created_by,created_at)
     VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, g, j, extra.note || '', extra.by || null, nowISO())
 }
-// صندوق اصلی (اولین صندوق) — مقصد پیش‌فرض خرید/فروش پروژه
+// صندوق اصلی (اولین صندوق)
 const mainFundId = () => { const f = db.prepare(`SELECT id FROM funds ORDER BY id LIMIT 1`).get(); return f ? f.id : null }
+// صندوق عمرانی — مقصد پیش‌فرضِ خرید/فروشِ پیمانکارِ پروژه (اگر نبود، صندوق اصلی)
+const omraniFundId = () => { const f = db.prepare(`SELECT id FROM funds WHERE name LIKE '%عمران%' ORDER BY id LIMIT 1`).get(); return f ? f.id : mainFundId() }
 // هم‌گام‌سازی اثر یک فاکتور پیمانکار روی صندوق: خریدِ پرداخت‌شده = خروج، فروشِ دریافت‌شده = ورود، پرداخت‌نشده = بدون تراکنش
 // idempotent: تراکنش قبلیِ همین فاکتور حذف و در صورت لزوم دوباره ساخته می‌شود
 function syncContractorFundTxn(ci, by) {
   db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(ci.id)
   if (!ci.paid || !(ci.amount > 0)) return
-  const fundId = ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : mainFundId()
+  const fundId = ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : omraniFundId()
   if (!fundId) return
   const isSale = ci.kind === 'sale'
   addFundTxn(fundId, isSale ? 'in' : 'out', ci.amount, {
@@ -1017,6 +1019,53 @@ function unitLedgerReport() {
   }).sort((a, b) => faToEn(a.number) - faToEn(b.number))
   const total = rows.reduce((a, r) => ({ charge: a.charge + r.charge, omrani: a.omrani + r.omrani, project: a.project + r.project, net: a.net + r.net }), { charge: 0, omrani: 0, project: 0, net: 0 })
   return { rows, total }
+}
+
+// صورت‌حسابِ تفکیکیِ یک واحد: سه بخشِ شارژ(جاری) | قبوض و متفرقه | پروژه‌ها، با ریزِ هر ردیف
+function unitStatement(unitId) {
+  const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId); if (!u) return null
+  const shares = db.prepare(`SELECT s.id, s.share_amount, i.title, i.j_date, i.is_charge, i.is_billing, i.is_opening, i.from_fund, i.project_id
+    FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=? ORDER BY i.g_date, i.id`).all(unitId)
+  const charge = [], omrani = [], projects = []
+  for (const s of shares) {
+    if (s.is_billing && s.project_id) {
+      const paid = unitProjectPaid(unitId, s.project_id)
+      const p = db.prepare(`SELECT title FROM projects WHERE id=?`).get(s.project_id)
+      projects.push({ title: p ? p.title : s.title, j_date: s.j_date, share: s.share_amount, paid, balance: s.share_amount - paid })
+    } else {
+      const paid = shareAllocated(s.id)
+      const row = { title: s.title, j_date: s.j_date, share: s.share_amount, paid, remaining: Math.max(0, s.share_amount - paid) }
+      if (s.is_charge || s.is_opening || s.is_billing) charge.push(row)
+      else if (!s.from_fund) omrani.push(row)
+    }
+  }
+  return {
+    unit: { id: u.id, number: u.number, resident_name: u.resident_name },
+    charge: { rows: charge, total: charge.reduce((x, r) => x + r.remaining, 0) },
+    omrani: { rows: omrani, total: omrani.reduce((x, r) => x + r.remaining, 0) },
+    projects: { rows: projects, total: projects.reduce((x, r) => x + r.balance, 0) },
+    buildingName: getSetting('buildingName'), today: (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
+  }
+}
+// گزارشِ یک صندوق: ریزِ ورودی/خروجی + موجودی/کسری + بدهیِ هر واحد به آن صندوق
+function fundReport(fundId) {
+  const f = db.prepare(`SELECT * FROM funds WHERE id=?`).get(fundId); if (!f) return null
+  const txns = db.prepare(`SELECT t.*, i.title inv_title, u.number unit_number, pf.name peer_name FROM fund_txns t
+    LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN payments p ON p.id=t.ref_payment_id LEFT JOIN units u ON u.id=p.unit_id
+    LEFT JOIN funds pf ON pf.id=t.peer_fund_id WHERE t.fund_id=? ORDER BY t.g_date DESC, t.id DESC`).all(fundId)
+  const received = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(fundId).s
+  const spent = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT}`).get(fundId).s
+  // دستهٔ بدهیِ این صندوق بر اساس نامش: شارژ | قبوض/متفرقه | عمرانی(پروژه‌ها)
+  const cat = /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project'
+  const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  const unitDebts = unitLedgerReport().rows
+    .map(r => ({ id: r.id, number: r.number, resident_name: r.resident_name, debt: r[cat] }))
+    .filter(r => cat === 'project' ? r.debt !== 0 : r.debt > 0)
+    .sort((a, b) => faToEn(a.number) - faToEn(b.number))
+  return {
+    fund: { id: f.id, name: f.name, kindFa: FUND_KIND_FA[f.kind] || f.kind, balance: fundBalance(f.id), received, spent, opening: f.opening_balance || 0 },
+    txns, unitDebts, category: cat, totalUnitDebt: unitDebts.reduce((s, r) => s + (cat === 'project' ? Math.max(0, r.debt) : r.debt), 0)
+  }
 }
 
 // ---------- ضریب تأخیر در پرداخت ----------
@@ -2591,6 +2640,8 @@ const server = createServer(async (req, res) => {
     if (path === '/api/report/dashboard' && M === 'GET') return sendJSON(res, 200, dashboard())
     if (path === '/api/report/debtors' && M === 'GET') return sendJSON(res, 200, debtorsReport())
     if (path === '/api/report/unit-ledger' && M === 'GET') return sendJSON(res, 200, unitLedgerReport())
+    if (path === '/api/report/unit-statement' && M === 'GET') { const r = unitStatement(+Q.unitId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'واحد یافت نشد' }) }
+    if (path === '/api/report/fund' && M === 'GET') { const r = fundReport(+Q.fundId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'صندوق یافت نشد' }) }
     if (path === '/api/report/manager' && M === 'GET') return sendJSON(res, 200, managerReport(Q.from, Q.to))
     if (path === '/api/report/balance' && M === 'GET') return sendJSON(res, 200, balanceCheck())
     if (path === '/api/report/fundpay' && M === 'GET') return sendJSON(res, 200, fundPaymentsReport(Q.from, Q.to))

@@ -1079,7 +1079,7 @@ function settleForm(funds, debt) {
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['ledger', 'بدهی تفکیکی واحدها'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'کارت واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
+  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['ledger', 'بدهی تفکیکی واحدها'], ['fund', 'گزارش صندوق'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'صورت‌حساب واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
   $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
     `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -1346,6 +1346,42 @@ REPORTS.ledger = async () => {
     </table></div></div>`
   wireCommon()
 }
+REPORTS.fund = async () => {
+  const funds = META.funds
+  const txnKind = t => ({ in: 'دریافت', out: 'پرداخت', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر' }[t.type] || t.type)
+  const catFa = c => ({ charge: 'شارژ (جاری)', omrani: 'قبوض و متفرقه', project: 'پروژه‌ها (عمرانی)' }[c] || '')
+  const draw = async id => {
+    const box = $('#rfBox'); if (!id) { box.innerHTML = '<div class="panel"><div class="empty">یک صندوق را انتخاب کنید</div></div>'; return }
+    box.innerHTML = '<div class="empty">در حال بارگذاری…</div>'
+    const d = await api('/api/report/fund?fundId=' + id)
+    box.innerHTML = `
+      <div class="kpis">
+        ${kpi('موجودی فعلی', money(d.fund.balance), d.fund.kindFa, d.fund.balance < 0 ? 'bad' : 'good')}
+        ${kpi('جمع ورودی', money(d.fund.received), '', 'good')}
+        ${kpi('جمع خرج‌شده', money(d.fund.spent), '', 'bad')}
+        ${kpi('بدهی واحدها به این صندوق', money(d.totalUnitDebt), catFa(d.category), d.totalUnitDebt > 0 ? 'bad' : '')}
+      </div>
+      <div class="grid2">
+        <div class="panel"><div class="phead"><b>ریز ورودی و خروجی</b></div>
+          <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>نوع</th><th>بابت</th><th>مبلغ</th></tr></thead><tbody>
+          ${d.txns.length ? d.txns.map(t => { const isIn = /in/.test(t.type); return `<tr><td class="num">${faDigit(t.j_date)}</td><td>${txnKind(t)}</td>
+            <td>${esc(t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : '') || t.peer_name || '—')}</td>
+            <td class="num ${isIn ? 'amt-in' : 'amt-out'}">${isIn ? '+' : '−'}${money(t.amount)}</td></tr>` }).join('') : emptyRow(4, 'تراکنشی ثبت نشده')}
+          </tbody></table></div></div>
+        <div class="panel"><div class="phead"><b>بدهی هر واحد به این صندوق</b><span class="hint">${catFa(d.category)}</span></div>
+          <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی/طلب</th></tr></thead><tbody>
+          ${d.unitDebts.length ? d.unitDebts.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>واحد ${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
+            <td class="num">${u.debt > 0 ? `<span class="amt-out">بدهکار ${money(u.debt)}</span>` : u.debt < 0 ? `<span class="amt-in">طلبکار ${money(-u.debt)}</span>` : 'تسویه'}</td></tr>`).join('') : emptyRow(3, 'واحدی به این صندوق بدهکار نیست')}
+          </tbody></table></div></div>
+      </div>`
+    wireCommon()
+  }
+  $('#repBody').innerHTML = `<div class="filters printhide"><select class="inp" id="rfSel"><option value="">— صندوق را انتخاب کنید —</option>
+      ${funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
+      <button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div id="rfBox"><div class="panel"><div class="empty">یک صندوق را انتخاب کنید</div></div></div>`
+  $('#rfSel').onchange = guard(() => draw(+$('#rfSel').value || 0))
+}
 REPORTS.invoices = async () => {
   const rows = await api('/api/invoices')
   const t = rows.reduce((a, i) => ({ a: a.a + i.amount, c: a.c + i.collected, r: a.r + i.remaining }), { a: 0, c: 0, r: 0 })
@@ -1390,10 +1426,39 @@ REPORTS.fundpay = async () => {
 }
 REPORTS.unit = async () => {
   const units = META.units
+  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${money(-v)}</span>` : 'تسویه'
+  const sect = (title, data, isProj) => {
+    const rows = data.rows
+    return `<div class="panel"><div class="phead"><b>${title}</b><span class="hint strong">${isProj ? bal(data.total) : (data.total > 0 ? `<span class="amt-out">بدهکار ${money(data.total)}</span>` : 'تسویه')}</span></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>${isProj ? 'پروژه' : 'عنوان'}</th><th>تاریخ</th><th>${isProj ? 'سهم (مصوبه)' : 'سهم'}</th><th>پرداختی</th><th>${isProj ? 'بدهی/طلب' : 'مانده'}</th></tr></thead><tbody>
+      ${rows.length ? rows.map(r => `<tr><td>${esc(r.title)}</td><td class="num">${r.j_date ? faDigit(r.j_date) : '—'}</td>
+        <td class="num">${money(r.share)}</td><td class="num amt-in">${money(r.paid)}</td>
+        <td class="num">${isProj ? bal(r.balance) : (r.remaining > 0 ? `<span class="amt-out">${money(r.remaining)}</span>` : 'تسویه')}</td></tr>`).join('') : emptyRow(5, 'موردی نیست')}
+      </tbody></table></div></div>`
+  }
+  const draw = async id => {
+    const box = $('#ruBox'); if (!id) { box.innerHTML = '<div class="panel"><div class="empty">یک واحد را انتخاب کنید</div></div>'; return }
+    box.innerHTML = '<div class="empty">در حال بارگذاری…</div>'
+    const d = await api('/api/report/unit-statement?unitId=' + id)
+    const net = d.charge.total + d.omrani.total + d.projects.total
+    box.innerHTML = `
+      <div class="kpis">
+        ${kpi('بدهی شارژ (جاری)', money(d.charge.total), '', d.charge.total > 0 ? 'bad' : 'good')}
+        ${kpi('بدهی قبوض و متفرقه', money(d.omrani.total), 'آب/برق/گاز و جزئی', d.omrani.total > 0 ? 'bad' : 'good')}
+        ${kpi('پروژه‌ها (عمرانی)', bal(d.projects.total), 'بدهی/طلب', '')}
+        ${kpi('جمع خالص', bal(net), '', net > 0 ? 'bad' : '')}
+      </div>
+      ${sect('شارژ ماهانه (جاری)', d.charge, false)}
+      ${sect('قبوض و متفرقه (آب/برق/گاز…)', d.omrani, false)}
+      ${sect('پروژه‌های عمرانی', d.projects, true)}`
+  }
   $('#repBody').innerHTML = `<div class="filters printhide"><select class="inp" id="ruSel"><option value="">— واحد را انتخاب کنید —</option>
-      ${units.map(u => `<option value="${u.id}">واحد ${escFa(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''}</option>`).join('')}</select></div>
-    <div class="panel"><div class="empty">برای دیدن کارت کامل، واحد را انتخاب کنید</div></div>`
-  $('#ruSel').onchange = () => { if ($('#ruSel').value) showUnitCard(+$('#ruSel').value) }
+      ${units.map(u => `<option value="${u.id}">واحد ${escFa(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''}</option>`).join('')}</select>
+      <button class="btn small" onclick="print()">🖨 چاپ</button>
+      <button class="btn small" id="ruFull">کارت کامل واحد</button></div>
+    <div id="ruBox"><div class="panel"><div class="empty">یک واحد را انتخاب کنید</div></div></div>`
+  $('#ruSel').onchange = guard(() => draw(+$('#ruSel').value || 0))
+  $('#ruFull').onclick = () => { if ($('#ruSel').value) showUnitCard(+$('#ruSel').value) }
 }
 REPORTS.balance = async () => {
   const b = await api('/api/report/balance')
