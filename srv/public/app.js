@@ -1334,20 +1334,25 @@ REPORTS.ledger = async () => {
     <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
     <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
     <div class="kpis">
-      ${kpi('جمع کل بدهیِ واحدها', bal(r.total.net), 'شارژ + قبوض + پروژه', 'hero bad')}
+      ${kpi('جمع کل (خالص)', bal(r.total.net), 'شارژ + قبوض + ماندهٔ پروژه', 'hero bad')}
       ${kpi('جمع بدهی شارژ', money(r.total.charge), 'جاری', 'bad')}
       ${kpi('جمع بدهی قبوض و متفرقه', money(r.total.omrani), 'آب/برق/گاز و هزینه‌های جزئی', 'bad')}
-      ${kpi('جمعِ پروژه‌ها (عمرانی)', bal(r.total.project), 'بدهی/طلب', '')}
+      ${kpi('تعهدِ پروژه‌ها', bal(r.total.projectDue), 'باقی‌ماندهٔ مصوبه', '')}
+      ${kpi('ماندهٔ پروژه‌ها', bal(r.total.projectBal), 'طلب/بدهی به صندوق', '')}
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>بدهی شارژ (جاری)</th><th>بدهی قبوض و متفرقه</th><th>بدهی/طلب پروژه‌ها (عمرانی)</th><th>جمع خالص</th></tr></thead><tbody>
+      <thead>
+        <tr><th rowspan="2">واحد</th><th rowspan="2">ساکن</th><th rowspan="2">بدهی شارژ (جاری)</th><th rowspan="2">بدهی قبوض و متفرقه</th><th colspan="2" style="text-align:center;border-bottom:2px solid var(--accent)">صندوق عمرانی (پروژه‌ها)</th><th rowspan="2">جمع خالص</th></tr>
+        <tr><th>تعهد (باقی‌ماندهٔ مصوبه)</th><th>طلب/بدهی به صندوق</th></tr>
+      </thead><tbody>
       ${r.rows.length ? r.rows.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>واحد ${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num ${u.charge > 0 ? 'amt-out' : ''}">${u.charge > 0 ? money(u.charge) : '۰'}</td>
         <td class="num ${u.omrani > 0 ? 'amt-out' : ''}">${u.omrani > 0 ? money(u.omrani) : '۰'}</td>
-        <td class="num">${bal(u.project)}</td>
+        <td class="num">${bal(u.projectDue)}</td>
+        <td class="num">${bal(u.projectBal)}</td>
         <td class="num ${u.net > 0 ? 'amt-out' : u.net < 0 ? 'amt-in' : ''}">${u.net > 0 ? money(u.net) : u.net < 0 ? 'طلبکار ' + money(-u.net) : '۰'}</td></tr>`).join('')
-      : emptyRow(6, 'واحدی ثبت نشده')}
-      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.project)}</td><td class="num">${bal(r.total.net)}</td></tr></tfoot>
+      : emptyRow(7, 'واحدی ثبت نشده')}
+      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.projectDue)}</td><td class="num">${bal(r.total.projectBal)}</td><td class="num">${bal(r.total.net)}</td></tr></tfoot>
     </table></div></div>`
   wireCommon()
 }
