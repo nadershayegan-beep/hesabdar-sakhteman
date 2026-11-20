@@ -717,6 +717,21 @@ function invoiceFundPayments(invId) {
   return db.prepare(`SELECT ep.*, f.name fund_name FROM expense_payments ep LEFT JOIN funds f ON f.id=ep.fund_id
     WHERE ep.invoice_id=? ORDER BY ep.g_date, ep.id`).all(invId)
 }
+// تنظیمِ «پرداخت‌شده از صندوق» یک فاکتور به مقدارِ هدف (برای فرم ثبت/ویرایش): کم باشد اضافه، زیاد باشد حذف می‌شود
+function setFundPaid(invoiceId, fundId, target, dates, by) {
+  const inv = db.prepare(`SELECT * FROM invoices WHERE id=?`).get(invoiceId); if (!inv || !isPayableExpense(inv)) return
+  target = Math.min(Math.max(0, Math.round(+target || 0)), inv.amount)
+  const current = invoiceFundPaid(invoiceId)
+  if (target > current) { try { payExpense(invoiceId, fundId, target - current, dates, 'پرداخت هنگام ثبت/ویرایش', by) } catch (e) { } }
+  else if (target < current) {
+    let excess = current - target
+    for (const ep of db.prepare(`SELECT * FROM expense_payments WHERE invoice_id=? ORDER BY id DESC`).all(invoiceId)) {
+      if (excess <= 0) break
+      if (ep.amount <= excess) { deleteExpensePayment(ep.id); excess -= ep.amount }
+      else { const keep = ep.amount - excess; deleteExpensePayment(ep.id); try { payExpense(invoiceId, ep.fund_id, keep, { g_date: ep.g_date, j_date: ep.j_date }, ep.note, ep.created_by) } catch (e) { } excess = 0 }
+    }
+  }
+}
 // بدهی خالصِ جهت‌دار بین صندوق‌ها (پرداخت متقابل منهای انتقال‌ها)
 function interFundDebts() {
   const funds = db.prepare(`SELECT id,name FROM funds ORDER BY id`).all()
@@ -2949,13 +2964,9 @@ async function saveInvoice(id, b, user) {
   // • تقسیمی: ثبت فاکتور فقط تعهد است (سهمِ واحدها)؛ پرداخت از صندوق جداگانه انجام می‌شود.
   // • از صندوق (جاری): بین واحدها تقسیم نمی‌شود؛ مبلغ مستقیم از صندوق جاری کسر می‌گردد.
   writeShares(invId, shares) // در حالت از صندوق، shares خالی است → سهمی ساخته نمی‌شود
-  // پرداختِ اولیه از صندوق (هر دو حالت): چقدر الان از صندوق به فروشنده/پیمانکار پرداخت شد؛ مانده = بدهیِ صندوق به فاکتور
-  let fundPaidNow = 0
-  if (!cur && !paidByManager && b.paidNow != null) {
-    const pay = Math.min(Math.max(0, Math.round(+b.paidNow)), amount)
-    if (pay > 0) { try { payExpense(invId, fundId, pay, d, fromFund ? 'پرداخت هزینهٔ جاری' : 'پرداخت هنگام ثبت فاکتور', user.id); fundPaidNow = pay } catch (e) { } }
-  }
-  return { ok: true, id: invId, amount, shareCount: shares.length, fromFund: !!fromFund, fundPaidNow }
+  // پرداختِ از صندوق (ثبت و ویرایش، هر دو حالت): «چقدر از صندوق پرداخت شد» را به مقدارِ هدف تنظیم می‌کند
+  if (!paidByManager && b.paidNow != null) setFundPaid(invId, fundId, b.paidNow, d, user.id)
+  return { ok: true, id: invId, amount, shareCount: shares.length, fromFund: !!fromFund, fundPaidNow: invoiceFundPaid(invId) }
 }
 
 // اگر پورت اشغال بود، پورت بعدی امتحان می‌شود (تا ۱۵ بار)

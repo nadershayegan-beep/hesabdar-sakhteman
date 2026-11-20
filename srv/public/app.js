@@ -451,7 +451,7 @@ function invoiceForm(inv) {
       </div>
       ${docPickerHtml('ivDoc')}
       <div class="notice" id="ivFundNote" style="margin:0;display:none">💡 این هزینه <b>از صندوق کسر</b> می‌شود و بین واحدها تقسیم نمی‌شود؛ چون ساکنین قبلاً بابتش «شارژ ماهانه» پرداخت کرده‌اند.</div>
-      ${!inv ? `<label class="f" id="ivPaidNowWrap" style="display:none">چقدر از این هزینه الان از صندوق پرداخت شد؟ (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric"><span class="hint" id="ivPaidNowHint">کامل = تسویه شد · کمتر = بقیه بدهیِ صندوق به فاکتور می‌ماند · خالی/صفر = هنوز پرداخت نشده</span></label>` : ''}
+      <label class="f" id="ivPaidNowWrap" style="display:none">${inv ? 'پرداخت‌شده از صندوق (قابل تنظیم)' : 'چقدر از این هزینه الان از صندوق پرداخت شد؟'} (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric" value="${inv && inv.fundPaid ? sep(Math.round(r2d(inv.fundPaid))) : ''}"><span class="hint" id="ivPaidNowHint">کامل = تسویه · کمتر = بقیه بدهیِ صندوق به فاکتور می‌ماند · خالی/صفر = پرداخت‌نشده</span></label>
       <div class="panel" id="ivSplitPanel" style="margin:0;background:var(--panel-2)">
         <div class="phead"><b>پیش‌نمایش تسهیم</b><span class="hint strong" id="ivSum"></span></div>
         <div class="tablewrap" id="ivPreview"><div class="empty">در حال محاسبه…</div></div>
@@ -466,7 +466,7 @@ function invoiceForm(inv) {
     title: $('#ivTitle').value.trim(), categoryId: +$('#ivCat').value, amount: readMoney($('#ivAmount')),
     method: $('#ivMethod').value, includeVacant: $('#ivVacant').checked, fundId: +$('#ivFund').value,
     expenseKind: $('#ivKind').value, paidByManager: $('#ivMgr').checked, fromFund: fromFund(),
-    paidNow: (!fromFund() && $('#ivMgr') && $('#ivMgr').checked) ? undefined : ($('#ivPaidNow') ? readMoney($('#ivPaidNow')) : undefined),
+    paidNow: paidVisible() ? readMoney($('#ivPaidNow')) : undefined,
     vendor: $('#ivVendor').value.trim(), note: $('#ivNote').value.trim(),
     custom: store.custom, ...readDate('iv')
   })
@@ -474,7 +474,8 @@ function invoiceForm(inv) {
   const pickFund = ff => { const by = re => (funds.find(x => re.test(x.name)) || {}).id
     return ff ? (by(/شارژ|جاری/) || (funds[0] || {}).id) : (by(/قبوض|متفرقه/) || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
   const applyDefaultFund = () => { const id = pickFund(fromFund()); if (id && $('#ivFund')) $('#ivFund').value = id }
-  const paidVisible = () => { const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
+  store.paidNowEdited = !!inv // در ویرایش، مقدارِ فعلیِ پرداختِ صندوق حفظ شود و با تغییرِ مبلغ بازنویسی نشود
+  const paidVisible = () => { if (inv && !inv.payable) return false; const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
   const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
   const syncMode = () => {
     const ff = fromFund()
