@@ -2876,11 +2876,11 @@ async function saveInvoice(id, b, user) {
   // • تقسیمی: ثبت فاکتور فقط تعهد است (سهمِ واحدها)؛ پرداخت از صندوق جداگانه انجام می‌شود.
   // • از صندوق (جاری): بین واحدها تقسیم نمی‌شود؛ مبلغ مستقیم از صندوق جاری کسر می‌گردد.
   writeShares(invId, shares) // در حالت از صندوق، shares خالی است → سهمی ساخته نمی‌شود
-  // هزینهٔ جاری: پرداختِ اولیه از صندوق (اختیاری، می‌تواند جزئی یا صفر باشد)؛ مانده = بدهیِ صندوق به این فاکتور
+  // پرداختِ اولیه از صندوق (هر دو حالت): چقدر الان از صندوق به فروشنده/پیمانکار پرداخت شد؛ مانده = بدهیِ صندوق به فاکتور
   let fundPaidNow = 0
-  if (fromFund && !cur && b.paidNow != null) {
+  if (!cur && !paidByManager && b.paidNow != null) {
     const pay = Math.min(Math.max(0, Math.round(+b.paidNow)), amount)
-    if (pay > 0) { try { payExpense(invId, fundId, pay, d, 'پرداخت هزینهٔ جاری', user.id); fundPaidNow = pay } catch (e) { }  }
+    if (pay > 0) { try { payExpense(invId, fundId, pay, d, fromFund ? 'پرداخت هزینهٔ جاری' : 'پرداخت هنگام ثبت فاکتور', user.id); fundPaidNow = pay } catch (e) { } }
   }
   return { ok: true, id: invId, amount, shareCount: shares.length, fromFund: !!fromFund, fundPaidNow }
 }

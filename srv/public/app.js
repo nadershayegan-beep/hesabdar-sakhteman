@@ -461,19 +461,21 @@ function invoiceForm(inv) {
     title: $('#ivTitle').value.trim(), categoryId: +$('#ivCat').value, amount: readMoney($('#ivAmount')),
     method: $('#ivMethod').value, includeVacant: $('#ivVacant').checked, fundId: +$('#ivFund').value,
     expenseKind: $('#ivKind').value, paidByManager: $('#ivMgr').checked, fromFund: fromFund(),
-    paidNow: (fromFund() && $('#ivPaidNow')) ? readMoney($('#ivPaidNow')) : undefined,
+    paidNow: (!fromFund() && $('#ivMgr') && $('#ivMgr').checked) ? undefined : ($('#ivPaidNow') ? readMoney($('#ivPaidNow')) : undefined),
     vendor: $('#ivVendor').value.trim(), note: $('#ivNote').value.trim(),
     custom: store.custom, ...readDate('iv')
   })
-  const mirrorPaid = () => { if (fromFund() && $('#ivPaidNow') && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
+  const paidVisible = () => { const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
+  const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
   const syncMode = () => {
     const ff = fromFund()
     for (const id of ['ivMethodWrap', 'ivVacantWrap', 'ivMgrWrap', 'ivSplitPanel']) { const el = $('#' + id); if (el) el.style.display = ff ? 'none' : '' }
     const note = $('#ivFundNote'); if (note) note.style.display = ff ? '' : 'none'
-    const pw = $('#ivPaidNowWrap'); if (pw) pw.style.display = ff ? '' : 'none'
-    if (ff) mirrorPaid()
+    const pw = $('#ivPaidNowWrap'); if (pw) pw.style.display = paidVisible() ? '' : 'none'
+    mirrorPaid()
   }
   if ($('#ivPaidNow')) $('#ivPaidNow').addEventListener('input', () => { store.paidNowEdited = true })
+  if ($('#ivMgr')) $('#ivMgr').addEventListener('change', syncMode)
   $('#ivFromFund').onchange = () => { syncMode(); if (!fromFund()) preview() }
   // انتخاب دسته ⇒ روش و صندوق و شمول واحد خالیِ پیش‌فرضِ همان دسته
   $('#ivCat').onchange = () => {
@@ -513,7 +515,8 @@ function invoiceForm(inv) {
     const r = inv ? await api(`/api/invoices/${inv.id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(f) })
       : await post('/api/invoices', f)
     closeModal()
-    toast(r.fromFund ? `هزینهٔ جاری ${moneyU(r.amount)} از صندوق کسر شد` : `فاکتور ${moneyU(r.amount)} بین ${faDigit(r.shareCount)} واحد تسهیم شد`)
+    const paidPart = r.fundPaidNow > 0 ? ` · ${moneyU(r.fundPaidNow)} از صندوق پرداخت شد` : ''
+    toast(r.fromFund ? `هزینهٔ جاری ${moneyU(r.amount)} ثبت شد${paidPart}` : `فاکتور ${moneyU(r.amount)} بین ${faDigit(r.shareCount)} واحد تسهیم شد${paidPart}`)
     refresh()
   })
 }
