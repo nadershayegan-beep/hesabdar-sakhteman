@@ -207,6 +207,7 @@ function migrate() {
   addCol('invoices', 'doc_no', `TEXT DEFAULT ''`)         // شماره سند (روی سند فیزیکی صندوق‌دار)
   addCol('fund_txns', 'ref_cinvoice_id', 'INTEGER')       // پیوند تراکنش صندوق به فاکتور پیمانکار (خرید/فروش پروژه)
   addCol('payments', 'project_id', 'INTEGER DEFAULT 0')   // پرداختِ علامت‌خوردهٔ پروژه (دفترِ مجزا؛ مازاد = طلبِ پروژه)
+  addCol('invoices', 'from_fund', 'INTEGER DEFAULT 0')    // 1 = هزینهٔ جاری از صندوق (بدون تقسیم/بدهکار کردن واحدها)
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -2826,25 +2827,30 @@ async function saveInvoice(id, b, user) {
   // تاریخ خالی موقع ثبت ⇒ امروز؛ موقع ویرایش ⇒ تاریخ قبلی حفظ می‌شود
   const d = (b.jy || !cur) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }
   if (d.error) return d
-  // در روش «نفرات+مشاعات»، واحدهای خالی هم وارد می‌شوند (سهمِ مشاعات می‌دهند؛ نفراتشان صفر)
-  const units = eligibleUnits(!!includeVacant || method === 'occ_common')
-  if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد (ابتدا واحدها را وارد کنید)' }
-
+  const fromFund = b.fromFund != null ? (b.fromFund ? 1 : 0) : (cur ? (cur.from_fund || 0) : 0)
   let amount = Math.round(+b.amount) || (cur && b.amount == null ? cur.amount : 0)
-  let shares
-  if (method === 'custom') {
-    shares = computeShares(units, 'custom', amount, { custom: b.custom || {} })
-    const total = sumShares(shares)
-    if (amount > 0 && total !== amount) return { error: `جمع سهم‌ها (${total}) با مبلغ فاکتور (${amount}) برابر نیست` }
-    amount = total
-  } else if (method === 'per_unit_charge') {
-    shares = computeShares(units, method, 0, { period: b.period || curPeriod() })
-    amount = sumShares(shares)
-  } else {
+  let shares = []
+  if (fromFund) {
+    // هزینهٔ جاری از صندوق: فقط از صندوق کسر می‌شود و بین واحدها تقسیم/بدهکار نمی‌شود
     if (!(amount > 0)) return { error: 'مبلغ فاکتور باید بزرگ‌تر از صفر باشد' }
-    shares = computeShares(units, method, amount, {})
+  } else {
+    // در روش «نفرات+مشاعات»، واحدهای خالی هم وارد می‌شوند (سهمِ مشاعات می‌دهند؛ نفراتشان صفر)
+    const units = eligibleUnits(!!includeVacant || method === 'occ_common')
+    if (!units.length) return { error: 'هیچ واحد مشمولی وجود ندارد (ابتدا واحدها را وارد کنید)' }
+    if (method === 'custom') {
+      shares = computeShares(units, 'custom', amount, { custom: b.custom || {} })
+      const total = sumShares(shares)
+      if (amount > 0 && total !== amount) return { error: `جمع سهم‌ها (${total}) با مبلغ فاکتور (${amount}) برابر نیست` }
+      amount = total
+    } else if (method === 'per_unit_charge') {
+      shares = computeShares(units, method, 0, { period: b.period || curPeriod() })
+      amount = sumShares(shares)
+    } else {
+      if (!(amount > 0)) return { error: 'مبلغ فاکتور باید بزرگ‌تر از صفر باشد' }
+      shares = computeShares(units, method, amount, {})
+    }
+    if (!(amount > 0)) return { error: 'مبلغ فاکتور باید بزرگ‌تر از صفر باشد' }
   }
-  if (!(amount > 0)) return { error: 'مبلغ فاکتور باید بزرگ‌تر از صفر باشد' }
 
   const kind = EXPENSE_KINDS.includes(b.expenseKind) ? b.expenseKind : (cur ? cur.expense_kind : 'variable')
   const paidByManager = b.paidByManager != null ? (b.paidByManager ? 1 : 0) : (cur ? cur.paid_by_manager : 0)
@@ -2855,22 +2861,28 @@ async function saveInvoice(id, b, user) {
   let invId
   if (cur) {
     db.prepare(`UPDATE invoices SET title=?,category_id=?,amount=?,g_date=?,j_date=?,method=?,include_vacant=?,fund_id=?,
-      paid_by_manager=?,expense_kind=?,vendor=?,note=?,doc_file=?,doc_no=? WHERE id=?`)
+      paid_by_manager=?,expense_kind=?,vendor=?,note=?,doc_file=?,doc_no=?,from_fund=? WHERE id=?`)
       .run(title, catId, amount, d.g_date, d.j_date, method, includeVacant, fundId, paidByManager, kind,
-        b.vendor ?? cur.vendor, b.note ?? cur.note, docFile, docNo, id)
+        b.vendor ?? cur.vendor, b.note ?? cur.note, docFile, docNo, fromFund, id)
     invId = id
   } else {
     invId = Number(db.prepare(`INSERT INTO invoices
-      (title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,doc_no,status,created_by,created_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`)
+      (title,category_id,amount,g_date,j_date,method,include_vacant,fund_id,paid_by_manager,expense_kind,vendor,note,doc_file,doc_no,from_fund,status,created_by,created_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`)
       .run(title, catId, amount, d.g_date, d.j_date, method, includeVacant, fundId, paidByManager, kind,
-        (b.vendor || '').trim(), (b.note || '').trim(), docFile, docNo, user.id, nowISO()).lastInsertRowid)
+        (b.vendor || '').trim(), (b.note || '').trim(), docFile, docNo, fromFund, user.id, nowISO()).lastInsertRowid)
   }
-  // مدل تفکیک: ثبت فاکتور فقط تعهد است و پولی از صندوق خارج نمی‌کند.
-  // پرداخت هزینه از صندوق جداگانه از بخش «پرداخت از صندوق» انجام می‌شود.
-  // فاکتور «از جیب مدیر» هم مثل قبل به «طلب مدیر» اضافه می‌شود (managerDebt).
-  writeShares(invId, shares)
-  return { ok: true, id: invId, amount, shareCount: shares.length }
+  // دو مدل:
+  // • تقسیمی: ثبت فاکتور فقط تعهد است (سهمِ واحدها)؛ پرداخت از صندوق جداگانه انجام می‌شود.
+  // • از صندوق (جاری): بین واحدها تقسیم نمی‌شود؛ مبلغ مستقیم از صندوق جاری کسر می‌گردد.
+  writeShares(invId, shares) // در حالت از صندوق، shares خالی است → سهمی ساخته نمی‌شود
+  // هزینهٔ جاری: پرداختِ اولیه از صندوق (اختیاری، می‌تواند جزئی یا صفر باشد)؛ مانده = بدهیِ صندوق به این فاکتور
+  let fundPaidNow = 0
+  if (fromFund && !cur && b.paidNow != null) {
+    const pay = Math.min(Math.max(0, Math.round(+b.paidNow)), amount)
+    if (pay > 0) { try { payExpense(invId, fundId, pay, d, 'پرداخت هزینهٔ جاری', user.id); fundPaidNow = pay } catch (e) { }  }
+  }
+  return { ok: true, id: invId, amount, shareCount: shares.length, fromFund: !!fromFund, fundPaidNow }
 }
 
 // اگر پورت اشغال بود، پورت بعدی امتحان می‌شود (تا ۱۵ بار)
