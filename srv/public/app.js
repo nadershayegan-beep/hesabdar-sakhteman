@@ -175,6 +175,7 @@ document.addEventListener('keydown', e => {
 })
 // برچسب‌گذاریِ خودکار: ردیف‌های قابل‌کلیک با Tab در دسترس، دکمه‌های آیکونی با aria-label از title
 function a11yEnhance(root) {
+  root.querySelectorAll('table.mcard').forEach(t => { const hs = [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()); t.querySelectorAll('tbody tr').forEach(tr => [...tr.children].forEach((td, i) => { if (!td.hasAttribute('data-label') && td.colSpan === 1) td.setAttribute('data-label', hs[i] || '') })) })
   root.querySelectorAll('tr.clickable:not([tabindex])').forEach(tr => { tr.tabIndex = 0; tr.setAttribute('role', 'button') })
   root.querySelectorAll('button[title]:not([aria-label])').forEach(b => b.setAttribute('aria-label', b.title))
   root.querySelectorAll('button.del:not([aria-label]):not([title])').forEach(b => b.setAttribute('aria-label', 'حذف'))
@@ -704,7 +705,7 @@ VIEWS.invoices = async () => {
       <select class="inp" id="fcat"><option value="">همه‌ی دسته‌ها</option>${META.categories.map(c => `<option value="${c.id}" ${invFilter.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
       <div class="chips">${[['', 'همه'], ['open', 'باز'], ['settled', 'تسویه']].map(([v, t]) => `<button class="chip ${invFilter.status === v ? 'on' : ''}" data-st="${v}">${t}</button>`).join('')}</div>
     </div>
-    <div class="panel"><div class="tablewrap"><table class="tx">
+    <div class="panel"><div class="tablewrap"><table class="tx mcard">
       <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody id="invBody">${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}" data-q="${esc(invQ(i))}" ${qn && !invQ(i).includes(qn) ? 'hidden' : ''}>
         <td class="num"><b>${faDigit(i.seqNo || i.id)}</b></td>
@@ -1015,7 +1016,7 @@ VIEWS.payments = async () => {
   const total = rows.reduce((s, p) => s + p.amount, 0)
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
     adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
-    `<div class="panel"><div class="tablewrap"><table class="tx">
+    `<div class="panel"><div class="tablewrap"><table class="tx mcard">
       <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr class="clickable" data-voucher="payment:${p.id}">
         <td class="num"><b>${faDigit(p.seqNo || p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
@@ -1865,7 +1866,7 @@ REPORTS.debtors = async () => {
     <div class="filters printhide"><a class="btn small" href="/api/export/debtors${debtorsAsOf ? '?asOf=' + debtorsAsOf.g : ''}">⬇️ اکسل</a>${batchBtn}<button class="btn small" onclick="printOfficial('/print/report/debtors', 'گزارش بدهکاران')">🖨 چاپ رسمی</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
-    <div class="panel"><div class="tablewrap"><table class="tx">
+    <div class="panel"><div class="tablewrap"><table class="tx mcard">
       <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th>${Object.keys(r.buckets).map(b => `<th>${b} روز</th>`).join('')}<th>آخرین پیگیری</th><th>قول پرداخت</th><th class="printhide">اقدام</th></tr></thead><tbody>
       ${r.rows.length ? r.rows.map((u, i) => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num">${faDigit(u.phone || '—')}</td><td class="num amt-out">${money(u.debt)}</td>

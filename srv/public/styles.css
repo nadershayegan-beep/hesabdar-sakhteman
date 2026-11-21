@@ -443,3 +443,25 @@ table.tx tr.tot td{font-weight:700;border-top:1px solid var(--line)}
 tr.clickable:focus-visible{outline-offset:-2px}
 .btn:focus:not(:focus-visible),tr.clickable:focus:not(:focus-visible){outline:none}
 .mbox:focus{outline:none}
+
+/* مورد ۵۶: در موبایل فقط تب‌ها چسبان می‌مانند؛ نام و دکمه‌های حساب با صفحه بالا می‌روند */
+@media (max-width:900px){
+  .side{display:contents}
+  .brand{order:1;background:var(--panel);padding:11px 13px 4px}
+  .side-foot{order:2;background:var(--panel);padding:4px 13px 8px}
+  .nav{order:3;position:sticky;top:0;z-index:40;background:var(--panel);padding:8px 13px;border-bottom:1px solid var(--line)}
+  .side .adbox{display:none}
+  .main{order:4}
+}
+/* نمای کارتیِ جدول‌های پرستون در عرض کم */
+@media (max-width:600px){
+  table.tx.mcard thead{display:none}
+  table.tx.mcard, table.tx.mcard tbody{display:block}
+  table.tx.mcard tbody tr{display:block;border:1px solid var(--line);border-radius:10px;margin:0 0 10px;padding:6px 10px;background:var(--panel)}
+  table.tx.mcard tbody td{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:4px 10px;border:none;padding:5px 0;text-align:left;min-width:0}
+  table.tx.mcard tbody td::before{content:attr(data-label);color:var(--muted);font-size:11.5px;text-align:right;flex:none}
+  table.tx.mcard tbody td:not([data-label])::before,table.tx.mcard tbody td[data-label=""]::before{content:none}
+  table.tx.mcard tfoot{display:block}
+  table.tx.mcard tfoot tr{display:flex;flex-wrap:wrap;gap:6px 14px}
+  table.tx.mcard tfoot td{border:none;padding:4px 0}
+}
