@@ -521,7 +521,7 @@ function forgotForm() {
 }
 function localResetForm() {
   openModal('🖥 ریست رمز از این کامپیوتر', `<div class="form">
-    <div class="notice warn" style="margin:0">این ریست فقط از روی همین کامپیوتر مجاز است. رمز جدیدِ مدیر را بگذارید.</div>
+    <div class="notice warn u-m0">این ریست فقط از روی همین کامپیوتر مجاز است. رمز جدیدِ مدیر را بگذارید.</div>
     <label class="f">نام کاربریِ مدیر<input class="inp" id="lrUser"></label>
     <div class="frow"><label class="f">رمز جدید<input class="inp" id="lrPass" type="password"></label>
       <label class="f">تکرار رمز<input class="inp" id="lrPass2" type="password"></label></div>
@@ -825,7 +825,7 @@ function invoiceForm(inv) {
       ${docPickerHtml('ivDoc')}
       <div class="notice info" id="ivFundNote" style="margin:0;display:none">این هزینه <b>از صندوق کسر</b> می‌شود و بین واحدها تقسیم نمی‌شود؛ چون ساکنین قبلاً بابتش «شارژ ماهانه» پرداخت کرده‌اند.</div>
       <label class="f" id="ivPaidNowWrap" style="display:none">${inv ? 'پرداخت‌شده از صندوق (قابل تنظیم)' : 'مبلغ پرداخت‌شده از صندوق'} (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric" value="${inv && inv.fundPaid ? sep(Math.round(r2d(inv.fundPaid))) : ''}"><span class="hint" id="ivPaidNowHint">کامل = تسویه · کمتر = بقیه بعداً پرداخت می‌شود</span></label>
-      <div class="panel" id="ivSplitPanel" style="margin:0;background:var(--panel-2)">
+      <div class="panel u-m0 u-soft" id="ivSplitPanel">
         <div class="phead"><b>پیش‌نمایش تقسیم بین واحدها</b><span class="hint strong" id="ivSum"></span></div>
         <div class="tablewrap" id="ivPreview"><div class="empty">در حال محاسبه…</div></div>
       </div>
@@ -1025,7 +1025,7 @@ const showInvoice = guard(async id => {
 function payExpenseForm(inv, funds) {
   const responsible = (funds.find(f => f.id === inv.fund_id) || {}).name || '—'
   const body = openModal(`پرداخت هزینه: ${inv.title}`, `<div class="form">
-    <div class="notice info" style="margin:0">مانده‌ی پرداخت‌نشده‌ی این هزینه: <b>${moneyU(inv.fundUnpaid)}</b></div>
+    <div class="notice info u-m0">مانده‌ی پرداخت‌نشده‌ی این هزینه: <b>${moneyU(inv.fundUnpaid)}</b></div>
     <div class="frow">
       <label class="f">از کدام صندوق پرداخت شود<select class="inp" id="exFund">${funds.map(f => `<option value="${f.id}" ${f.id === inv.fund_id ? 'selected' : ''}>${esc(f.name)} (موجودی ${money(f.balance)})</option>`).join('')}</select></label>
       <label class="f">مبلغ (${curFa()})<input class="inp num" id="exAmount" data-money="exHint" inputmode="numeric" value="${sep(Math.round(r2d(inv.fundUnpaid)))}"><span class="hint" id="exHint"></span></label>
@@ -1073,7 +1073,7 @@ VIEWS.payments = async () => {
 function bulkPaymentForm() {
   const bpRow = (uid, num, resident, ref, prefill, checked) =>
     `<tr data-bp="${uid}">
-      <td><input type="checkbox" class="bpChk" ${checked ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)"></td>
+      <td><input type="checkbox" class="bpChk u-chk" ${checked ? 'checked' : ''}></td>
       <td><b>${escFa(num)}</b>${resident ? ` <span class="hint">${esc(resident)}</span>` : ''}</td>
       <td class="num ${ref > 0 ? 'amt-out' : ''}">${ref > 0 ? money(ref) : '—'}</td>
       <td><input class="inp num bpAmt" data-money="" inputmode="numeric" value="${prefill > 0 ? sep(Math.round(r2d(prefill))) : ''}"></td></tr>`
@@ -1093,8 +1093,8 @@ function bulkPaymentForm() {
       <label class="f">مبلغ پیش‌فرض هر واحد (${curFa()})<input class="inp num" id="bpDefault" data-money="bpDefHint" inputmode="numeric"><span class="hint" id="bpDefHint"></span></label>
       <button type="button" class="btn" id="bpApplyAll">اعمال به تیک‌خورده‌ها</button>
     </div>
-    <div class="panel" style="margin:0;background:var(--panel-2)">
-      <div class="phead"><label class="check" style="margin:0"><input type="checkbox" id="bpAll"> انتخاب همه</label><span class="hint strong" id="bpSum"></span></div>
+    <div class="panel u-m0 u-soft">
+      <div class="phead"><label class="check u-m0"><input type="checkbox" id="bpAll"> انتخاب همه</label><span class="hint strong" id="bpSum"></span></div>
       <div class="tablewrap" id="bpList"><div class="empty">در حال بارگذاری…</div></div>
     </div></div>`,
     `<button class="btn primary" id="bpSave">ثبت دریافتی‌ها</button><button class="btn" id="bpCancel">انصراف</button>`)
@@ -1204,7 +1204,7 @@ function paymentForm(presetUnit, pay, after, presetProject, creditMode) {
         <option value="cash" ${creditMode ? '' : 'selected'}>واریز نقدی (به صندوق)</option>
         <option value="credit" ${creditMode ? 'selected' : ''}>استفاده از پیش‌پرداختِ واحد</option></select></label>
         <label class="f" id="pyCreditWrap" style="display:none">پیش‌پرداختِ موجودِ واحد<input class="inp" id="pyCreditAvail" disabled></label></div>` : ''}
-      ${creditMode ? '<p class="hint" style="margin:0">پولی که این واحد قبلاً بیشتر از بدهی‌اش داده، روی بدهی‌های تیک‌خورده می‌نشیند. پولی وارد صندوق نمی‌شود.</p>' : ''}
+      ${creditMode ? '<p class="hint u-m0">پولی که این واحد قبلاً بیشتر از بدهی‌اش داده، روی بدهی‌های تیک‌خورده می‌نشیند. پولی وارد صندوق نمی‌شود.</p>' : ''}
       <div class="frow">
         <label class="f">تاریخ${dateBoxHtml('py', payJ)}</label>
         <label class="f" id="pyFundWrap">صندوق مقصد<select class="inp" id="pyFund">${META.funds.map(f => `<option value="${f.id}" ${pay && pay.fund_id === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
@@ -1214,7 +1214,7 @@ function paymentForm(presetUnit, pay, after, presetProject, creditMode) {
         <label class="f">توضیح<input class="inp" id="pyNote" placeholder="مثلاً: بابت شارژ مرداد" value="${esc(pay ? pay.note : '')}"></label>
       </div>
       <div id="pyDocWrap">${docPickerHtml('pyDoc')}</div>
-      <div class="panel" style="margin:0;background:var(--panel-2)">
+      <div class="panel u-m0 u-soft">
         <div class="phead"><b>بدهی‌های باز این واحد</b><span class="hint strong" id="pyCredit"></span></div>
         <p class="hint" style="margin:0 0 8px">${pay ? 'اگر مبلغ، واحد یا صندوق را عوض کنید، مبلغ دوباره از قدیمی‌ترین بدهی کم می‌شود.' : 'اگر هیچ فاکتوری تیک نخورد، مبلغ اول از قدیمی‌ترین بدهی کم می‌شود.'}</p>
         <div id="pyOpen"><div class="empty">در حال بارگذاری…</div></div>
@@ -1240,7 +1240,7 @@ function paymentForm(presetUnit, pay, after, presetProject, creditMode) {
     $('#pyCredit').textContent = d.credit > 0 ? `پیش‌پرداختِ فعلیِ واحد: ${moneyU(d.credit)}` : ''
     if (forProject && !isCredit()) $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت پیش‌پرداختِ پروژه برای واحد می‌ماند.</div>'
     else $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th></th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
-      ${d.rows.map(r => `<tr><td>${pay ? '' : `<input type="checkbox" data-inv="${r.invoice_id}" style="width:16px;height:16px;accent-color:var(--accent)">`}</td>
+      ${d.rows.map(r => `<tr><td>${pay ? '' : `<input type="checkbox" data-inv="${r.invoice_id}" class="u-chk">`}</td>
         <td>${esc(r.title)}</td><td class="num">${r.is_opening ? 'انتقالی' : faDigit(r.j_date)}</td><td class="num amt-out">${money(r.remaining)}</td></tr>`).join('')}
       </tbody></table></div>` : '<div class="empty">این واحد بدهی بازی ندارد — مبلغ به‌عنوان پیش‌پرداخت ثبت می‌شود</div>'
     syncSource()
@@ -1395,9 +1395,9 @@ const showUnitCard = guard(async id => {
     </div>
     ${u.phone ? `<div class="panel printhide" style="padding:12px 16px">📞 تلفن: <b class="num">${faDigit(u.phone)}</b></div>` : ''}
     <div class="panel printhide"><div class="phead"><b>سهم‌ها و بدهی‌ها</b>
-      <span class="chips" style="margin:0"><button class="chip on" data-ucview="inv">نمای فاکتوری</button><button class="chip" data-ucview="moein">دفتر معین</button></span></div>
+      <span class="chips u-m0"><button class="chip on" data-ucview="inv">نمای فاکتوری</button><button class="chip" data-ucview="moein">دفتر معین</button></span></div>
       <div id="ucInvView">
-        <div class="hint" style="padding:2px 4px 6px">هر فاکتور: سهمِ این واحد، چقدر پرداخت شده و چقدر مانده${d.aging ? ' · قدمت قدیمی‌ترین بدهی: ' + d.aging.bucket + ' روز' : ''}</div>
+        <div class="hint u-pad-hint">هر فاکتور: سهمِ این واحد، چقدر پرداخت شده و چقدر مانده${d.aging ? ' · قدمت قدیمی‌ترین بدهی: ' + d.aging.bucket + ' روز' : ''}</div>
         <div class="tablewrap"><table class="tx"><thead><tr><th>فاکتور</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
         ${d.shares.length ? d.shares.map(s => `<tr class="clickable" data-inv="${s.invoice_id}">
           <td><b>${esc(s.title)}</b>${s.is_opening ? ' <span class="badge b-open">انتقالی</span>' : ''}</td>
@@ -1411,7 +1411,7 @@ const showUnitCard = guard(async id => {
           <td class="num amt-out">${money(d.shares.reduce((a, s) => a + Math.max(0, s.remaining), 0))}</td><td class="printhide"></td></tr></tfoot></table></div>
       </div>
       <div id="ucMoeinView" class="hidden">
-        <div class="hint" style="padding:2px 4px 6px">بدهکار (سهم/شارژ) · بستانکار (دریافتی) · ماندهٔ دونده؛ ماندهٔ بستانکار داخل پرانتز</div>
+        <div class="hint u-pad-hint">بدهکار (سهم/شارژ) · بستانکار (دریافتی) · ماندهٔ دونده؛ ماندهٔ بستانکار داخل پرانتز</div>
         <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>دسته</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
         ${moeinRows || emptyRow(8, 'تراکنشی ثبت نشده')}
         </tbody><tfoot><tr><td colspan="4">جمع</td>
@@ -1534,14 +1534,14 @@ const showFund = guard(async id => {
     head(d.fund.name, `${d.fund.kindFa} · موجودی فعلی: ${moneyU(d.fund.balance)}`,
       `<button class="btn small" onclick="printAs('دفتر صندوق ${esc(d.fund.name)}')">🖨 چاپ</button>`) +
     `<div class="panel"><div class="phead"><b>گردش صندوق</b>
-      <span class="chips" style="margin:0"><button class="chip on" data-fview="simple">نمای ساده</button><button class="chip" data-fview="moein">دفتر معین</button></span></div>
+      <span class="chips u-m0"><button class="chip on" data-fview="simple">نمای ساده</button><button class="chip" data-fview="moein">دفتر معین</button></span></div>
       <div id="fSimpleView">
         <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>نوع</th><th>شرح</th><th>ورودی</th><th>خروجی</th></tr></thead><tbody>
         ${simpleRows}
         </tbody><tfoot><tr><td colspan="2">موجودی اولیه ${money(opening)}</td><td>موجودی فعلی</td><td colspan="2" class="num ${d.fund.balance < 0 ? 'amt-out' : ''}">${balCell(d.fund.balance)}</td></tr></tfoot></table></div>
       </div>
       <div id="fMoeinView" class="hidden">
-        <div class="hint" style="padding:2px 4px 6px">ورودی = بدهکار · خروجی = بستانکار · ماندهٔ دونده (موجودی)؛ کسری داخل پرانتز</div>
+        <div class="hint u-pad-hint">ورودی = بدهکار · خروجی = بستانکار · ماندهٔ دونده (موجودی)؛ کسری داخل پرانتز</div>
         <div class="tablewrap"><table class="tx">
         <thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>بدهکار (ورودی)</th><th>بستانکار (خروجی)</th><th>مانده (موجودی)</th><th class="printhide">عملیات</th></tr></thead><tbody>
         <tr><td class="num">—</td><td class="num">—</td><td><b>موجودی اولیهٔ دوره</b></td><td class="num muted">—</td><td class="num muted">—</td><td class="num ${opening < 0 ? 'amt-out' : ''}">${balCell(opening)}</td><td class="printhide"></td></tr>
@@ -1575,7 +1575,7 @@ function transferForm(funds, preset) {
 }
 function settleForm(funds, debt) {
   const body = openModal('تسویه با مدیر', `<div class="form">
-    <div class="notice info" style="margin:0">طلب فعلی مدیر از صندوق: <b>${moneyU(debt)}</b></div>
+    <div class="notice info u-m0">طلب فعلی مدیر از صندوق: <b>${moneyU(debt)}</b></div>
     <label class="f">مبلغ تسویه (${curFa()})<input class="inp num" id="stAmount" data-money="stHint" inputmode="numeric" value="${sep(Math.round(r2d(debt)))}"><span class="hint" id="stHint"></span></label>
     <label class="f">از کدام صندوق<select class="inp" id="stFund">${funds.map(f => `<option value="${f.id}">${esc(f.name)} (${money(f.balance)})</option>`).join('')}</select></label>
     <label class="f">تاریخ${dateBoxHtml('st')}</label>
@@ -1672,7 +1672,7 @@ async function pickInvoicesForReport() {
   const rows = await api('/api/invoices')
   openModal('انتخاب فاکتورها', `<div class="form"><div class="tablewrap" style="max-height:340px;overflow:auto"><table class="tx">
     <thead><tr><th></th><th>عنوان</th><th>تاریخ</th><th>مبلغ</th></tr></thead><tbody>
-    ${rows.map(i => `<tr><td><input type="checkbox" class="exChk" value="${i.id}" ${expIds.includes(i.id) ? 'checked' : ''} style="width:16px;height:16px;accent-color:var(--accent)"></td>
+    ${rows.map(i => `<tr><td><input type="checkbox" class="exChk u-chk" value="${i.id}" ${expIds.includes(i.id) ? 'checked' : ''}></td>
       <td>${esc(i.title)}</td><td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td></tr>`).join('')}
     </tbody></table></div></div>`, `<button class="btn primary" id="exApply">اعمال</button><button class="btn" id="exCancelP">انصراف</button>`)
   $('#exCancelP').onclick = closeModal
@@ -1687,8 +1687,8 @@ function rangePickerHtml(periods, extra = '') {
       ${extra}
     </div>
     <div class="filters printhide" id="repCustom" ${repRange.custom ? '' : 'hidden'}>
-      <label class="f" style="flex-direction:row;align-items:center;gap:6px">از تاریخ ${dateBoxHtml('rf', repRange.jf)}</label>
-      <label class="f" style="flex-direction:row;align-items:center;gap:6px">تا تاریخ ${dateBoxHtml('rt', repRange.jt)}</label>
+      <label class="f u-inline">از تاریخ ${dateBoxHtml('rf', repRange.jf)}</label>
+      <label class="f u-inline">تا تاریخ ${dateBoxHtml('rt', repRange.jt)}</label>
       <button class="btn small primary" id="repApply">اعمال بازه</button>
     </div>`
 }
@@ -1892,7 +1892,7 @@ REPORTS.debtors = async () => {
   const batchBtn = IS_DESKTOP && r.rows.length
     ? `<button class="btn small" id="dbBatchPdf">📄 صورت‌حساب همه (PDF)</button>` : ''
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><label class="f" style="flex-direction:row;align-items:center;gap:6px">مانده تا تاریخ ${dateBoxHtml('dbAs', debtorsAsOf && debtorsAsOf.j)}</label><button class="btn small" id="dbAsGo">اعمال</button>${debtorsAsOf ? '<button class="btn small" id="dbAsClear">امروز</button>' : ''}</div>
+    <div class="filters printhide"><label class="f u-inline">مانده تا تاریخ ${dateBoxHtml('dbAs', debtorsAsOf && debtorsAsOf.j)}</label><button class="btn small" id="dbAsGo">اعمال</button>${debtorsAsOf ? '<button class="btn small" id="dbAsClear">امروز</button>' : ''}</div>
     ${debtorsAsOf ? `<div class="notice info">بدهی‌ها تا پایانِ روزِ <b>${faDigit(r.asOfJ)}</b> — پیگیری و قول پرداخت فقط در نمای امروز نمایش داده می‌شود.</div>` : ''}
     <div class="filters printhide"><a class="btn small" href="/api/export/debtors${debtorsAsOf ? '?asOf=' + debtorsAsOf.g : ''}">⬇️ اکسل</a>${batchBtn}<button class="btn small" onclick="printOfficial('/print/report/debtors', 'گزارش بدهکاران')">🖨 چاپ رسمی</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
@@ -2431,10 +2431,10 @@ SETTINGS.close = async () => {
   $('#setBody').innerHTML = `
     <div class="panel"><div class="phead"><b>بستن دوره</b><span class="hint strong">${d.lockDateJ ? 'بسته تا ' + faDigit(d.lockDateJ) : 'هیچ دوره‌ای بسته نشده'}</span></div>
       <p class="sub">بعد از بستن، هیچ سندی با تاریخِ آن روز یا قبل از آن ثبت، ویرایش یا حذف نمی‌شود؛ پس گزارشی که برای هیئت‌مدیره چاپ شده، فردا هم همان عدد را نشان می‌دهد. مانده‌های همان روز هم ذخیره می‌شود.</p>
-      <div class="form" style="max-width:520px">
+      <div class="form u-w520">
         <label class="f">بستن تا تاریخ (معمولاً آخرین روزِ ماه) ${dateBoxHtml('pcd')}</label>
         <div class="fbtns"><button class="btn primary" id="pcGo">بستن دوره</button>${d.lockDateJ ? '<button class="btn" id="pcOpen">بازکردنِ آخرین دوره</button>' : ''}</div></div></div>
-    <div class="panel"><div class="phead"><b>سال مالی</b></div><div class="form" style="max-width:520px">
+    <div class="panel"><div class="phead"><b>سال مالی</b></div><div class="form u-w520">
       <label class="f">شروع سال مالی<select class="inp" id="fyStart">${MN.map((m, i) => `<option value="${i + 1}" ${st.fiscalStartMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>
         <span class="hint">گزارش سالانه (درآمد و هزینه ۱۲ ماهه و مقایسه با سال قبل) بر اساس همین ماه ساخته می‌شود.</span></label>
       <div class="fbtns"><button class="btn" id="fySave">ذخیره</button></div></div></div>
@@ -2455,7 +2455,7 @@ SETTINGS.close = async () => {
 }
 SETTINGS.general = async () => {
   const s = await api('/api/settings')
-  $('#setBody').innerHTML = `<div class="panel"><div class="form" style="max-width:520px">
+  $('#setBody').innerHTML = `<div class="panel"><div class="form u-w520">
     <label class="f">نام ساختمان (در سربرگ گزارش‌ها و صورت‌حساب)<input class="inp" id="sgName" value="${esc(s.buildingName)}"></label>
     <label class="f">تعداد کل واحد ساختمان<input class="inp num" id="sgTotal" inputmode="numeric" value="${s.totalUnits ? faDigit(s.totalUnits) : ''}">
       <span class="hint">اگر عددی بگذارید، هنگام ثبت واحدِ بیشتر از این تعداد هشدار می‌گیرید. خالی یا ۰ = بدون محدودیت.</span></label>
@@ -2488,7 +2488,7 @@ SETTINGS.charge = async () => {
   const s = await api('/api/settings'), lf = await api('/api/latefee')
   $('#setBody').innerHTML = `
     <div class="panel"><div class="phead"><b>مبلغ شارژ سراسری</b><span class="hint strong">فعلی: ${moneyU(c.current)}</span></div>
-      <div class="form" style="max-width:520px">
+      <div class="form u-w520">
         <label class="f">مبلغ جدید هر واحد (${curFa()})<input class="inp num" id="chAmount" data-money="chHint" inputmode="numeric"><span class="hint" id="chHint"></span></label>
         <label class="f">از کدام ماه اعمال شود<select class="inp" id="chEff">${monthOptions()}</select></label>
         <p class="hint">شارژهای صادرشده‌ی ماه‌های قبل هرگز تغییر نمی‌کنند. شارژ اختصاصی هر واحد در صفحه‌ی همان واحد تنظیم می‌شود.</p>
@@ -2724,7 +2724,7 @@ SETTINGS.handover = async () => {
   const d = await api('/api/handovers')
   $('#setBody').innerHTML = `
     <div class="panel"><div class="phead"><b>مدیر مالی فعلی</b></div>
-      <div class="form" style="max-width:520px">
+      <div class="form u-w520">
         <label class="f">نام مدیر مالی فعلی (در سربرگ گزارش‌ها نمایش داده می‌شود)<input class="inp" id="hoName" value="${esc(d.current)}"></label>
         <div class="fbtns"><button class="btn" id="hoNameSave">ذخیره‌ی نام</button></div>
       </div></div>
@@ -3338,7 +3338,7 @@ async function cInvoiceForm(projectId, ci = null, after) {
       <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
     </div>
     <label class="f">نوع<select class="inp" id="ciKind"><option value="purchase" ${!ci || ci.kind !== 'sale' ? 'selected' : ''}>خرید / هزینه (به هزینه اضافه می‌شود)</option><option value="sale" ${ci && ci.kind === 'sale' ? 'selected' : ''}>فروش / درآمد (از هزینه کم می‌شود)</option></select></label>
-    ${ci ? `<div class="notice info" style="margin:0">پرداخت‌شده تا امروز: <b class="num">${moneyU(ci.paid_amount || 0)}</b> — پرداخت‌ها (با تاریخ هر قسط) از دکمهٔ «💸 پرداخت‌ها» ثبت یا اصلاح می‌شوند.</div>
+    ${ci ? `<div class="notice info u-m0">پرداخت‌شده تا امروز: <b class="num">${moneyU(ci.paid_amount || 0)}</b> — پرداخت‌ها (با تاریخ هر قسط) از دکمهٔ «💸 پرداخت‌ها» ثبت یا اصلاح می‌شوند.</div>
       <input type="hidden" id="ciPaidAmount" value="">`
     : `<div class="frow" style="align-items:end">
       <label class="f">پرداخت/دریافت همین الان (${curFa()})<input class="inp num" id="ciPaidAmount" data-money="ciPaidHint" inputmode="numeric"><span class="hint" id="ciPaidHint">خالی = هنوز پرداخت نشده؛ قسط‌های بعدی از دکمهٔ «پرداخت‌ها»</span></label>
