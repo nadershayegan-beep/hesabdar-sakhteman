@@ -1716,7 +1716,7 @@ REPORTS.expenses = async () => {
     </div>
     ${r.project ? `<div class="notice info printhide">مسیر مالی پروژه: برآورد اولیه <b>${money(r.project.budget)}</b> ← مبلغ نهایی <b>${money(r.project.finalAmount)}</b>${r.project.deviation ? ` · انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${signed(r.project.deviation)}</b>` : ''} ${curFa()}</div>` : ''}
     <div class="panel"><div class="phead"><b>ریز فاکتورها — بابت چه چیزی</b></div><div class="tablewrap"><table class="tx">
-      <thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
+      <thead><tr><th>شرح</th><th>${r.isProject ? 'پیمانکار' : 'دسته'}</th><th>تاریخ</th><th>${r.isProject ? 'توضیح' : 'تقسیم'}</th><th>مبلغ کل</th><th>${r.isProject ? 'پرداخت‌شده' : 'وصول‌شده'}</th><th>مانده</th></tr></thead><tbody>
       ${r.invoices.length ? r.invoices.map(i => `<tr class="clickable" data-inv="${i.id}"><td><b>${esc(i.title)}</b></td><td>${esc(i.category)}</td>
         <td class="num">${i.j_date ? faDigit(i.j_date) : '—'}</td><td><span class="catpill">${esc(i.methodFa)}</span></td>
         <td class="num">${money(i.amount)}</td><td class="num amt-in">${money(i.collected)}</td><td class="num ${i.remaining > 0 ? 'amt-out' : ''}">${money(i.remaining)}</td></tr>`).join('') : emptyRow(7, 'فاکتوری در این محدوده نیست')}

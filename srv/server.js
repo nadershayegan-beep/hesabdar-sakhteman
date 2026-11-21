@@ -417,7 +417,7 @@ function backfillDocNumbers() {
 }
 const dnoStmt = () => db.prepare(`SELECT year, seq FROM doc_numbers WHERE dtype=? AND ref_id=?`)
 // شمارهٔ نمایشیِ سند: «۱۴۰۵-۰۰۰۱۲»؛ اگر نداشت (مثل مانده‌های اولیه) همان شناسه
-function dno(dtype, id) { const r = dnoStmt().get(dtype, id); return r ? `${r.year}-${String(r.seq).padStart(5, '0')}` : String(id) }
+function dno(dtype, id) { const r = dnoStmt().get(dtype, id); return r ? `\u2066${r.year}-${String(r.seq).padStart(5, '0')}\u2069` : String(id) }
 function migrateFundBuckets() {
   for (const f of db.prepare(`SELECT * FROM funds WHERE COALESCE(bucket,'')=''`).all())
     db.prepare(`UPDATE funds SET bucket=? WHERE id=?`).run(bucketOfFund({ name: f.name }), f.id)
@@ -1948,7 +1948,7 @@ function ledgerHealth() {
 const balanceCheck = ledgerHealth
 
 // ---------- CSV ----------
-const csvEsc = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
+const csvEsc = v => { const s = String(v ?? '').replace(/[\u2066-\u2069]/g, ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
 const csv = (head, rows) => '﻿' + [head.join(','), ...rows.map(r => r.map(csvEsc).join(','))].join('\r\n')
 
 // ---------- پشتیبان‌گیری ----------
@@ -2437,42 +2437,65 @@ const isTomanDisp = () => getSetting('displayUnit', 'toman') !== 'rial'
 const pUnitFa = () => isTomanDisp() ? 'تومان' : 'ریال'
 const pSep = n => faNum(String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?!\d))/g, '٬'))
 const pMoney = r => pSep(isTomanDisp() ? (r || 0) / 10 : (r || 0))
-const printLayout = (title, inner) => `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${hEsc(title)}</title>
+// متن برای content در CSS (بدون نقل‌قول و بک‌اسلش)
+const cssStr = t => String(t || '').replace(/[\\"\n\r]/g, ' ')
+const printLayout = (title, inner) => `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${hEsc((getSetting('buildingName') || 'ساختمان') + ' — ' + title)}</title>
 <style>
-@font-face{font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-VF.woff2') format('woff2');font-weight:100 900;font-display:swap}
-@page{size:A4;margin:13mm}
+/* فونتِ همراه با ارقامِ فارسی (هر عددی که لاتین ذخیره شده باشد هم فارسی چاپ می‌شود) */
+@font-face{font-family:'VazirFD';src:url('/fonts/Vazirmatn-FD-Regular.woff2') format('woff2');font-weight:400}
+@font-face{font-family:'VazirFD';src:url('/fonts/Vazirmatn-FD-Bold.woff2') format('woff2');font-weight:700 900}
+@page{size:A4;margin:16mm 13mm 16mm;
+  @top-right{content:"${cssStr((getSetting('buildingName') || 'ساختمان') + ' — ' + title)}";font-family:VazirFD,Tahoma;font-size:8px;color:#8a919d}
+  @bottom-right{content:"حسابدار ساختمان توی دید";font-family:VazirFD,Tahoma;font-size:8px;color:#8a919d}
+  @bottom-left{content:"صفحهٔ " counter(page, persian) " از " counter(pages, persian);font-family:VazirFD,Tahoma;font-size:8px;color:#8a919d}}
 *{box-sizing:border-box}
-body{font-family:'Vazirmatn',Tahoma,system-ui,sans-serif;color:#1a2230;margin:0;font-size:12.5px;line-height:1.75;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff}
-.stmt{max-width:182mm;margin:0 auto}
-h1{font-size:19px;margin:0 0 2px;color:#0f2847}
-.sub{color:#5b6472;font-size:11.5px;margin:0 0 10px}
-.big{font-size:17px;font-weight:800;border:1.5px solid #1d5fa8;border-radius:10px;padding:11px 14px;margin:10px 0;background:#eef4fc}
-.payinfo{font-size:12.5px;border:1px dashed #9db3cc;border-radius:8px;padding:8px 12px;margin:0 0 10px;background:#fbfcfe}
-h3{font-size:13.5px;margin:14px 0 4px}
-/* جدول‌ها: استاندارد حسابداری — سرستونِ پررنگ، ردیف‌های یک‌درمیان، ترازِ عددی، جمعِ متمایز */
-table{width:100%;border-collapse:collapse;margin:8px 0;border:1px solid #c3cedd}
-th,td{border:1px solid #dbe3ee;padding:7px 9px;text-align:right;font-size:11.5px;vertical-align:middle}
-thead th{background:#eef2f7;color:#0f2847;font-weight:700;font-size:11.5px;border-color:#c3cedd;border-bottom:1.5px solid #8ea3bd;white-space:nowrap}
-tbody tr:nth-child(even){background:#f4f7fb}
-tbody tr:nth-child(odd){background:#fff}
-.num{font-variant-numeric:tabular-nums;text-align:right;direction:ltr;unicode-bidi:plaintext;white-space:nowrap}
-th.num{text-align:right}
-tr.tot td,tr.tot th{font-weight:800;background:#e8eef7;border-top:2px solid #1d5fa8;color:#0f2847}
-.amt-out{color:#c0392b}.amt-in{color:#0f8a56}
-.foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#7a828f;font-size:10.5px;text-align:center}
-.sign{display:flex;justify-content:space-around;gap:20px;margin-top:28px;font-size:11.5px;color:#333;break-inside:avoid}
-.sign div{flex:1;text-align:center;border-top:1px solid #9aa8b8;padding-top:6px;max-width:55mm}
-.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1.5px solid #0f2847;padding-bottom:6px;margin-bottom:10px}
-.hdr .meta{font-size:10.5px;color:#5b6472;text-align:left}
-.kpis{display:flex;flex-wrap:wrap;gap:9px;margin:10px 0}
-.kpi{flex:1 1 130px;border:1px solid #d3dce8;border-radius:10px;padding:9px 12px;background:#fbfcfe;box-shadow:0 1px 2px rgba(16,40,71,.05)}
-.kpi .k{font-size:10.5px;color:#5b6472}
-.kpi .v{font-size:16px;font-weight:800;margin-top:3px;color:#0f2847;direction:ltr;text-align:right}
-.kpi .v.ok{color:#0f8a56}.kpi .v.warn{color:#c0392b}
+body{font-family:'VazirFD','Vazirmatn',Tahoma,sans-serif;color:#1a2230;margin:0;font-size:11.5px;line-height:1.6;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff}
+.stmt{max-width:184mm;margin:0 auto}
+/* سربرگ: نامِ ساختمان کوچک بالا، عنوانِ سند درشت، اطلاعاتِ سند در ستونِ چپ */
+.hdr{display:flex;justify-content:space-between;align-items:flex-start;gap:18px;border-bottom:2px solid #0f2847;padding-bottom:8px;margin-bottom:12px}
+.hdr .org{font-size:11px;font-weight:700;color:#5b6472}
+.hdr h1{font-size:18px;margin:1px 0 0;color:#0f2847;line-height:1.35}
+.hdr .subt{font-size:11px;color:#5b6472;margin-top:3px}
+.hdr .meta{font-size:10.5px;color:#3b4553;line-height:1.75;white-space:nowrap;text-align:right;border-right:1px solid #d5dce6;padding-right:12px}
+.hdr .meta b{color:#0f2847}
+.sub{color:#5b6472;font-size:10.5px;margin:2px 0 6px}
+.big{font-size:15px;font-weight:700;border:1px solid #0f2847;border-radius:6px;padding:8px 12px;margin:8px 0;background:#f6f8fb}
+.big .amt-out{color:#b3261e}
+.payinfo{font-size:11px;border:1px dashed #9aa8b8;border-radius:6px;padding:6px 10px;margin:0 0 8px}
+/* جدولِ مالی: فقط خطوطِ افقی، سرستون با دو خط، جمعِ کل با خطِ دوتایی */
+table{width:100%;border-collapse:collapse;margin:4px 0 10px}
+th,td{padding:4px 7px;text-align:right;font-size:10.5px;vertical-align:top;border:none;border-bottom:.6px solid #d5dce6}
+thead th{font-weight:700;color:#0f2847;border-top:1.3px solid #0f2847;border-bottom:1.3px solid #0f2847;white-space:nowrap}
+tbody th{font-weight:700;color:#0f2847;width:28%}
+td.num,th.num{width:1%;white-space:nowrap;font-variant-numeric:tabular-nums;text-align:right}
+td.num{direction:ltr;unicode-bidi:isolate}
+td.txt{white-space:normal}
+tr.tot td,tr.tot th{font-weight:700;color:#0f2847;border-top:1.3px solid #0f2847;border-bottom:3px double #0f2847}
+tr.carry td{color:#5b6472;font-style:italic;background:#f6f8fb}
+tr.grp td{font-weight:700;color:#0f2847;padding-top:7px}
+.amt-in,.amt-out{color:inherit}
+.dim{color:#8a919d}
+.sech{font-size:12.5px;margin:14px 0 4px;font-weight:700;color:#0f2847;padding-bottom:3px;border-bottom:1px solid #0f2847;break-after:avoid}
+.keep{break-inside:avoid}
+.kpis{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:8px 0 10px}
+.kpi{border:1px solid #d5dce6;border-radius:6px;padding:7px 10px;break-inside:avoid}
+.kpi .k{font-size:10px;color:#5b6472}
+.kpi .v{font-size:15px;font-weight:700;margin-top:2px;color:#0f2847;white-space:nowrap}
+.kpi .v.warn{color:#b3261e}
 .kpi .s{font-size:9.5px;color:#8a919d;margin-top:1px}
-.sech{font-size:13.5px;margin:16px 0 5px;font-weight:800;color:#0f2847;border-right:4px solid #1d5fa8;padding:2px 9px 2px 0;background:#f4f7fb;border-radius:0 6px 6px 0}
-.ok{color:#0f8a56}.warn{color:#c0392b}
-tr,td,th,.kpi{break-inside:avoid}
+.sign{display:flex;justify-content:space-around;gap:20px;margin-top:30px;font-size:11px;color:#333;break-inside:avoid}
+.sign div{flex:1;text-align:center;border-top:1px solid #5b6472;padding-top:5px;max-width:52mm}
+.foot{margin-top:14px;border-top:.6px solid #d5dce6;padding-top:5px;color:#8a919d;font-size:9.5px;text-align:center}
+.copy{break-inside:avoid}
+.copylbl{float:left;font-size:9.5px;color:#5b6472;border:1px solid #d5dce6;border-radius:4px;padding:1px 6px}
+.cutline{border-top:1px dashed #9aa8b8;margin:12px 0;text-align:center;font-size:9px;color:#8a919d;line-height:0}
+.cutline span{background:#fff;padding:0 6px}
+.pb{break-after:page}
+/* دفاتر (روزنامه/کل): ستون‌های ثابت و ردیفِ یک‌خطی تا نقلِ جمع‌ها دقیقاً پایانِ هر صفحه بیفتد */
+table.book{table-layout:fixed}
+table.book td,table.book th{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:10px;padding:3.5px 5px}
+table.book td.num,table.book th.num{width:auto;overflow:visible;text-overflow:clip}
+tr,td,th{break-inside:avoid}
 thead{display:table-header-group}
 </style></head><body><div class="stmt">${inner}</div></body></html>`
 
@@ -2499,30 +2522,31 @@ function printPaymentHtml(id) {
   const used = allocs.reduce((a, x) => a + x.amount, 0), credit = p.amount - used
   const debtAfter = unitDebt(p.unit_id)
   const U = pUnitFa(), amtDisp = isTomanDisp() ? Math.round(p.amount / 10) : p.amount
-  const inner = `
-    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
-    <div class="sub">رسیدِ دریافت وجه · شمارهٔ رسید: <b>${faNum(dno('payment', p.id))}</b> · تاریخ: ${faNum(p.j_date)}</div>
-    <div class="big">مبلغ ${pMoney(p.amount)} ${U}<div style="font-size:13px;font-weight:600;margin-top:4px">(به حروف: ${numToFaWords(amtDisp)} ${U})</div></div>
+  const copy = label => `<div class="copy">
+    ${printHdr('رسید دریافت وجه', 'واحد ' + faNum(p.number) + (p.resident_name ? ' — ' + hEsc(p.resident_name) : ''), [...(label ? [['نسخه', label]] : []), ['شمارهٔ رسید', faNum(dno('payment', p.id))], ['تاریخ', faNum(p.j_date)]])}
+    <div class="big">مبلغ ${pMoney(p.amount)} ${U}<div style="font-size:11.5px;font-weight:400;margin-top:2px">(به حروف: ${numToFaWords(amtDisp)} ${U})</div></div>
     <table><tbody>
-      <tr><th style="width:30%">از</th><td>واحد ${faNum(p.number)}${p.resident_name ? ' — ' + hEsc(p.resident_name) : ''}</td></tr>
       <tr><th>واریز به</th><td>${hEsc(p.fund_name || '—')}${p.method ? ' · روش: ' + hEsc(p.method) : ''}</td></tr>
       ${p.note ? `<tr><th>توضیح</th><td>${hEsc(p.note)}</td></tr>` : ''}
     </tbody></table>
-    <div class="sech">بابتِ این بدهی‌ها تسویه شد</div>
-    <table><thead><tr><th>سند</th><th>شرح</th><th>تاریخ</th><th>مبلغ</th></tr></thead><tbody>
-      ${allocs.length ? allocs.map(a => `<tr><td class="num">${faNum(a.inv_id)}</td><td>${hEsc(a.title)}</td><td class="num">${faNum(a.j_date)}</td><td class="num">${pMoney(a.amount)}</td></tr>`).join('') : '<tr><td colspan="4">— به‌صورت پیش‌پرداخت (علی‌الحساب) ثبت شد —</td></tr>'}
-      ${credit > 0 ? `<tr><td></td><td>پیش‌پرداخت (برای بدهی‌های بعدی)</td><td></td><td class="num">${pMoney(credit)}</td></tr>` : ''}
+    <table><thead><tr><th>شمارهٔ سند</th><th>بابت</th><th>تاریخ</th><th class="num">مبلغ</th></tr></thead><tbody>
+      ${allocs.length ? allocs.map(a => `<tr><td class="num">${faNum(dno('invoice', a.inv_id))}</td><td>${hEsc(a.title)}</td><td class="num">${faNum(a.j_date)}</td><td class="num">${pMoney(a.amount)}</td></tr>`).join('') : '<tr><td colspan="4">به‌صورت پیش‌پرداخت ثبت شد</td></tr>'}
+      ${credit > 0 && allocs.length ? `<tr><td></td><td>پیش‌پرداخت (برای بدهی‌های بعدی)</td><td></td><td class="num">${pMoney(credit)}</td></tr>` : ''}
       <tr class="tot"><td colspan="3">جمع</td><td class="num">${pMoney(p.amount)}</td></tr>
     </tbody></table>
-    <div class="big" style="font-size:14px;border-width:1px">${debtAfter > 0 ? `ماندهٔ بدهیِ فعلیِ واحد (تا امروز): <b>${pMoney(debtAfter)} ${U}</b>` : debtAfter < 0 ? `پیش‌پرداختِ فعلیِ واحد: <b>${pMoney(-debtAfter)} ${U}</b>` : 'حسابِ واحد تا امروز تسویه است.'}</div>
-    <div class="sign"><span>امضای دریافت‌کننده (مدیر ساختمان):</span><span>امضای پرداخت‌کننده:</span></div>
-    <div class="foot">صادرشده از «حسابدار ساختمان»</div>`
-  return printLayout(`رسید ${p.id} — واحد ${p.number}`, inner)
+    <div class="sub">${debtAfter > 0 ? `ماندهٔ بدهیِ واحد تا امروز: <b>${pMoney(debtAfter)} ${U}</b>` : debtAfter < 0 ? `پیش‌پرداختِ واحد تا امروز: <b>${pMoney(-debtAfter)} ${U}</b>` : 'حسابِ واحد تا امروز تسویه است.'}</div>
+    ${signBlock(['دریافت‌کننده (مدیر ساختمان)', 'پرداخت‌کننده'])}</div>`
+  // اگر جا شود، دو نسخه روی یک برگ A4 با خطِ برش
+  const inner = allocs.length <= 3 ? copy('نسخهٔ ساکن') + '<div class="cutline"><span>محل برش</span></div>' + copy('نسخهٔ بایگانی') : copy('') + printFoot()
+  return printLayout(`رسید ${dno('payment', p.id).replace(/[\u2066-\u2069]/g, '')} — واحد ${p.number}`, inner)
 }
 // بلوکِ امضا و سربرگِ رسمی برای همهٔ چاپ‌ها
 const signBlock = labels => `<div class="sign">${labels.map(l => `<div>${hEsc(l)}</div>`).join('')}</div>`
-const printHdr = (title, sub) => { const t = todayJ(); return `<div class="hdr"><div><h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1><div class="sub" style="margin:0">${hEsc(title)}${sub ? ' · ' + sub : ''}</div></div>
-  <div class="meta">تاریخ صدور: ${faNum(jStr(t.jy, t.jm, t.jd))}<br>مبالغ به ${pUnitFa()}</div></div>` }
+// title و sub باید از قبل escape شده باشند؛ meta = [[برچسب، مقدار]]
+const printHdr = (title, sub, meta = []) => { const t = todayJ(); return `<div class="hdr"><div><div class="org">${hEsc(getSetting('buildingName') || 'ساختمان')}</div><h1>${title}</h1>${sub ? `<div class="subt">${sub}</div>` : ''}</div>
+  <div class="meta">${[...meta, ['تاریخ صدور', faNum(jStr(t.jy, t.jm, t.jd))], ['مبالغ به', pUnitFa()]].map(([k, v]) => `${k}: <b>${v}</b>`).join('<br>')}</div></div>` }
+// برندِ برنامه در پاورقیِ PDF (کنار شمارهٔ صفحه) می‌آید؛ در متن تکرار نمی‌شود
+const printFoot = () => ''
 const pm = r => (r < 0 ? '(' + pMoney(-r) + ')' : pMoney(r))
 // صورت‌حسابِ ساکن: ماندهٔ اول دوره، ردیف‌های «بابت / بدهی / پرداخت / مانده»، ماندهٔ هر سبد و «قابل پرداخت»
 function printStatementHtml(unitId, from, to) {
@@ -2541,19 +2565,19 @@ function printStatementHtml(unitId, from, to) {
   const lr = unitLedgerReport().rows.find(r => r.id === unitId) || { charge: 0, omrani: 0, projectDue: 0 }
   const debt = unitDebt(unitId), U = pUnitFa()
   const range = from || to ? `از ${from ? faNum(gToJStr(from)) : 'ابتدا'} تا ${to ? faNum(gToJStr(to)) : 'امروز'}` : 'از ابتدا تا امروز'
-  const inner = `${printHdr('صورت‌حساب واحد ' + faNum(u.number) + (u.resident_name ? ' — ' + hEsc(u.resident_name) : ''), range)}
+  const inner = `${printHdr('صورت‌حساب واحد ' + faNum(u.number), (u.resident_name ? hEsc(u.resident_name) : ''), [['دوره', range]])}
     <div class="big">${debt > 0 ? `قابل پرداخت: <span class="amt-out">${pMoney(debt)} ${U}</span>` : debt < 0 ? `پیش‌پرداخت: ${pMoney(-debt)} ${U}` : 'تسویه است — بدهی ندارید'}</div>
     ${debt > 0 ? payInfoHtml() : ''}
-    <table><thead><tr><th>تاریخ</th><th>شماره</th><th>بابت</th><th>بدهی</th><th>پرداخت</th><th>مانده</th></tr></thead><tbody>
+    <table><thead><tr><th>تاریخ</th><th>شماره</th><th>بابت</th><th class="num">بدهی</th><th class="num">پرداخت</th><th class="num">مانده</th></tr></thead><tbody>
     <tr><td colspan="5">ماندهٔ از قبل</td><td class="num">${pm(open)}</td></tr>
     ${body || '<tr><td colspan="6" style="text-align:center;color:#888">در این بازه گردشی نبوده</td></tr>'}
     <tr class="tot"><td colspan="3">جمع دوره</td><td class="num">${pMoney(totD)}</td><td class="num">${pMoney(totC)}</td><td class="num">${pm(bal)}</td></tr></tbody></table>
-    <div class="sech">ماندهٔ بدهی به تفکیک</div>
+    <div class="keep"><div class="sech">ماندهٔ بدهی به تفکیک</div>
     <table><thead><tr><th>شارژ</th><th>قبوض و متفرقه</th><th>پروژه‌ها (طبق مصوبه)</th><th>جمع</th></tr></thead><tbody>
-    <tr><td class="num">${pMoney(lr.charge)}</td><td class="num">${pMoney(lr.omrani)}</td><td class="num">${pMoney(Math.max(0, lr.projectDue))}</td><td class="num"><b>${pMoney(Math.max(0, debt))}</b></td></tr></tbody></table>
+    <tr><td class="num">${pMoney(lr.charge)}</td><td class="num">${pMoney(lr.omrani)}</td><td class="num">${pMoney(Math.max(0, lr.projectDue))}</td><td class="num"><b>${pMoney(Math.max(0, debt))}</b></td></tr></tbody></table></div>
     <div class="sub" style="margin-top:6px">شارژ ماهانهٔ این واحد: <b>${pMoney(u.monthly_charge != null ? u.monthly_charge : chargeAmountAt(curPeriod()))} ${U}</b>. ماندهٔ داخل پرانتز یعنی پیش‌پرداخت.</div>
     ${signBlock(['مدیر مالی ساختمان', 'مهر ساختمان'])}
-    <div class="foot">حسابدار ساختمان توی دید</div>`
+    ${printFoot()}`
   return printLayout(`صورت‌حساب واحد ${u.number}`, inner)
 }
 // چاپِ رسمیِ گزارش‌های جدولی (دفتر روزنامه، دفتر کل، بدهکاران، صندوق‌ها، درآمد و هزینه)
@@ -2561,52 +2585,69 @@ function printReportHtml(kind, Q) {
   const U = pUnitFa()
   if (kind === 'debtors') {
     const r = debtorsReport()
-    return printLayout('گزارش بدهکاران', `${printHdr('گزارش بدهکاران', 'به تفکیک قدمت')}
-      <table><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th>${AGE_KEYS.map(k => `<th>${k} روز</th>`).join('')}<th>آخرین پیگیری</th></tr></thead><tbody>
+    return printLayout('گزارش بدهکاران', `${printHdr('گزارش بدهکاران', 'به تفکیک قدمت بدهی', Q.asOf ? [['تا تاریخ', faNum(gToJStr(Q.asOf))]] : [])}
+      <table><thead><tr><th>واحد</th><th>ساکن</th><th class="num">بدهی</th>${AGE_KEYS.map(k => `<th class="num">${k} روز</th>`).join('')}<th>آخرین پیگیری</th></tr></thead><tbody>
       ${r.rows.map(x => `<tr><td class="num">${faNum(x.number)}</td><td>${hEsc(Q.names === '0' ? '—' : (x.resident_name || '—'))}</td><td class="num">${pMoney(x.debt)}</td>${AGE_KEYS.map(k => `<td class="num">${x.ages[k] ? pMoney(x.ages[k]) : '—'}</td>`).join('')}<td>${x.lastFollow ? faNum(x.lastFollow.j) + ' ' + hEsc(x.lastFollow.channelFa) : '—'}</td></tr>`).join('')}
       <tr class="tot"><td colspan="2">جمع</td><td class="num">${pMoney(r.total)}</td>${AGE_KEYS.map(k => `<td class="num">${pMoney(r.buckets[k])}</td>`).join('')}<td></td></tr></tbody></table>
-      ${signBlock(['مدیر مالی', 'بازرس / هیئت‌مدیره'])}`)
+      ${signBlock(['مدیر مالی', 'بازرس / هیئت‌مدیره'])}${printFoot()}`)
   }
   if (kind === 'journal') {
     const d = journalReport(Q)
-    return printLayout('دفتر روزنامه', `${printHdr('دفتر روزنامه', Q.from || Q.to ? 'از ' + faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : '')}
-      <table><thead><tr><th>ردیف</th><th>شماره سند</th><th>تاریخ</th><th>شرح</th><th>طرف بدهکار</th><th>طرف بستانکار</th><th>بدهکار</th><th>بستانکار</th></tr></thead><tbody>
-      ${d.rows.map(x => `<tr><td class="num">${faNum(x.row)}</td><td class="num">${faNum(x.no)}</td><td class="num">${faNum(x.j)}</td><td>${hEsc(x.title)}</td><td>${hEsc(x.debitAcc)}</td><td>${hEsc(x.creditAcc)}</td><td class="num">${pMoney(x.debit)}</td><td class="num">${pMoney(x.credit)}</td></tr>`).join('')}
-      <tr class="tot"><td colspan="6">جمع (${faNum(d.rows.length)} سند)</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td></tr></tbody></table>
-      <div class="sub">کنترل با موجودی صندوق‌ها: ${d.control.ok ? 'می‌خواند' : 'اختلاف دارد'} — ${d.control.funds.map(f => hEsc(f.name) + ' ' + pMoney(f.actual)).join(' · ')}</div>
-      ${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}`)
+    const head = '<colgroup><col style="width:4%"><col style="width:13%"><col style="width:10.5%"><col style="width:19.5%"><col style="width:14.5%"><col style="width:14.5%"><col style="width:12%"><col style="width:12%"></colgroup><thead><tr><th class="num">ردیف</th><th>شماره سند</th><th>تاریخ</th><th>شرح</th><th>طرف بدهکار</th><th>طرف بستانکار</th><th class="num">بدهکار</th><th class="num">بستانکار</th></tr></thead>'
+    const chunks = pageChunks(d.rows, 30, 36); let cd = 0, cc = 0
+    const body = chunks.map((ch, k) => {
+      const carryIn = k ? `<tr class="carry"><td colspan="6">نقل از صفحهٔ قبل</td><td class="num">${pMoney(cd)}</td><td class="num">${pMoney(cc)}</td></tr>` : ''
+      const rows = ch.map(x => { cd += x.debit; cc += x.credit; return `<tr><td class="num">${faNum(x.row)}</td><td class="num">${faNum(x.no)}</td><td class="num">${faNum(x.j)}</td><td>${hEsc(x.title)}</td><td>${hEsc(x.debitAcc)}</td><td>${hEsc(x.creditAcc)}</td><td class="num">${pMoney(x.debit)}</td><td class="num">${pMoney(x.credit)}</td></tr>` }).join('')
+      const last = k === chunks.length - 1
+      const tail = last ? `<tr class="tot"><td colspan="6">جمع (${faNum(d.rows.length)} سند)</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td></tr>`
+        : `<tr class="carry"><td colspan="6">نقل به صفحهٔ بعد</td><td class="num">${pMoney(cd)}</td><td class="num">${pMoney(cc)}</td></tr>`
+      return `<table class="book ${last ? '' : 'pb'}">${head}<tbody>${carryIn}${rows}${tail}</tbody></table>`
+    }).join('')
+    return printLayout('دفتر روزنامه', `${printHdr('دفتر روزنامه', '', [['دوره', Q.from || Q.to ? faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : 'از ابتدا تا امروز']])}
+      ${body}
+      <div class="sub">کنترل با موجودی صندوق‌ها: ${d.control.ok ? 'می‌خواند' : 'اختلاف دارد'} — ${d.control.funds.map(f => hEsc(f.name) + ' ' + pm(f.actual)).join(' · ')}</div>
+      ${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}${printFoot()}`)
   }
   if (kind === 'gl') {
     const d = generalLedger(Q.type, Q.id, Q.from, Q.to); if (!d) return null
-    let bal = d.opening
-    return printLayout('دفتر کل — ' + d.name, `${printHdr('دفتر کل — ' + hEsc(d.name), Q.from || Q.to ? 'از ' + faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : '')}
-      <table><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>
-      <tr><td colspan="5">ماندهٔ اول دوره</td><td class="num">${pm(d.opening)}</td></tr>
-      ${d.rows.map(e => `<tr><td class="num">${faNum(e.j)}</td><td class="num">${faNum(e.no)}</td><td>${hEsc(e.title)}</td><td class="num">${e.debit ? pMoney(e.debit) : ''}</td><td class="num">${e.credit ? pMoney(e.credit) : ''}</td><td class="num">${pm(e.balance)}</td></tr>`).join('')}
-      <tr class="tot"><td colspan="3">جمع</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td><td class="num">${pm(d.finalBalance)}</td></tr></tbody></table>
-      <div class="sub">ماندهٔ داخل پرانتز = بستانکار.</div>${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}`)
+    const head = '<colgroup><col style="width:10.5%"><col style="width:14%"><col style="width:36.5%"><col style="width:13%"><col style="width:13%"><col style="width:13%"></colgroup><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th class="num">بدهکار</th><th class="num">بستانکار</th><th class="num">مانده</th></tr></thead>'
+    const chunks = pageChunks(d.rows, 30, 36); let cd = 0, cc = 0, cb = d.opening
+    const body = chunks.map((ch, k) => {
+      const carryIn = k ? `<tr class="carry"><td colspan="3">نقل از صفحهٔ قبل</td><td class="num">${pMoney(cd)}</td><td class="num">${pMoney(cc)}</td><td class="num">${pm(cb)}</td></tr>`
+        : `<tr class="carry"><td colspan="5">ماندهٔ اول دوره</td><td class="num">${pm(d.opening)}</td></tr>`
+      const rows = ch.map(e => { cd += e.debit; cc += e.credit; cb = e.balance; return `<tr><td class="num">${faNum(e.j)}</td><td class="num">${faNum(e.no)}</td><td>${hEsc(e.title)}</td><td class="num">${e.debit ? pMoney(e.debit) : ''}</td><td class="num">${e.credit ? pMoney(e.credit) : ''}</td><td class="num">${pm(e.balance)}</td></tr>` }).join('')
+      const last = k === chunks.length - 1
+      const tail = last ? `<tr class="tot"><td colspan="3">جمع</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td><td class="num">${pm(d.finalBalance)}</td></tr>`
+        : `<tr class="carry"><td colspan="3">نقل به صفحهٔ بعد</td><td class="num">${pMoney(cd)}</td><td class="num">${pMoney(cc)}</td><td class="num">${pm(cb)}</td></tr>`
+      return `<table class="book ${last ? '' : 'pb'}">${head}<tbody>${carryIn}${rows}${tail}</tbody></table>`
+    }).join('')
+    return printLayout('دفتر کل — ' + d.name, `${printHdr('دفتر کل', hEsc(d.name), [['دوره', Q.from || Q.to ? faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : 'از ابتدا تا امروز']])}
+      ${body}
+      <div class="sub">ماندهٔ داخلِ پرانتز = بستانکار.</div>${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}${printFoot()}`)
   }
   if (kind === 'funds') {
     const ov = fundsOverview(), t = ov.total
-    return printLayout('گزارش صندوق‌ها', `${printHdr('گزارش کامل صندوق‌ها', 'از ابتدا تا امروز')}
-      <table><thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>انتقال (±)</th><th>موجودی</th><th>بدهی ساکنین</th></tr></thead><tbody>
+    return printLayout('گزارش صندوق‌ها', `${printHdr('گزارش کامل صندوق‌ها', '', [['دوره', 'از ابتدا تا امروز']])}
+      <table><thead><tr><th>صندوق</th><th class="num">موجودی اولیه</th><th class="num">دریافتی</th><th class="num">مخارج</th><th class="num">انتقال (±)</th><th class="num">موجودی</th><th class="num">بدهی ساکنین</th></tr></thead><tbody>
       ${ov.funds.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.opening)}</td><td class="num">${pMoney(f.received)}</td><td class="num">${pMoney(f.spent)}</td><td class="num">${f.transferNet ? pm(f.transferNet) : '—'}</td><td class="num">${pm(f.balance)}</td><td class="num">${pMoney(f.unitDebt)}</td></tr>`).join('')}
       <tr class="tot"><td>جمع</td><td class="num">${pMoney(t.opening)}</td><td class="num">${pMoney(t.received)}</td><td class="num">${pMoney(t.spent)}</td><td class="num">—</td><td class="num">${pm(t.balance)}</td><td class="num">${pMoney(t.unitDebt)}</td></tr></tbody></table>
-      ${signBlock(['مدیر مالی', 'هیئت‌مدیره'])}`)
+      ${signBlock(['مدیر مالی', 'هیئت‌مدیره'])}${printFoot()}`)
   }
   if (kind === 'income') {
     const r = incomeStatement(Q.from, Q.to)
     const blk = side => r.lines.filter(l => l.side === side).map(l => `<tr><td>${hEsc(l.group)}</td><td>${hEsc(l.label)}</td><td class="num">${pMoney(l.total)}</td></tr>`).join('')
-    return printLayout('صورت درآمد و هزینه', `${printHdr('صورت درآمد و هزینه (نقدی)', 'از ' + faNum(r.fromJ) + ' تا ' + faNum(r.toJ))}
-      <table><thead><tr><th>گروه</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>
-      <tr><td colspan="3"><b>درآمدها</b></td></tr>${blk('in')}<tr class="tot"><td colspan="2">جمع درآمدها</td><td class="num">${pMoney(r.income)}</td></tr>
-      <tr><td colspan="3"><b>هزینه‌ها</b></td></tr>${blk('out')}<tr class="tot"><td colspan="2">جمع هزینه‌ها</td><td class="num">${pMoney(r.expense)}</td></tr>
+    return printLayout('صورت درآمد و هزینه', `${printHdr('صورت درآمد و هزینه', 'مبنای نقدی', [['دوره', faNum(r.fromJ) + ' تا ' + faNum(r.toJ)]])}
+      <table><thead><tr><th>گروه</th><th>شرح</th><th class="num">مبلغ</th></tr></thead><tbody>
+      <tr class="grp"><td colspan="3">درآمدها</td></tr>${blk('in')}<tr class="tot"><td colspan="2">جمع درآمدها</td><td class="num">${pMoney(r.income)}</td></tr>
+      <tr class="grp"><td colspan="3">هزینه‌ها</td></tr>${blk('out')}<tr class="tot"><td colspan="2">جمع هزینه‌ها</td><td class="num">${pMoney(r.expense)}</td></tr>
       <tr class="tot"><td colspan="2">خالص دوره</td><td class="num">${pm(r.net)}</td></tr></tbody></table>
       <table><tbody><tr><td>موجودی صندوق‌ها در ابتدای دوره</td><td class="num">${pm(r.openCash)}</td></tr><tr><td>موجودی صندوق‌ها در پایان دوره</td><td class="num">${pm(r.closeCash)}</td></tr></tbody></table>
-      ${signBlock(['مدیر مالی', 'هیئت‌مدیره', 'بازرس'])}`)
+      ${signBlock(['مدیر مالی', 'هیئت‌مدیره', 'بازرس'])}${printFoot()}`)
   }
   return null
 }
+// تقسیمِ ردیف‌ها به صفحه‌ها برای نقلِ جمع‌ها (صفحهٔ اول کوتاه‌تر به‌خاطرِ سربرگ)
+function pageChunks(rows, first, next) { const out = []; let i = 0, n = first; while (i < rows.length) { out.push(rows.slice(i, i + n)); i += n; n = next } return out.length ? out : [[]] }
 // اطلاعاتِ واریز (کارت/شبا/صاحب حساب/مهلت) برای پیام‌ها و صورت‌حساب‌ها
 function payInfo() { return { payCard: getSetting('payCard', ''), payIban: getSetting('payIban', ''), payHolder: getSetting('payHolder', ''), payDueDay: +getSetting('payDueDay', '0') || 0 } }
 function payInfoHtml() {
@@ -2632,8 +2673,7 @@ function printSummaryHtml(period, showNames) {
   const U = pUnitFa()
   const kpi = (k, v, s, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`
   const inner = `
-    <h1>${hEsc(mr.buildingName || 'ساختمان')}</h1>
-    <div class="sub">خلاصه‌ی ماهانه برای هیئت‌مدیره · دوره‌ی ${faNum(periodFa(p))} · تاریخ صدور: ${faNum((() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })())}${mr.managerName ? ' · مدیر: ' + hEsc(mr.managerName) : ''}</div>
+    ${printHdr('خلاصهٔ ماهانهٔ هیئت‌مدیره', mr.managerName ? 'مدیر مالی: ' + hEsc(mr.managerName) : '', [['دوره', faNum(periodFa(p))]])}
     <div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', pMoney(fundTotal) + ' ' + U, '', fundTotal < 0 ? 'warn' : '')}
       ${kpi('دریافتی این ماه', pMoney(mr.cash.income) + ' ' + U, 'نقدی')}
@@ -2643,7 +2683,7 @@ function printSummaryHtml(period, showNames) {
       ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', '')}
     </div>
     <div class="sech">گردش صندوق‌ها</div>
-    <table><thead><tr><th>صندوق</th><th>مانده‌ی ابتدای دوره</th><th>ورودی</th><th>خروجی</th><th>انتقال (±)</th><th>مانده‌ی پایان دوره</th></tr></thead><tbody>
+    <table><thead><tr><th>صندوق</th><th class="num">ماندهٔ ابتدای دوره</th><th class="num">ورودی</th><th class="num">خروجی</th><th class="num">انتقال (±)</th><th class="num">ماندهٔ پایان دوره</th></tr></thead><tbody>
     ${mr.fundFlow.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.open)}</td><td class="num">${pMoney(f.in)}</td>
       <td class="num">${pMoney(f.out)}</td><td class="num">${f.transfer ? (f.transfer < 0 ? '−' : '+') + pMoney(Math.abs(f.transfer)) : '—'}</td><td class="num"><b>${pMoney(f.close)}</b></td></tr>`).join('')}
     <tr class="tot"><td>جمع</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.open, 0))}</td>
@@ -2652,16 +2692,16 @@ function printSummaryHtml(period, showNames) {
     </tbody></table>
     <div class="sech">درآمد و هزینه (نقدی)</div>
     <table><thead><tr><th>گروه</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>
-    ${mr.cash.lines.length ? ['in', 'out'].map(sd => mr.cash.lines.filter(l => l.side === sd).map(l => `<tr><td>${sd === 'in' ? 'درآمد' : 'هزینه'} · ${hEsc(l.group)}</td><td>${hEsc(l.label)}</td><td class="num">${pMoney(l.total)} ${U}</td></tr>`).join('')
-      + `<tr class="tot"><td colspan="2">جمع ${sd === 'in' ? 'درآمد' : 'هزینه'}</td><td class="num">${pMoney(sd === 'in' ? mr.cash.income : mr.cash.expense)} ${U}</td></tr>`).join('')
+    ${mr.cash.lines.length ? ['in', 'out'].map(sd => mr.cash.lines.filter(l => l.side === sd).map(l => `<tr><td>${sd === 'in' ? 'درآمد' : 'هزینه'} · ${hEsc(l.group)}</td><td>${hEsc(l.label)}</td><td class="num">${pMoney(l.total)}</td></tr>`).join('')
+      + `<tr class="tot"><td colspan="2">جمع ${sd === 'in' ? 'درآمد' : 'هزینه'}</td><td class="num">${pMoney(sd === 'in' ? mr.cash.income : mr.cash.expense)}</td></tr>`).join('')
     : '<tr><td colspan="3" style="text-align:center;color:#888">گردشی در این دوره نبوده</td></tr>'}
     </tbody></table>
-    <div class="sech">وضعیت بدهکاران (بر اساس قدمت)</div>
+    <div class="keep"><div class="sech">وضعیت بدهکاران (بر اساس قدمت)</div>
     <table><thead><tr><th>۰-۳۰ روز</th><th>۳۱-۶۰ روز</th><th>۶۱-۹۰ روز</th><th>بیش از ۹۰ روز</th><th>جمع کل</th></tr></thead><tbody>
     <tr><td class="num">${pMoney(dr.buckets['۰-۳۰'])}</td><td class="num">${pMoney(dr.buckets['۳۱-۶۰'])}</td>
       <td class="num">${pMoney(dr.buckets['۶۱-۹۰'])}</td><td class="num amt-out">${pMoney(dr.buckets['+۹۰'])}</td>
-      <td class="num tot"><b>${pMoney(dr.total)} ${U}</b></td></tr>
-    </tbody></table>
+      <td class="num"><b>${pMoney(dr.total)}</b></td></tr>
+    </tbody></table></div>
     ${showNames && dr.rows.length ? `<table style="margin-top:6px"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
       ${dr.rows.map(r => `<tr><td class="num">${faNum(r.number)}</td><td>${hEsc(r.resident_name || '—')}</td>
         <td class="num amt-out">${pMoney(r.debt)} ${U}</td><td class="num">${r.aging ? (r.aging.days > 9000 ? 'انتقالی' : faNum(r.aging.days) + ' روز') : '—'}</td></tr>`).join('')}
@@ -2672,7 +2712,7 @@ function printSummaryHtml(period, showNames) {
       ? 'کنترل سلامت دفاتر: همهٔ آزمون‌ها سالم است.'
       : 'کنترل سلامت دفاتر ایراد پیدا کرده — گزارش «کنترل سلامت دفاتر» را در نرم‌افزار بررسی کنید.'}</div>
     ${signBlock(['مدیر مالی', 'رئیس هیئت‌مدیره', 'بازرس'])}
-    <div class="foot">حسابدار ساختمان توی دید</div>`
+    ${printFoot()}`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
 }
 
@@ -2684,20 +2724,26 @@ function printInvoiceHtml(id) {
   const shares = db.prepare(`SELECT s.*, u.number, u.resident_name, u.occupants, u.common_units, u.occupied FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(id)
     .map(s => { const oc = s.occupied ? (+s.occupants || 0) : 0, cm = +s.common_units || 0, w = oc + cm; const occShare = w > 0 ? Math.round(s.share_amount * oc / w) : 0; return { ...s, oc, cm, occShare, comShare: s.share_amount - occShare } })
   const U = pUnitFa()
-  const head = combined ? `<th>واحد</th><th>ساکن</th><th>نفرات</th><th>مشاعات</th><th>سهم نفرات</th><th>سهم مشاعات</th><th>سهم کل</th>`
-    : `<th>واحد</th><th>ساکن</th><th>سهم</th>`
+  const head = combined ? `<th>واحد</th><th>ساکن</th><th class="num">نفرات</th><th class="num">مشاعات</th><th class="num">سهم نفرات</th><th class="num">سهم مشاعات</th><th class="num">سهم کل</th>`
+    : `<th>واحد</th><th>ساکن</th><th class="num">سهم</th>`
   const rows = shares.map(s => combined
     ? `<tr><td class="num">${faNum(s.number)}</td><td>${hEsc(s.resident_name || '—')}</td><td class="num">${faNum(s.oc)}</td><td class="num">${faNum(s.cm)}</td><td class="num">${pMoney(s.occShare)}</td><td class="num">${pMoney(s.comShare)}</td><td class="num"><b>${pMoney(s.share_amount)}</b></td></tr>`
     : `<tr><td class="num">${faNum(s.number)}</td><td>${hEsc(s.resident_name || '—')}</td><td class="num">${pMoney(s.share_amount)}</td></tr>`).join('')
   const totOcc = shares.reduce((a, s) => a + s.occShare, 0), totCom = shares.reduce((a, s) => a + s.comShare, 0)
   const inner = `
-    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
-    <div class="sub">صورت‌ریز تقسیم فاکتور: ${hEsc(inv.title)}${inv.category ? ' — ' + hEsc(inv.category) : ''} · شمارهٔ سند: ${faNum(inv.id)} · تاریخ: ${faNum(inv.j_date)} · روش: ${METHOD_FA[inv.method] || inv.method}${inv.doc_no ? ' · سند فیزیکی: ' + faNum(inv.doc_no) : ''}</div>
-    <div class="big">مبلغ کل فاکتور: ${pMoney(inv.amount)} ${U}${combined ? ` · جمع سهمِ نفرات: ${pMoney(totOcc)} · جمع سهمِ مشاعات: ${pMoney(totCom)}` : ''}</div>
+    ${printHdr('صورت‌ریز تقسیم فاکتور', hEsc(inv.title), [['شمارهٔ سند', faNum(dno('invoice', inv.id))], ['تاریخ', faNum(inv.j_date)]])}
+    <table><tbody>
+      <tr><th>دستهٔ هزینه</th><td>${hEsc(inv.category || '—')}</td></tr>
+      <tr><th>روشِ تقسیم</th><td>${METHOD_EXPLAIN[inv.method] || METHOD_FA[inv.method] || inv.method}</td></tr>
+      ${inv.vendor ? `<tr><th>فروشنده / پیمانکار</th><td>${hEsc(inv.vendor)}</td></tr>` : ''}
+      ${inv.doc_no ? `<tr><th>شمارهٔ سندِ فیزیکی</th><td>${faNum(inv.doc_no)}</td></tr>` : ''}
+      <tr><th>مبلغ کل</th><td><b>${pMoney(inv.amount)}</b>${combined ? ` — سهمِ نفرات ${pMoney(totOcc)} · سهمِ مشاعات ${pMoney(totCom)}` : ''}</td></tr>
+    </tbody></table>
     <table><thead><tr>${head}</tr></thead><tbody>${rows}
       <tr class="tot">${combined ? `<td colspan="4">جمع</td><td class="num">${pMoney(totOcc)}</td><td class="num">${pMoney(totCom)}</td><td class="num">${pMoney(inv.amount)}</td>` : `<td colspan="2">جمع</td><td class="num">${pMoney(inv.amount)}</td>`}</tr>
     </tbody></table>
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+    ${signBlock(['تنظیم‌کننده (مدیر مالی)', 'هیئت‌مدیره'])}
+    ${printFoot()}`
   return printLayout('صورت‌ریز فاکتور — ' + inv.title, inner)
 }
 
@@ -2781,14 +2827,13 @@ function printInvoicesReportHtml(fundId, status, jFrom, jTo) {
       unitTable = `<div class="sub">هزینهٔ جاری — از صندوق پرداخت می‌شود و بین واحدها تقسیم نمی‌شود.</div>`
     }
     return `<div style="margin:14px 0;break-inside:avoid">
-      <div class="sech">سند ${faNum(i.id)} — ${hEsc(i.title)} — ${pMoney(i.amount)} ${U} · ${statusTxt}</div>
+      <div class="sech">سند ${faNum(dno('invoice', i.id))} — ${hEsc(i.title)} — ${pMoney(i.amount)} ${U} · ${statusTxt}</div>
       <div class="sub">${meta}</div>
       <div class="sub">روشِ محاسبه: <b>${METHOD_EXPLAIN[i.method] || i.methodFa || i.method}</b>${shares.length && !i.from_fund ? ` · بین ${faNum(shares.length)} واحد` : ''}</div>
       ${unitTable}</div>`
   }).join('')
   const inner = `
-    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
-    <div class="sub">گزارش فاکتوری — ریزِ سهم و بدهیِ واحدها · تاریخ گزارش‌گیری: ${faNum(today)}${(nf || nt) ? ' · بازه: ' + faNum(nf || '…') + ' تا ' + faNum(nt || '…') : ''}${fund ? ' · صندوق: ' + hEsc(fund.name) : ' · همهٔ صندوق‌ها'} · وضعیت: ${statusFa}</div>
+    ${printHdr('گزارش فاکتوری — ریز سهم و بدهی واحدها', (fund ? 'صندوق: ' + hEsc(fund.name) : 'همهٔ صندوق‌ها') + ' · وضعیت: ' + statusFa, (nf || nt) ? [['بازه', faNum(nf || '…') + ' تا ' + faNum(nt || '…')]] : [])}
     <div class="kpis">
       ${kpi('جمع فاکتورها', pMoney(amountSum) + ' ' + U, faNum(invs.length) + ' فاکتور')}
       ${kpi('پرداخت‌شده از صندوق', pMoney(fundPaidSum) + ' ' + U)}
@@ -2801,7 +2846,7 @@ function printInvoicesReportHtml(fundId, status, jFrom, jTo) {
     ${unitDebtTable}
     <div class="sech">۳) ریزِ فاکتور‌به‌فاکتور</div>
     ${blocks || '<div class="sub">فاکتورِ تسهیمی‌ای نیست</div>'}
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+    ${printFoot()}`
   return printLayout('گزارش فاکتوری ریز — ' + today, inner)
 }
 
@@ -2809,8 +2854,7 @@ function printExpensesHtml(r) {
   const U = pUnitFa()
   const kpi = (k, v, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div></div>`
   const inner = `
-    <h1>${hEsc(r.buildingName || 'ساختمان')}</h1>
-    <div class="sub">گزارش هزینه‌کرد و شفاف‌سازی · ${hEsc(r.scopeLabel)} · تاریخ صدور: ${faNum(r.today)}</div>
+    ${printHdr('گزارش هزینه‌کرد و شفاف‌سازی', hEsc(r.scopeLabel))}
     <div class="kpis">
       ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
       ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U)}
@@ -2819,34 +2863,35 @@ function printExpensesHtml(r) {
       ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, '') : ''}
     </div>
-    ${r.project ? `<div class="big" style="font-size:13px">مسیر مالی پروژه: برآورد اولیه <b>${pMoney(r.project.budget)}</b> ← مبلغ نهایی <b>${pMoney(r.project.finalAmount)}</b> ${r.project.deviation ? `· انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${r.project.deviation > 0 ? '+' : '−'}${pMoney(Math.abs(r.project.deviation))}</b>` : ''} ${U}</div>` : ''}
+    ${r.project ? `<div class="big" style="font-size:13px">مسیر مالی پروژه: برآورد اولیه <b>${pMoney(r.project.budget)}</b> ← مبلغ نهایی <b>${pMoney(r.project.finalAmount)}</b> ${r.project.deviation ? `· انحراف <b>${pm(r.project.deviation)}</b> (${r.project.deviation > 0 ? 'بیش از برآورد' : 'کمتر از برآورد'})` : ''}</div>` : ''}
     <div class="sech">ریز فاکتورها — بابت چه چیزی</div>
-    <table><thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
-    ${r.invoices.length ? r.invoices.map(i => `<tr><td>${hEsc(i.title)}${i.isSale ? ' <span class="amt-in">(فروش)</span>' : ''}</td><td>${hEsc(i.category)}</td><td class="num">${i.j_date ? faNum(i.j_date) : '—'}</td>
-      <td>${hEsc(i.methodFa)}</td><td class="num ${i.isSale ? 'amt-in' : ''}">${i.isSale ? '−' : ''}${pMoney(i.amount)}</td><td class="num amt-in">${pMoney(i.collected)}</td><td class="num amt-out">${pMoney(i.remaining)}</td></tr>`).join('')
+    <table><thead><tr><th>شرح</th><th>${r.isProject ? 'پیمانکار' : 'دسته'}</th><th>تاریخ</th><th>${r.isProject ? 'توضیح' : 'روش تقسیم'}</th><th class="num">مبلغ</th><th class="num">${r.isProject ? 'پرداخت‌شده' : 'وصول‌شده'}</th><th class="num">مانده</th></tr></thead><tbody>
+    ${r.invoices.length ? r.invoices.map(i => `<tr><td>${hEsc(i.title)}${i.isSale ? ' (فروش)' : ''}</td><td>${hEsc(i.category)}</td><td class="num">${i.j_date ? faNum(i.j_date) : '—'}</td>
+      <td>${hEsc(i.methodFa)}</td><td class="num">${pm(i.isSale ? -i.amount : i.amount)}</td><td class="num">${pMoney(i.collected)}</td><td class="num">${i.remaining ? pMoney(i.remaining) : '—'}</td></tr>`).join('')
     : '<tr><td colspan="7" style="text-align:center;color:#888">فاکتوری در این محدوده نیست</td></tr>'}
-    <tr class="tot"><td>جمع</td><td></td><td></td><td></td><td class="num">${pMoney(r.totals.amount)}</td><td class="num">${pMoney(r.totals.collected)}</td><td class="num">${pMoney(r.totals.remaining)}</td></tr>
+    <tr class="tot"><td colspan="4">جمع${r.isProject ? ' (خرید منهای فروش)' : ''}</td><td class="num">${pm(r.totals.amount)}</td><td class="num">${pm(r.totals.collected)}</td><td class="num">${pm(r.totals.remaining)}</td></tr>
     </tbody></table>
     <div class="sech">تفکیک هر واحد</div>
+    <div class="sub">مانده = سهم منهای پرداختی؛ عددِ داخلِ پرانتز یعنی پیش‌پرداخت (مازاد).</div>
     ${(() => {
-      const bal = (v) => v > 0 ? `<span class="amt-out">بدهکار ${pMoney(v)}</span>` : v < 0 ? `<span class="amt-in">پیش‌پرداخت ${pMoney(-v)}</span>` : 'تسویه'
+      const bal = (v) => v > 0 ? pMoney(v) : v < 0 ? '(' + pMoney(-v) + ')' : '—'
       const sum = f => r.units.reduce((a, u) => a + f(u), 0)
-      const totBal = key => { const d = sum(u => Math.max(0, u[key])), c = sum(u => Math.max(0, -u[key])); return (d ? `<span class="amt-out">بدهی ${pMoney(d)}</span>` : '') + (d && c ? ' · ' : '') + (c ? `<span class="amt-in">پیش‌پرداخت ${pMoney(c)}</span>` : '') || 'تسویه' }
-      if (r.isProject) return `<table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم برآوردی (مصوبه)</th><th>سهم نهایی (مخارج)</th><th>پرداختی</th><th>بدهی/طلب طبق مصوبه</th><th>بدهی/طلب طبق مخارج</th></tr></thead><tbody>
+      const totBal = key => { const net = sum(u => u[key]); return net > 0 ? pMoney(net) : net < 0 ? '(' + pMoney(-net) + ')' : '—' }
+      if (r.isProject) return `<table><thead><tr><th>واحد</th><th>ساکن</th><th class="num">سهم مصوبه</th><th class="num">سهم نهایی</th><th class="num">پرداختی</th><th class="num">مانده طبق مصوبه</th><th class="num">مانده طبق مخارج</th></tr></thead><tbody>
       ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
-        <td class="num">${pMoney(u.budgetShare)}</td><td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td>
+        <td class="num">${pMoney(u.budgetShare)}</td><td class="num">${pMoney(u.share)}</td><td class="num">${pMoney(u.paid)}</td>
         <td class="num">${bal(u.balBudget)}</td><td class="num">${bal(u.balExpense)}</td></tr>`).join('')
         : '<tr><td colspan="7" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
       <tr class="tot"><td>جمع</td><td></td><td class="num">${pMoney(sum(u => u.budgetShare))}</td><td class="num">${pMoney(sum(u => u.share))}</td><td class="num">${pMoney(sum(u => u.paid))}</td><td class="num">${totBal('balBudget')}</td><td class="num">${totBal('balExpense')}</td></tr>
       </tbody></table>`
-      return `<table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم هر واحد</th><th>پرداختی</th><th>بدهی / پیش‌پرداخت</th></tr></thead><tbody>
+      return `<table><thead><tr><th>واحد</th><th>ساکن</th><th class="num">سهم</th><th class="num">پرداختی</th><th class="num">مانده</th></tr></thead><tbody>
       ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
-        <td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td><td class="num">${bal(u.balance)}</td></tr>`).join('')
+        <td class="num">${pMoney(u.share)}</td><td class="num">${pMoney(u.paid)}</td><td class="num">${bal(u.balance)}</td></tr>`).join('')
         : '<tr><td colspan="5" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
       <tr class="tot"><td>جمع</td><td></td><td class="num">${pMoney(sum(u => u.share))}</td><td class="num">${pMoney(sum(u => u.paid))}</td><td class="num">${totBal('balance')}</td></tr>
       </tbody></table>`
     })()}
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+    ${printFoot()}`
   return printLayout('گزارش هزینه‌کرد', inner)
 }
 
@@ -2858,16 +2903,15 @@ function printMeetingHtml(id) {
   const item = e => `<tr><td>${EVENT_KIND_FA[e.kind] || e.kind}</td><td><b>${hEsc(e.title)}</b>${e.summary ? '<br><span style="color:#555;font-size:11px">' + hEsc(e.summary) + '</span>' : ''}</td>
     <td class="num">${e.status ? (EVENT_STATUS_FA[e.status] || '') : '—'}</td></tr>`
   const inner = `
-    <h1>${hEsc(bn)}</h1>
-    <div class="sub">صورت‌جلسه رسمی · ${hEsc(m.title)} · تاریخ: ${m.j_date ? faNum(m.j_date) : '—'}</div>
+    ${printHdr('صورت‌جلسهٔ رسمی', hEsc(m.title), [['تاریخ جلسه', m.j_date ? faNum(m.j_date) : '—']])}
     ${m.attendees ? `<div class="big" style="font-size:13px">حاضرین: ${hEsc(m.attendees)}</div>` : ''}
     ${m.summary ? `<div class="sech">خلاصه‌ی جلسه</div><div style="font-size:13px;line-height:1.9">${hEsc(m.summary).replace(/\n/g, '<br>')}</div>` : ''}
     <div class="sech">مصوبات و پیشنهادات</div>
     <table><thead><tr><th>نوع</th><th>شرح</th><th>وضعیت</th></tr></thead><tbody>
     ${kids.length ? kids.map(item).join('') : '<tr><td colspan="3" style="text-align:center;color:#888">موردی ثبت نشده</td></tr>'}
     </tbody></table>
-    <div class="sign"><span>امضای رئیس هیئت‌مدیره: ____________</span><span>امضای مدیر ساختمان: ____________</span></div>
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+    ${signBlock(['رئیس هیئت‌مدیره', 'مدیر ساختمان'])}
+    ${printFoot()}`
   return printLayout(`صورت‌جلسه — ${m.title}`, inner)
 }
 

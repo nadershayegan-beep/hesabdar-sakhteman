@@ -200,6 +200,9 @@ async function uniquePdfPath(dir, base) {
 }
 
 // یک صفحه‌ی /print/... را در پنجره‌ی پنهان بارگذاری و به PDF تبدیل و ذخیره می‌کند.
+
+// سرصفحه، پاورقی و شمارهٔ صفحه (ارقام فارسی) را خودِ صفحه با @page margin boxes می‌سازد؛ حاشیه‌ها از CSS
+const pdfHeaderFooter = () => ({ displayHeaderFooter: false, preferCSSPageSize: true })
 async function renderPdf(relPath, filename) {
   if (!serverUrl) throw new Error('سرور آماده نیست')
   if (!/^\/print\//.test(relPath || '')) throw new Error('مسیر نامعتبر')
@@ -214,11 +217,8 @@ async function renderPdf(relPath, filename) {
     await pw.webContents.executeJavaScript(
       'document.fonts && document.fonts.ready ? document.fonts.ready.then(()=>true) : true'
     ).catch(() => {})
-    // شمارهٔ صفحه در پاورقیِ هر برگ (مورد ۵۰ ممیزی)
-    const data = await pw.webContents.printToPDF({ pageSize: 'A4', printBackground: true, landscape: false,
-      displayHeaderFooter: true, headerTemplate: '<div></div>',
-      footerTemplate: '<div style="width:100%;font-size:8px;color:#7a828f;text-align:center;font-family:Tahoma;direction:rtl">صفحهٔ <span class="pageNumber"></span> از <span class="totalPages"></span></div>',
-      margins: { top: 0.45, bottom: 0.55, left: 0.4, right: 0.4 } })
+    // سرصفحه (عنوانِ سند در همهٔ برگ‌ها) و شمارهٔ صفحه با ارقامِ فارسی (فونتِ همراه به‌صورت data URL)
+    const data = await pw.webContents.printToPDF({ pageSize: 'A4', printBackground: true, landscape: false, ...pdfHeaderFooter() })
     await fs.writeFile(outPath, data)
     return outPath
   } finally { if (pw) { pw.destroy(); pw = null } }
