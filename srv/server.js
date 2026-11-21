@@ -1,7 +1,7 @@
 // حسابدار ساختمان توی دید — سرور محلی (Node.js خالص + node:sqlite، بدون وابستگی)
 import { createServer } from 'node:http'
 import { DatabaseSync } from 'node:sqlite'
-import { readFile, mkdir, writeFile, rm, readdir, stat, chmod } from 'node:fs/promises'
+import { readFile, mkdir, writeFile, rm, readdir, stat, chmod, rename } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { join, extname, basename, dirname } from 'node:path'
 import { homedir, networkInterfaces } from 'node:os'
@@ -208,7 +208,8 @@ function migrate() {
   addCol('fund_txns', 'ref_cinvoice_id', 'INTEGER')       // پیوند تراکنش صندوق به فاکتور پیمانکار (خرید/فروش پروژه)
   addCol('payments', 'project_id', 'INTEGER DEFAULT 0')   // پرداختِ علامت‌خوردهٔ پروژه (دفترِ مجزا؛ مازاد = طلبِ پروژه)
   addCol('invoices', 'from_fund', 'INTEGER DEFAULT 0')    // 1 = هزینهٔ جاری از صندوق (بدون تقسیم/بدهکار کردن واحدها)
-  addCol('contractor_invoices', 'paid_amount', 'INTEGER DEFAULT 0') // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
+  addCol('contractor_invoices', 'paid_amount', 'INTEGER DEFAULT 0')
+  addCol('fund_txns', 'ref_exppay_id', 'INTEGER')          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -335,6 +336,18 @@ function migrateFromFundStatus() {
   setSetting('mig_fromfund_status', '1')
 }
 migrateFromFundStatus()
+// پیوند دادنِ خروجی‌های قدیمیِ صندوق به ردیف‌های پرداختِ هزینه (یک‌به‌یک)
+function migrateExpPayLinks() {
+  if (getSetting('mig_exppay_link', '') === '1') return
+  const used = new Set()
+  for (const ep of db.prepare(`SELECT * FROM expense_payments ORDER BY id`).all()) {
+    const cands = db.prepare(`SELECT id FROM fund_txns WHERE type='out' AND ref_exppay_id IS NULL AND fund_id=? AND ref_invoice_id=? AND amount=? ORDER BY (g_date=?) DESC, id`).all(ep.fund_id, ep.invoice_id, ep.amount, ep.g_date)
+    const t = cands.find(c => !used.has(c.id)); if (!t) continue
+    used.add(t.id); db.prepare(`UPDATE fund_txns SET ref_exppay_id=? WHERE id=?`).run(ep.id, t.id)
+  }
+  setSetting('mig_exppay_link', '1')
+}
+migrateExpPayLinks()
 
 // ---------- احراز هویت ----------
 const sessions = new Map()
@@ -659,8 +672,8 @@ function addFundTxn(fundId, type, amount, extra = {}) {
   if (!(amount > 0)) return
   const g = extra.g_date || todayG()
   const j = extra.j_date || (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
-  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,g_date,j_date,note,created_by,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, g, j, extra.note || '', extra.by || null, nowISO())
+  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,ref_exppay_id,g_date,j_date,note,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, extra.epId || null, g, j, extra.note || '', extra.by || null, nowISO())
 }
 // صندوق اصلی (اولین صندوق)
 const mainFundId = () => { const f = db.prepare(`SELECT id FROM funds ORDER BY id LIMIT 1`).get(); return f ? f.id : null }
@@ -737,15 +750,19 @@ function payExpense(invoiceId, fundId, amount, dates, note, by) {
   if (amount > unpaid) throw new Error(`مانده‌ی پرداخت‌نشده‌ی این هزینه ${unpaid} ریال است؛ مبلغ بیشتر مجاز نیست`)
   const payId = Number(db.prepare(`INSERT INTO expense_payments(invoice_id,fund_id,amount,g_date,j_date,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)`)
     .run(invoiceId, fundId, amount, dates.g_date, dates.j_date, note || '', by || null, nowISO()).lastInsertRowid)
-  addFundTxn(fundId, 'out', amount, { ...dates, invId: invoiceId, note: `پرداخت هزینه: ${inv.title}`, by })
+  addFundTxn(fundId, 'out', amount, { ...dates, invId: invoiceId, epId: payId, note: `پرداخت هزینه: ${inv.title}`, by })
+  refreshInvoiceStatus(invoiceId)
   return { payId, unpaid: unpaid - amount, crossFund: fundId !== inv.fund_id }
 }
 function deleteExpensePayment(id) {
   const ep = db.prepare(`SELECT * FROM expense_payments WHERE id=?`).get(id); if (!ep) return
-  const tx = db.prepare(`SELECT id FROM fund_txns WHERE type='out' AND fund_id=? AND ref_invoice_id=? AND amount=? AND g_date=? ORDER BY id DESC LIMIT 1`)
-    .get(ep.fund_id, ep.invoice_id, ep.amount, ep.g_date)
+  // اول با پیوندِ دقیق؛ فقط برای داده‌های خیلی قدیمیِ بی‌پیوند، تطبیق با مبلغ/تاریخ
+  const tx = db.prepare(`SELECT id FROM fund_txns WHERE ref_exppay_id=?`).get(id)
+    || db.prepare(`SELECT id FROM fund_txns WHERE type='out' AND ref_exppay_id IS NULL AND fund_id=? AND ref_invoice_id=? AND amount=? AND g_date=? ORDER BY id DESC LIMIT 1`)
+      .get(ep.fund_id, ep.invoice_id, ep.amount, ep.g_date)
   if (tx) db.prepare(`DELETE FROM fund_txns WHERE id=?`).run(tx.id)
   db.prepare(`DELETE FROM expense_payments WHERE id=?`).run(id)
+  refreshInvoiceStatus(ep.invoice_id)
 }
 function invoiceFundPayments(invId) {
   return db.prepare(`SELECT ep.*, f.name fund_name FROM expense_payments ep LEFT JOIN funds f ON f.id=ep.fund_id
@@ -1423,6 +1440,10 @@ function dashboard() {
   if (overdue.count) alerts.push({ level: 'amber', kind: 'overdue', text: `${overdue.count} بدهکارِ بالای ۹۰ روز`, amount: overdue.total })
   const unpaidExp = unpaidExpensesTotal()
   if (unpaidExp > 0) alerts.push({ level: 'amber', kind: 'exp', text: 'هزینه‌های پرداخت‌نشده از صندوق', amount: unpaidExp })
+  const lb = getSetting('lastBackupAt', '')
+  const lbDays = lb ? Math.floor((Date.now() - Date.parse(lb)) / 86400000) : null
+  if (lbDays == null || lbDays > 7) alerts.push({ level: lbDays == null ? 'red' : 'amber', kind: 'backup', text: lbDays == null ? 'هنوز هیچ بکاپی گرفته نشده' : `آخرین بکاپ ${lbDays} روز پیش بوده` })
+  try { const h = ledgerHealth(); if (!h.ok) alerts.unshift({ level: 'red', kind: 'health', text: 'کنترل سلامت دفاتر ایراد پیدا کرده: ' + h.checks.filter(c => !c.ok).map(c => c.title).join('، ') }) } catch { }
   return {
     funds, fundTotal: funds.reduce((s, f) => s + f.balance, 0),
     totalDebt, totalCredit, managerDebt: managerDebt(),
@@ -1434,7 +1455,7 @@ function dashboard() {
     unpaidExpenses: unpaidExp, interFund: interFundDebts(),
     fundStats: fundStats(), projectSummaries: projectsList().filter(p => projectChargeInvoice(p.id)).map(p => ({ id: p.id, title: p.title, status: p.status, statusFa: p.statusFa, ...projectSummary(p) })),
     charge, overdue, unpaidCI, ciOpen: ciOpen.slice(0, 5).map(c => ({ id: c.id, title: c.title, vendor: c.vendor_name, rem: c.rem, project_id: c.project_id })),
-    fundsOv, recentMoves, recentDocs, alerts
+    fundsOv, recentMoves, recentDocs, alerts, lastBackupAt: lb
   }
 }
 function debtorsReport() {
@@ -1479,19 +1500,50 @@ function managerReport(from, to) {
     buildingName: getSetting('buildingName'), managerName: getSetting('managerName', '')
   }
 }
-// تراز کل (سناریوی پذیرش ۷): Σ بدهی واحدها باید برابر Σ فاکتورها − Σ دریافتی‌ها باشد
-function balanceCheck() {
+// کنترلِ سلامتِ دفاتر: چند آزمونِ واقعی که اگر یکی خطا بدهد، جایی از دفاتر به هم ریخته است
+function ledgerHealth() {
+  const checks = []
+  const add = (key, title, items, hint) => checks.push({ key, title, ok: items.length === 0, count: items.length, items: items.slice(0, 30), hint })
+  // ۱) جمعِ سهم‌های هر فاکتورِ تقسیمی = مبلغِ فاکتور؛ هزینهٔ جاری (از صندوق) سهم ندارد
+  const inv = db.prepare(`SELECT i.id, i.title, i.amount, COALESCE(i.from_fund,0) ff, COALESCE((SELECT SUM(share_amount) FROM invoice_shares WHERE invoice_id=i.id),0) sh FROM invoices i`).all()
+  add('shares', 'سهم‌های هر فاکتور با مبلغِ فاکتور برابر است',
+    inv.filter(i => i.ff ? i.sh !== 0 : (i.sh !== i.amount)).map(i => ({ text: `سند ${i.id} «${i.title}»: مبلغ ${i.amount} · جمعِ سهم‌ها ${i.sh}` })),
+    'فاکتور را باز کنید و دوباره ذخیره کنید تا سهم‌ها بازمحاسبه شوند.')
+  // ۲) هر دریافتی (غیرانتقالی) دقیقاً یک ورودیِ صندوق به همان مبلغ دارد
+  const pays = db.prepare(`SELECT p.id, p.amount, p.fund_id, COALESCE((SELECT SUM(amount) FROM fund_txns WHERE ref_payment_id=p.id AND type IN ('in','transfer_in')),0) fx FROM payments p WHERE COALESCE(p.is_opening,0)=0`).all()
+  add('payfund', 'هر دریافتی در صندوقِ خودش ثبت شده است',
+    pays.filter(p => p.fx !== p.amount).map(p => ({ text: `رسید ${p.id}: مبلغ ${p.amount} · ورودیِ صندوق ${p.fx}` })),
+    'دریافتی را باز کنید و دوباره ذخیره کنید.')
+  // ۳) تراکنشِ صندوقِ یتیم (به سندی اشاره می‌کند که دیگر وجود ندارد)
+  const orphan = db.prepare(`SELECT t.id, t.type, t.amount FROM fund_txns t
+    WHERE (t.ref_payment_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM payments WHERE id=t.ref_payment_id))
+       OR (t.ref_invoice_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM invoices WHERE id=t.ref_invoice_id))
+       OR (t.ref_cinvoice_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM contractor_invoices WHERE id=t.ref_cinvoice_id))`).all()
+  add('orphan', 'تراکنشِ صندوقِ بی‌سند وجود ندارد', orphan.map(t => ({ text: `تراکنش ${t.id} (${TXN_LABEL[t.type] || t.type}) به مبلغ ${t.amount}` })),
+    'این تراکنش‌ها موجودیِ صندوق را بی‌دلیل تغییر داده‌اند؛ با پشتیبانی بررسی شود.')
+  // ۴) پرداخت‌های هزینه با خروجی‌های صندوق می‌خوانند
+  const ep = db.prepare(`SELECT invoice_id, SUM(amount) s FROM expense_payments GROUP BY invoice_id`).all()
+  const epBad = ep.map(r => ({ ...r, fx: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE type='out' AND ref_invoice_id=?`).get(r.invoice_id).s })).filter(r => r.fx !== r.s)
+  add('exppay', 'پرداخت‌های هزینه با خروجیِ صندوق‌ها برابر است', epBad.map(r => ({ text: `سند ${r.invoice_id}: پرداخت‌شده ${r.s} · خروجیِ صندوق ${r.fx}` })), '')
+  // ۵) هیچ دریافتی یا سهمی بیش از مبلغش تخصیص نخورده
+  const overPay = db.prepare(`SELECT p.id, p.amount, SUM(a.amount) s FROM payments p JOIN payment_allocations a ON a.payment_id=p.id GROUP BY p.id HAVING s > p.amount`).all()
+  const overShare = db.prepare(`SELECT s.id, s.invoice_id, s.share_amount, SUM(a.amount) x FROM invoice_shares s JOIN payment_allocations a ON a.share_id=s.id GROUP BY s.id HAVING x > s.share_amount`).all()
+  add('overalloc', 'هیچ دریافتی یا سهمی بیش از مبلغش تخصیص نخورده',
+    [...overPay.map(p => ({ text: `رسید ${p.id}: مبلغ ${p.amount} · تخصیص ${p.s}` })), ...overShare.map(x => ({ text: `سهمِ سند ${x.invoice_id}: ${x.share_amount} · تخصیص ${x.x}` }))], '')
+  // ۶) پرداختِ پیمانکار با خروجیِ صندوق می‌خواند
+  const ci = db.prepare(`SELECT c.id, c.title, c.amount, c.kind, COALESCE(c.paid_amount, CASE WHEN c.paid=1 THEN c.amount ELSE 0 END) paid,
+    COALESCE((SELECT SUM(amount) FROM fund_txns WHERE ref_cinvoice_id=c.id),0) fx FROM contractor_invoices c`).all()
+  add('ci', 'پرداخت‌های پیمانکار با صندوق می‌خواند', ci.filter(c => c.paid !== c.fx).map(c => ({ text: `ci-${c.id} «${c.title}»: پرداخت‌شده ${c.paid} · صندوق ${c.fx}` })), '')
+  // ۷) اتحادِ اصلی: جمعِ بدهیِ واحدها = جمعِ سهم‌ها − جمعِ دریافتی‌ها
   const units = unitsWithBalance()
-  const netDebt = units.reduce((s, u) => s + u.debt, 0)
-  const totalInv = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM invoices`).get().s
-  const totalPaid = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments`).get().s
+  const netDebt = units.reduce((a, u) => a + u.debt, 0)
   const totalShares = db.prepare(`SELECT COALESCE(SUM(share_amount),0) s FROM invoice_shares`).get().s
-  return {
-    netDebt, totalInvoices: totalInv, totalShares, totalPayments: totalPaid,
-    sharesMatchInvoices: totalShares === totalInv,
-    balanced: netDebt === totalShares - totalPaid && totalShares === totalInv
-  }
+  const totalPaid = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments`).get().s
+  add('identity', 'جمعِ بدهیِ واحدها = جمعِ سهم‌ها منهای جمعِ دریافتی‌ها', netDebt === totalShares - totalPaid ? [] : [{ text: `بدهیِ واحدها ${netDebt} · سهم‌ها − دریافتی‌ها ${totalShares - totalPaid}` }], '')
+  return { ok: checks.every(c => c.ok), checks, totals: { netDebt, totalShares, totalPayments: totalPaid, funds: listFunds().map(f => ({ name: f.name, balance: f.balance })) } }
 }
+// سازگاری با نامِ قدیمی
+const balanceCheck = ledgerHealth
 
 // ---------- CSV ----------
 const csvEsc = v => { const s = String(v ?? ''); return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s }
@@ -1520,49 +1572,101 @@ async function collectFiles() {
   return entries
 }
 const DEFAULT_BK_DIR = join(USER_ROOT, 'بکاپ‌ها')
-async function backupToFolder(destRaw) {
-  const dest = expandPath(destRaw) || DEFAULT_BK_DIR
+const bkDir = destRaw => expandPath(destRaw) || DEFAULT_BK_DIR
+async function backupToFolder(destRaw, tag = '') {
+  const dest = bkDir(destRaw)
   await mkdir(dest, { recursive: true })
-  const file = join(dest, `sakhteman-backup-${stamp()}.zip`)
+  const file = join(dest, `sakhteman-backup-${stamp()}${tag ? '-' + tag : ''}.zip`)
   const entries = await collectFiles()
   await writeFile(file, makeZip(entries))
+  setSetting('lastBackupAt', nowISO())
   return { folder: file, docs: entries.filter(e => e.name.startsWith('uploads/')).length }
 }
 async function listBackups(destRaw) {
-  const dest = expandPath(destRaw) || DEFAULT_BK_DIR; if (!existsSync(dest)) return []
+  const dest = bkDir(destRaw); if (!existsSync(dest)) return []
   const out = []
   for (const n of await readdir(dest)) {
     if (n.startsWith('.') || !/^sakhteman-backup-.+\.zip$/i.test(n)) continue
-    out.push({ name: n, stamp: n.replace(/^sakhteman-backup-/, '').replace(/\.zip$/i, '') })
+    const st = n.replace(/^sakhteman-backup-/, '').replace(/\.zip$/i, '')
+    out.push({ name: n, stamp: st, auto: /-a$/.test(st), pre: /-pre-restore$/.test(st) })
   }
   return out.sort((a, b) => b.stamp.localeCompare(a.stamp))
 }
-async function restoreBackup(buf) {
-  const entries = readZip(buf)
+// چرخشِ بکاپ‌های خودکار: ۱۴ نسخهٔ آخر + یک نسخه از هر ماه تا ۱۲ ماه؛ بکاپ‌های دستی دست نمی‌خورند
+async function rotateAutoBackups(destRaw) {
+  const list = (await listBackups(destRaw)).filter(b => b.auto)
+  const keep = new Set(list.slice(0, 14).map(b => b.name)), months = new Set()
+  for (const b of list.slice(14)) { const ym = b.stamp.slice(0, 6); if (!months.has(ym) && months.size < 12) { months.add(ym); keep.add(b.name) } }
+  for (const b of list) if (!keep.has(b.name)) await rm(join(bkDir(destRaw), b.name), { force: true })
+}
+async function runAutoBackup(reason) {
+  try {
+    const r = await backupToFolder(getSetting('backupPath'), 'a')
+    await rotateAutoBackups(getSetting('backupPath'))
+    console.log('✓ بکاپ خودکار' + (reason ? ' (' + reason + ')' : '') + ':', r.folder)
+  } catch (e) { console.error('✗ بکاپ خودکار ناموفق:', e.message) }
+}
+// بررسیِ فایلِ بکاپ پیش از بازیابی: سالم بودنِ دیتابیس و خلاصهٔ محتوا (بدون دست زدن به دادهٔ فعلی)
+async function inspectBackup(buf) {
+  let entries
+  try { entries = readZip(buf) } catch { throw new Error('فایل zip خراب است یا قابل خواندن نیست') }
   const dbEntry = entries.find(e => e.name.replace(/\\/g, '/') === 'data/sakhteman.db') || entries.find(e => basename(e.name) === 'sakhteman.db')
   if (!dbEntry) throw new Error('این فایل، بکاپ حسابدار ساختمان توی دید نیست (data/sakhteman.db پیدا نشد)')
-  try { db.close() } catch { }
-  await writeFile(join(DATA_DIR, 'sakhteman.db'), dbEntry.data)
-  await rm(join(DATA_DIR, 'sakhteman.db-wal'), { force: true })
-  await rm(join(DATA_DIR, 'sakhteman.db-shm'), { force: true })
-  for (const n of (existsSync(UP_DIR) ? await readdir(UP_DIR) : [])) await rm(join(UP_DIR, n), { recursive: true, force: true })
+  const tmp = join(DATA_DIR, `_restore_check_${Date.now()}.db`)
+  await writeFile(tmp, dbEntry.data)
+  let info
+  try {
+    const t = new DatabaseSync(tmp)
+    try {
+      const ic = t.prepare('PRAGMA integrity_check').get()
+      if (!ic || Object.values(ic)[0] !== 'ok') throw new Error('دیتابیسِ داخلِ بکاپ آسیب‌دیده است (integrity_check)')
+      const tables = new Set(t.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(r => r.name))
+      for (const need of ['invoices', 'payments', 'units', 'funds']) if (!tables.has(need)) throw new Error(`جدولِ ضروریِ «${need}» در بکاپ نیست`)
+      const c = q => t.prepare(q).get().c
+      const last = t.prepare('SELECT MAX(g_date) d FROM (SELECT g_date FROM invoices UNION ALL SELECT g_date FROM payments)').get().d
+      const lastJ = last ? (() => { const [y, m, d] = last.split('-').map(Number); const j = toJalaali(y, m, d); return jStr(j.jy, j.jm, j.jd) })() : ''
+      info = { units: c('SELECT COUNT(*) c FROM units'), invoices: c('SELECT COUNT(*) c FROM invoices'), payments: c('SELECT COUNT(*) c FROM payments'),
+        building: (t.prepare("SELECT value v FROM settings WHERE key='buildingName'").get() || {}).v || '', lastDate: lastJ,
+        docs: entries.filter(e => e.name.replace(/\\/g, '/').startsWith('uploads/')).length }
+    } finally { t.close() }
+  } finally { await rm(tmp, { force: true }) }
+  const cur = { units: db.prepare('SELECT COUNT(*) c FROM units').get().c, invoices: db.prepare('SELECT COUNT(*) c FROM invoices').get().c, payments: db.prepare('SELECT COUNT(*) c FROM payments').get().c }
+  return { ok: true, backup: info, current: cur, entries, dbEntry }
+}
+async function restoreBackup(buf) {
+  const chk = await inspectBackup(buf)           // اگر خراب باشد همین‌جا متوقف می‌شود و دادهٔ فعلی دست نمی‌خورد
+  const pre = await backupToFolder(getSetting('backupPath'), 'pre-restore')   // نسخهٔ پیش از بازیابی برای برگشت
+  // اسناد اول در پوشهٔ موقت باز می‌شوند، بعد جابه‌جا
+  const tmpUp = UP_DIR + '_restore_tmp', oldUp = UP_DIR + '_restore_old'
+  await rm(tmpUp, { recursive: true, force: true }); await mkdir(tmpUp, { recursive: true })
   let count = 0
-  for (const e of entries) {
+  for (const e of chk.entries) {
     const name = e.name.replace(/\\/g, '/').replace(/^\.\//, '')
     const parts = name.split('/')
     if (parts[0] !== 'uploads' || name.includes('..')) continue
     const bn = basename(name)
     if (bn.startsWith('._') || bn === '.DS_Store') continue
     const rel = parts.slice(1).join('/'); if (!rel) continue
-    const target = join(UP_DIR, rel)
-    if (!target.startsWith(UP_DIR)) continue
+    const target = join(tmpUp, rel)
+    if (!target.startsWith(tmpUp)) continue
     await mkdir(dirname(target), { recursive: true })
     await writeFile(target, e.data); count++
   }
+  const newDb = join(DATA_DIR, '_restore_new.db')
+  await writeFile(newDb, chk.dbEntry.data)
+  try { db.close() } catch { }
+  await rename(newDb, join(DATA_DIR, 'sakhteman.db'))
+  await rm(join(DATA_DIR, 'sakhteman.db-wal'), { force: true })
+  await rm(join(DATA_DIR, 'sakhteman.db-shm'), { force: true })
+  await rm(oldUp, { recursive: true, force: true })
+  if (existsSync(UP_DIR)) await rename(UP_DIR, oldUp)
+  await rename(tmpUp, UP_DIR)
+  await rm(oldUp, { recursive: true, force: true })
   db = new DatabaseSync(join(DATA_DIR, 'sakhteman.db'))
   ensureSchema(); seedDefaults(); migrateData()
   sessions.clear()
-  return count
+  let health = null; try { health = ledgerHealth() } catch { }
+  return { count, preBackup: pre.folder, healthOk: health ? health.ok : null }
 }
 
 // ---------- بسته‌ی نصب/آپدیت ----------
@@ -3176,7 +3280,7 @@ const server = createServer(async (req, res) => {
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
         totalUnits: +getSetting('totalUnits', '0') || 0,
         lateFeePercent: +getSetting('lateFeePercent', '0') || 0, lateFeeGraceDays: +getSetting('lateFeeGraceDays', '30') || 30,
-        backupPath: getSetting('backupPath'), autoBackup: getSetting('autoBackup') === '1'
+        ...(isAdmin ? { backupPath: getSetting('backupPath'), defaultBackupDir: DEFAULT_BK_DIR, autoBackup: getSetting('autoBackup') === '1', lastBackupAt: getSetting('lastBackupAt', '') } : {})
       })
     if (path === '/api/settings' && M === 'POST') {
       const b = await jbody(req)
@@ -3210,12 +3314,17 @@ const server = createServer(async (req, res) => {
       const b = await jbody(req)
       return sendJSON(res, 200, { ok: true, ...(await backupToFolder((b.path || '').trim() || getSetting('backupPath'))) })
     }
-    if (path === '/api/backups' && M === 'GET') return sendJSON(res, 200, await listBackups(Q.path || getSetting('backupPath')))
-    if (path === '/api/backup/restore' && M === 'POST') {
+    if (path === '/api/backups' && M === 'GET') {
+      if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
+      return sendJSON(res, 200, await listBackups(Q.path || getSetting('backupPath')))
+    }
+    if ((path === '/api/backup/restore' || path === '/api/backup/inspect') && M === 'POST') {
       const b = await jbody(req)
       const m = /^data:[^;]*;base64,(.+)$/s.exec(b.dataUrl || '')
       if (!m) return sendJSON(res, 400, { error: 'فایل بکاپ ارسال نشد' })
-      return sendJSON(res, 200, { ok: true, count: await restoreBackup(Buffer.from(m[1], 'base64')) })
+      const buf = Buffer.from(m[1], 'base64')
+      if (path === '/api/backup/inspect') { const r = await inspectBackup(buf); return sendJSON(res, 200, { ok: true, backup: r.backup, current: r.current }) }
+      return sendJSON(res, 200, { ok: true, ...(await restoreBackup(buf)) })
     }
     if (path === '/api/backup/download' && M === 'GET') {
       if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
@@ -3406,10 +3515,14 @@ else { try { APP_VERSION = JSON.parse(await readFile(join(ROOT, 'version.json'),
 // در اپ نصبی، نسخه‌ی واقعیِ نصب‌کننده (از Electron) مرجع است تا بررسیِ آپدیت درست کار کند
 if (process.env.HS_APP_VERSION) APP_VERSION = 'v' + String(process.env.HS_APP_VERSION).replace(/^v/, '')
 
+// بکاپِ خودکار: پیش‌فرض روشن (اگر کاربر صریحاً خاموش نکرده باشد)، پیش از هر تغییرِ خودکار، و روزانه
+if (getSetting('autoBackup', '') === '') setSetting('autoBackup', '1')
+const backupDue = () => { const l = getSetting('lastBackupAt', ''); return !l || (Date.now() - Date.parse(l)) > 20 * 3600 * 1000 }
+if (getSetting('autoBackup') === '1' && backupDue()) await runAutoBackup('شروع برنامه')
+setInterval(() => { if (getSetting('autoBackup') === '1' && backupDue()) runAutoBackup('روزانه') }, 3600 * 1000).unref()
+
 autoIssueCurrentCharge()
 autoIssueRecurring()
-
-if (getSetting('autoBackup') === '1' && getSetting('backupPath')) {
-  try { const r = await backupToFolder(getSetting('backupPath')); console.log('✓ بکاپ خودکار:', r.folder) }
-  catch (e) { console.error('✗ بکاپ خودکار ناموفق:', e.message) }
-}
+// هم‌سان‌سازیِ وضعیتِ همهٔ فاکتورها (پس از هر تغییرِ منطق) و کنترلِ سلامتِ دفاتر هنگام شروع
+for (const r of db.prepare('SELECT id FROM invoices').all()) refreshInvoiceStatus(r.id)
+try { const h = ledgerHealth(); console.log(h.ok ? '✓ کنترل سلامت دفاتر: سالم' : '⚠ کنترل سلامت دفاتر: ' + h.checks.filter(c => !c.ok).map(c => c.title + ' (' + c.count + ')').join('، ')) } catch (e) { console.error('کنترل سلامت:', e.message) }

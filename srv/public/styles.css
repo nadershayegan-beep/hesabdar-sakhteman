@@ -148,9 +148,9 @@ textarea.inp{resize:vertical;min-height:64px}
 .evhead{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
 .evhead b{font-size:15px}
 .evkind{display:inline-block;font-size:11px;font-weight:700;padding:2px 9px;border-radius:20px;margin-inline-end:4px}
-.k-meeting{background:#e0edff;color:#1d5fa8}
-.k-decision{background:#e6f7ee;color:#0f8a56}
-.k-proposal{background:#fdf0e3;color:#b5651d}
+.k-meeting{background:var(--accent-soft);color:var(--accent)}
+.k-decision{background:var(--in-soft);color:var(--in)}
+.k-proposal{background:var(--warn-soft);color:var(--warn)}
 .evdate{font-size:12px;color:var(--muted);margin-inline-start:6px}
 .evmeta{font-size:12.5px;color:var(--muted);margin-top:8px}
 .evsummary{font-size:13.5px;line-height:1.9;margin-top:8px;white-space:normal}
@@ -161,9 +161,9 @@ textarea.inp{resize:vertical;min-height:64px}
 .attpill{display:inline-flex;align-items:center;gap:4px;background:rgba(127,127,127,.08);border:1px solid var(--line);border-radius:20px;padding:3px 10px;font-size:12px}
 .attpill a{color:var(--accent);text-decoration:none}
 .attx{border:none;background:none;color:var(--out);cursor:pointer;font-size:12px;padding:0 2px;line-height:1}
-.badge.b-ok{background:#e6f7ee;color:#0f8a56}
-.badge.b-no{background:#fde8e8;color:#c0392b}
-.badge.b-done{background:#e0edff;color:#1d5fa8}
+.badge.b-ok{background:var(--in-soft);color:var(--in)}
+.badge.b-no{background:var(--out-soft);color:var(--out)}
+.badge.b-done{background:var(--accent-soft);color:var(--accent)}
 .attmini{text-decoration:none;margin-inline-end:4px;font-size:14px}
 tr.qsel{background:rgba(29,95,168,.07)}
 .btn.danger{color:var(--out);border-color:var(--out-soft)}
@@ -212,7 +212,7 @@ tr.qsel{background:rgba(29,95,168,.07)}
 /* toast */
 .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
   background:var(--ink);color:var(--bg);padding:12px 20px;border-radius:10px;font-size:13.5px;font-weight:600;
-  box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.25s;z-index:200;max-width:92vw;text-align:center}
+  box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:.25s;z-index:900;max-width:92vw;text-align:center}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
 .toast.err{background:var(--out);color:#fff}
 
@@ -266,7 +266,9 @@ tr.qsel{background:rgba(29,95,168,.07)}
 .stmt .total{font-weight:800;font-size:15px;text-align:center;padding:12px;border:2px solid #333;border-radius:8px;margin-top:10px}
 .stmt .stfoot{margin-top:16px;font-size:11.5px;color:#666;text-align:center}
 @media print{
-  body{background:#fff}
+  :root,[data-theme="dark"],:root:not([data-theme="light"]){--bg:#fff;--panel:#fff;--panel-2:#f3f5f8;--line:#d5dce6;--ink:#141c26;--muted:#4b5868;--faint:#6f7c8c;--accent:#1d5fa8;--accent-soft:#1d5fa812;--in:#0f6e45;--in-soft:transparent;--out:#a8321f;--out-soft:transparent;--warn:#8a5a14;--warn-soft:transparent;--shadow:none}
+  body{background:#fff;color:#141c26}
+  .kpi{background:#fff!important;border:1px solid #d5dce6!important}
   .side,.vhead,.filters,.fbtns,.noprint,.toast,.modal{display:none!important}
   .shell{display:block}
   .main{padding:0;max-width:100%}
@@ -373,7 +375,7 @@ tr.qsel{background:rgba(29,95,168,.07)}
 .fab-wrap.open .fab-main{transform:rotate(45deg)}
 .fab-menu{display:flex;flex-direction:column;gap:9px;opacity:0;pointer-events:none;transform:translateY(12px);transition:opacity .2s ease, transform .2s ease}
 .fab-wrap.open .fab-menu{opacity:1;pointer-events:auto;transform:translateY(0)}
-.fab-item{display:flex;align-items:center;gap:9px;padding:10px 16px 10px 14px;border-radius:30px;border:1px solid var(--line,#d9e0ea);background:var(--panel,#fff);color:var(--text,#1a2230);font-size:13.5px;font-weight:600;cursor:pointer;box-shadow:0 3px 10px rgba(16,40,71,.14);white-space:nowrap;transition:background .15s, transform .12s}
+.fab-item{display:flex;align-items:center;gap:9px;padding:10px 16px 10px 14px;border-radius:30px;border:1px solid var(--line);background:var(--panel);color:var(--ink);font-size:13.5px;font-weight:600;cursor:pointer;box-shadow:0 3px 10px rgba(16,40,71,.14);white-space:nowrap;transition:background .15s, transform .12s}
 .fab-item:hover{background:var(--accent-soft);transform:translateX(-3px)}
 .fab-item span{font-size:17px}
 @media (max-width:900px){ .fab-wrap{bottom:16px;left:16px} .fab-main{width:52px;height:52px;font-size:27px} }
@@ -395,3 +397,25 @@ tr.qsel{background:rgba(29,95,168,.07)}
 .dtx{flex:1}
 .dact{flex:none}
 @media (max-width:900px){ .dfunds{grid-template-columns:repeat(2,minmax(0,1fr))} }
+
+/* دکمهٔ در حال ثبت (جلوگیری از دوبار کلیک) */
+.btn.busy,button.busy{opacity:.55;pointer-events:none;cursor:progress}
+.muted{color:var(--faint)}
+.dim{color:var(--faint)}
+.toast.err{font-weight:700}
+.ferr{color:var(--out);font-size:12.5px;margin-inline-end:auto;align-self:center}
+.inp.bad{border-color:var(--out)!important;box-shadow:0 0 0 3px var(--out-soft)}
+/* لایهٔ دومِ تأیید (روی فرم باز) */
+.cfm{position:fixed;inset:0;background:rgba(10,20,35,.45);display:flex;align-items:center;justify-content:center;z-index:600;padding:16px}
+.cfm .cbox{background:var(--panel);border:1px solid var(--line);border-radius:14px;width:min(440px,100%);padding:18px 20px;box-shadow:var(--shadow)}
+.cfm .cbox p{font-size:14px;line-height:2;margin:0 0 14px}
+.cfm .cbtns{display:flex;gap:8px;justify-content:flex-start}
+/* گروه‌های گزارش و کنترل سلامت */
+.rgroups{display:flex;flex-direction:column;gap:8px}
+.rgroup{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.rglbl{font-size:12px;font-weight:800;color:var(--muted);min-width:96px}
+.hrow{display:flex;gap:10px;padding:9px 2px;border-top:1px solid var(--line)}
+.hrow:first-of-type{border-top:none}
+.hmark{width:22px;height:22px;border-radius:50%;display:inline-flex;align-items:center;justify-content:center;font-weight:800;flex:none;font-size:13px}
+.hmark.ok{background:var(--in-soft);color:var(--in)}.hmark.bad{background:var(--out-soft);color:var(--out)}
+.hbody{flex:1}.hlist{margin:6px 0 4px;padding-inline-start:18px;font-size:12.5px;color:var(--muted)}

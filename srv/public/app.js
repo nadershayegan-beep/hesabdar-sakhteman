@@ -53,34 +53,71 @@ const api = (u, o) => fetch(u, o).then(async r => {
   if (!r.ok) throw new Error(d.error || 'خطای ارتباط با سرور')
   return d
 })
-const post = (u, body, method = 'POST') => api(u, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) })
+// درخواستِ نوشتنیِ یکسانِ هم‌زمان فقط یک بار فرستاده می‌شود (جلوگیری از سندِ تکراری با دوبار کلیک/Enter)
+const inflight = new Map()
+const post = (u, body, method = 'POST') => {
+  const b = JSON.stringify(body || {}), k = method + ' ' + u + ' ' + b
+  if (inflight.has(k)) return inflight.get(k)
+  const p = api(u, { method, headers: { 'Content-Type': 'application/json' }, body: b }).finally(() => inflight.delete(k))
+  inflight.set(k, p); return p
+}
 
 let toastT = null
 function toast(msg, isErr) {
   const t = $('#toast'); t.textContent = msg; t.className = 'toast show' + (isErr ? ' err' : '')
-  clearTimeout(toastT); toastT = setTimeout(() => t.className = 'toast', 3000)
+  t.setAttribute('role', isErr ? 'alert' : 'status')
+  clearTimeout(toastT); toastT = setTimeout(() => t.className = 'toast', isErr ? 6500 : 3000)
+  // خطا وقتی فرمی باز است، داخلِ خودِ فرم هم نوشته می‌شود تا دیده شود
+  const m = $('#modal'), f = $('#modalFoot')
+  if (isErr && m && !m.classList.contains('hidden') && f && !f.classList.contains('hidden')) {
+    let e = f.querySelector('.ferr'); if (!e) { e = document.createElement('span'); e.className = 'ferr'; f.appendChild(e) }
+    e.textContent = msg
+  }
 }
-const guard = fn => async (...a) => { try { await fn(...a) } catch (e) { toast(e.message, true) } }
+// اجرای امن + قفلِ دکمه تا پایانِ درخواست (دوبار کلیک = دوبار ثبت نمی‌شود)
+const guard = fn => async (...a) => {
+  const ev = a[0], btn = ev && ev.currentTarget && ev.currentTarget.tagName === 'BUTTON' ? ev.currentTarget : null
+  if (btn) { if (btn.classList.contains('busy')) return; btn.classList.add('busy') }
+  try { await fn(...a) } catch (e) { toast(e.message, true) } finally { if (btn) btn.classList.remove('busy') }
+}
 
 // ---------- مودال ----------
+let modalDirty = false
 function openModal(title, bodyHtml, footHtml) {
+  modalDirty = false
   $('#modalTitle').textContent = title
   $('#modalBody').innerHTML = bodyHtml
   const f = $('#modalFoot')
   if (footHtml) { f.innerHTML = footHtml; f.classList.remove('hidden') } else { f.innerHTML = ''; f.classList.add('hidden') }
   $('#modal').classList.remove('hidden')
-  return $('#modalBody')
+  const mb = $('#modalBody')
+  mb.oninput = mb.onchange = e => { if (e.target.matches('input,select,textarea')) modalDirty = true }
+  return mb
 }
-const closeModal = () => $('#modal').classList.add('hidden')
-$('#modalX').onclick = closeModal
-$('#modal').onclick = e => { if (e.target.id === 'modal') closeModal() }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal() })
+const closeModal = () => { modalDirty = false; $('#modal').classList.add('hidden') }
+// بستن با ✕ / کلیک بیرون / Esc: اگر فرم تغییر کرده، اول می‌پرسد
+const tryCloseModal = () => {
+  if (!modalDirty) return closeModal()
+  confirmBox('تغییراتِ این فرم ذخیره نشده است. بسته شود و تغییرات از بین برود؟', async () => closeModal(), 'بله، بسته شود')
+}
+$('#modalX').onclick = tryCloseModal
+$('#modal').onclick = e => { if (e.target.id === 'modal') tryCloseModal() }
+document.addEventListener('keydown', e => {
+  if (e.key !== 'Escape') return
+  const c = document.querySelector('.cfm'); if (c) return c.remove()
+  if (!$('#modal').classList.contains('hidden')) tryCloseModal()
+})
 
-function confirmBox(msg, onYes) {
-  openModal('تأیید', `<p style="font-size:14px;line-height:2">${esc(msg)}</p>`,
-    `<button class="btn danger" id="cfYes">بله، انجام شود</button><button class="btn" id="cfNo">انصراف</button>`)
-  $('#cfNo').onclick = closeModal
-  $('#cfYes').onclick = guard(async () => { closeModal(); await onYes() })
+// تأیید در لایهٔ جداگانه (فرمِ زیرش از بین نمی‌رود)
+function confirmBox(msg, onYes, yesLabel = 'بله، انجام شود') {
+  const d = document.createElement('div'); d.className = 'cfm'
+  d.innerHTML = `<div class="cbox" role="alertdialog"><p>${esc(msg).replace(/\n/g, '<br>')}</p><div class="cbtns"><button class="btn danger" data-y>${esc(yesLabel)}</button><button class="btn" data-n>انصراف</button></div></div>`
+  document.body.appendChild(d)
+  const close = () => d.remove()
+  d.querySelector('[data-n]').onclick = close
+  d.onclick = e => { if (e.target === d) close() }
+  d.querySelector('[data-y]').onclick = guard(async () => { close(); await onYes() })
+  d.querySelector('[data-n]').focus()
 }
 
 // ---------- تاریخ ----------
@@ -373,7 +410,9 @@ VIEWS.dashboard = async () => {
   const alertAct = a => a.kind === 'charge' ? (isAdmin() ? `<button class="btn tiny primary" id="issueAll">صدور شارژ</button>` : '')
     : a.kind === 'fund' ? `<button class="link" data-fundcard="${a.fund}">گردش صندوق</button>`
       : a.kind === 'ci' ? `<button class="link" data-go="projects">پروژه‌ها</button>`
-        : a.kind === 'overdue' ? `<button class="link" data-go="reports">بدهکاران</button>`
+        : a.kind === 'overdue' ? `<button class="link" data-go="reports:debtors">بدهکاران</button>`
+          : a.kind === 'backup' ? (isAdmin() ? `<button class="link" data-go="settings:backup">پشتیبان‌گیری</button>` : '')
+          : a.kind === 'health' ? `<button class="link" data-go="reports:balance">مشاهدهٔ ایرادها</button>`
           : a.kind === 'exp' ? (isAdmin() ? `<button class="link" id="dPayExp">پرداخت</button>` : '') : ''
   const alertsHtml = (d.alerts || []).length ? `<div class="panel dalerts"><div class="phead"><b>نیازمند توجه</b><span class="hint">${faDigit(d.alerts.length)} مورد</span></div>
     ${d.alerts.map(a => `<div class="darow"><span class="ddot ${a.level === 'red' ? 'r' : 'a'}"></span>
@@ -427,7 +466,7 @@ VIEWS.dashboard = async () => {
     ${(d.interFund && d.interFund.length) ? `<div class="notice printhide">بدهی بین صندوق‌ها: ${d.interFund.map(x => `${escFa(x.fromName)} به ${escFa(x.toName)} ${money(x.amount)} ${curFa()}`).join('، ')} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
     <div class="grid2">
       <div>
-        <div class="panel"><div class="phead"><b>بدهکاران اصلی</b><button class="link" data-go="reports">گزارش بدهکاران</button></div>
+        <div class="panel"><div class="phead"><b>بدهکاران اصلی</b><button class="link" data-go="reports:debtors">گزارش بدهکاران</button></div>
           <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
           ${d.topDebtors.length ? d.topDebtors.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
             <td class="num amt-out">${money(u.debt)}</td><td class="hint">${u.aging ? (u.aging.days > 9000 ? 'انتقالی' : u.aging.bucket + ' روز') : '—'}</td></tr>`).join('')
@@ -471,7 +510,10 @@ VIEWS.dashboard = async () => {
 
 function wireCommon() {
   document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
-    VIEW = b.dataset.go
+    const [v, tab] = b.dataset.go.split(':')
+    if (tab && v === 'reports') repTab = tab
+    if (tab && v === 'settings') setTab = tab
+    VIEW = v
     $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === VIEW))
     render()
   })
@@ -1315,12 +1357,24 @@ function settleForm(funds, debt) {
 
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
+// گزارش‌ها در سه گروه: برای ساکنین · برای هیئت‌مدیره · دفاتر حسابداری (پیشرفته، پیش‌فرض بسته)
+const REP_GROUPS = [
+  ['برای ساکنین', [['debtors', 'بدهکاران'], ['unit', 'صورت‌حساب واحد'], ['ledger', 'بدهی تفکیکی واحدها']]],
+  ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
+  ['دفاتر حسابداری', [['journal', 'دفتر روزنامه'], ['gl', 'دفتر کل'], ['fundpay', 'پرداخت‌های صندوق'], ['balance', 'کنترل سلامت دفاتر']], true]
+]
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['gl', 'دفتر کل'], ['journal', 'دفتر روزنامه'], ['ledger', 'بدهی تفکیکی واحدها'], ['fund', 'گزارش صندوق'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'صورت‌حساب واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
-  $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
-    `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
+  let adv = false; try { adv = localStorage.getItem('repAdv') === '1' } catch { }
+  const inAdv = REP_GROUPS[2][1].some(([v]) => v === repTab)
+  const showAdv = adv || inAdv
+  $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به ساکنین، هیئت‌مدیره و حسابرس') +
+    `<div class="filters printhide rgroups">${REP_GROUPS.map(([g, tabs, isAdv]) => (isAdv && !showAdv)
+      ? `<div class="rgroup"><span class="rglbl">${g}</span><button class="chip" id="repAdvOpen">نمایش ▾</button></div>`
+      : `<div class="rgroup"><span class="rglbl">${g}</span><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div>${isAdv && !inAdv ? '<button class="link" id="repAdvClose">بستن</button>' : ''}</div>`).join('')}</div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
   document.querySelectorAll('[data-rt]').forEach(b => b.onclick = () => { repTab = b.dataset.rt; render() })
+  if ($('#repAdvOpen')) $('#repAdvOpen').onclick = () => { try { localStorage.setItem('repAdv', '1') } catch { } render() }
+  if ($('#repAdvClose')) $('#repAdvClose').onclick = () => { try { localStorage.setItem('repAdv', '0') } catch { } render() }
   await REPORTS[repTab]()
 }
 const REPORTS = {}
@@ -1961,14 +2015,16 @@ REPORTS.unit = async () => {
   $('#ruFull').onclick = () => { if ($('#ruSel').value) showUnitCard(+$('#ruSel').value) }
 }
 REPORTS.balance = async () => {
-  const b = await api('/api/report/balance')
+  const h = await api('/api/report/balance')
   $('#repBody').innerHTML = `
-    <div class="kpis">${kpi('Σ فاکتورها', money(b.totalInvoices))}${kpi('Σ سهم‌های تسهیم‌شده', money(b.totalShares))}
-      ${kpi('Σ دریافتی‌ها', money(b.totalPayments), '', 'good')}${kpi('خالص بدهی ساکنین', signed(b.netDebt))}</div>
-    <div class="panel"><h3 style="margin-bottom:10px">بررسی تراز</h3>
-      <div class="pline"><span>Σ سهم‌ها برابر Σ فاکتورهاست</span><b class="${b.sharesMatchInvoices ? 'pos' : 'neg'}">${b.sharesMatchInvoices ? '✔ بله' : '✖ خیر'}</b></div>
-      <div class="pline"><span>خالص بدهی = Σ سهم‌ها − Σ دریافتی‌ها</span><b class="${b.balanced ? 'pos' : 'neg'}">${b.balanced ? '✔ تراز است' : '✖ تراز نیست'}</b></div>
-      <p class="sub" style="margin-top:12px">این صفحه سلامت دفاتر را می‌سنجد: اگر هر دو سطر ✔ باشد، همه‌ی فاکتورها کامل تسهیم شده‌اند و هیچ ریالی گم نشده است.</p></div>`
+    <div class="notice ${h.ok ? '' : 'danger'}" style="${h.ok ? '' : 'border-color:var(--out);background:var(--out-soft)'}">
+      <span>${h.ok ? 'همهٔ آزمون‌های سلامت دفاتر درست است؛ هیچ ریالی گم یا دوبار شمرده نشده.' : 'یک یا چند آزمون ایراد دارد. ردیف‌های مشکل‌دار در زیر آمده‌اند.'}</span></div>
+    <div class="panel"><div class="phead"><b>آزمون‌ها</b><span class="hint">${faDigit(h.checks.filter(c => c.ok).length)} از ${faDigit(h.checks.length)} سالم</span></div>
+      ${h.checks.map(c => `<div class="hrow"><span class="hmark ${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'}</span>
+        <div class="hbody"><b>${esc(c.title)}</b>${c.ok ? '' : ` <span class="amt-out">— ${faDigit(c.count)} مورد</span>
+          <ul class="hlist">${c.items.map(i => `<li>${escFa(i.text)}</li>`).join('')}</ul>${c.hint ? `<div class="hint">${esc(c.hint)}</div>` : ''}`}</div></div>`).join('')}
+    </div>
+    <div class="kpis">${kpi('جمع بدهیِ خالصِ واحدها', signed(h.totals.netDebt))}${kpi('جمع سهم‌ها', money(h.totals.totalShares))}${kpi('جمع دریافتی‌ها', money(h.totals.totalPayments))}${kpi('موجودی کل صندوق‌ها', money(h.totals.funds.reduce((a, f) => a + f.balance, 0)))}</div>`
 }
 REPORTS.projects = async () => {
   const rows = await api('/api/report/projects')
@@ -2364,16 +2420,18 @@ SETTINGS.backup = async () => {
       <h3>پشتیبان‌گیری</h3><p>یک فایل zip شامل کل دیتابیس و همه‌ی اسناد. این فایل مستقیماً قابل بازیابی است.</p>
       <div class="bkrow"><input class="inp" id="bkPath" placeholder="مسیر پوشه‌ی بکاپ (خالی = کنار برنامه)" value="${esc(s.backupPath || '')}">
         <button class="btn small" id="bkBrowse">انتخاب پوشه</button></div>
-      <label class="check" style="margin-bottom:12px"><input type="checkbox" id="bkAuto" ${s.autoBackup ? 'checked' : ''}> بکاپ خودکار هنگام هر بار بالا آمدن برنامه</label>
+      <label class="check" style="margin-bottom:6px"><input type="checkbox" id="bkAuto" ${s.autoBackup ? 'checked' : ''}> بکاپ خودکارِ روزانه (توصیه‌شده) — ۱۴ نسخهٔ آخر و یک نسخه از هر ماه نگه داشته می‌شود</label>
+      <p class="hint" style="margin:0 0 12px">آخرین بکاپ: <b>${s.lastBackupAt ? faDigit(new Date(s.lastBackupAt).toLocaleString('fa-IR')) : 'هنوز گرفته نشده'}</b> · مسیر پیش‌فرض: <span class="num">${esc(s.defaultBackupDir || '')}</span></p>
       <div class="fbtns"><button class="btn primary" id="bkNow">ساخت بکاپ</button>
         <a class="btn" href="/api/backup/download">⬇️ دانلود بکاپ</a>
         <button class="btn" id="bkSaveSet">ذخیره‌ی تنظیمات</button></div>
       ${backups.length ? `<div style="margin-top:14px"><div class="hint">بکاپ‌های موجود:</div>
-        ${backups.slice(0, 6).map(b => `<div class="bkitem"><span>${esc(b.name)}</span><span class="num">${faDigit(b.stamp)}</span></div>`).join('')}</div>` : ''}
+        ${backups.slice(0, 8).map(b => `<div class="bkitem"><span>${esc(b.name)}</span><span class="hint">${b.auto ? 'خودکار' : b.pre ? 'پیش از بازیابی' : 'دستی'}</span></div>`).join('')}</div>` : ''}
     </div></div>
     <div class="bkcard"><div class="bkicon">♻️</div><div class="bkbody">
-      <h3>بازیابی از بکاپ</h3><p><b>هشدار:</b> اطلاعات فعلی با محتوای فایل بکاپ جایگزین می‌شود و نشست‌ها بسته می‌شوند.</p>
+      <h3>بازیابی از بکاپ</h3><p>اطلاعات فعلی با محتوای فایل بکاپ جایگزین می‌شود. پیش از بازیابی، فایل بررسی می‌شود و یک بکاپ از وضعیتِ فعلی هم خودکار گرفته می‌شود تا در صورت اشتباه قابل برگشت باشد.</p>
       <label class="drop" id="rsLbl" for="rsFile">📦 انتخاب فایل بکاپ (zip)<input type="file" id="rsFile" accept=".zip" hidden></label>
+      <div id="rsInfo"></div>
       <div class="fbtns" style="margin-top:12px"><button class="btn danger" id="rsGo" disabled>بازیابی</button></div>
     </div></div>
     <div class="bkcard"><div class="bkicon">⬆️</div><div class="bkbody">
@@ -2400,8 +2458,31 @@ SETTINGS.backup = async () => {
     })
     $('#' + btnId).onclick = () => run(() => data)
   }
-  wireZip('rsFile', 'rsLbl', 'rsGo', getData => confirmBox('اطلاعات فعلی با فایل بکاپ جایگزین شود؟ این کار برگشت‌پذیر نیست.',
-    async () => { const r = await post('/api/backup/restore', { dataUrl: getData() }); toast(`بازیابی شد (${faDigit(r.count)} سند) — دوباره وارد شوید`); setTimeout(() => location.reload(), 1600) }))
+  // بازیابی دومرحله‌ای: ۱) بررسیِ فایل و نمایشِ محتوا  ۲) تأیید با مقایسهٔ دادهٔ فعلی
+  let rsInfo = null
+  $('#rsFile').addEventListener('change', () => setTimeout(guard(async () => {
+    const f = $('#rsFile').files[0]; if (!f) return
+    $('#rsGo').disabled = true; $('#rsInfo').innerHTML = '<div class="hint">در حال بررسیِ فایل…</div>'
+    try {
+      const r = await post('/api/backup/inspect', { dataUrl: await readFileDataUrl(f) }); rsInfo = r
+      const b = r.backup, c = r.current
+      $('#rsInfo').innerHTML = `<div class="panel" style="margin:10px 0 0;padding:12px 14px;background:var(--panel-2)">
+        <b>فایل سالم است.</b> ساختمان: <b>${esc(b.building || '—')}</b> · آخرین سند: <b class="num">${faDigit(b.lastDate || '—')}</b><br>
+        <span class="hint">در بکاپ: ${faDigit(b.units)} واحد · ${faDigit(b.invoices)} فاکتور · ${faDigit(b.payments)} دریافتی · ${faDigit(b.docs)} سندِ پیوست</span><br>
+        <span class="hint">اکنون: ${faDigit(c.units)} واحد · ${faDigit(c.invoices)} فاکتور · ${faDigit(c.payments)} دریافتی</span></div>`
+      $('#rsGo').disabled = false
+    } catch (e) { rsInfo = null; $('#rsInfo').innerHTML = `<div class="ferr" style="display:block;margin-top:8px">${esc(e.message)}</div>` }
+  }), 0))
+  $('#rsGo').onclick = () => {
+    if (!rsInfo) return
+    const b = rsInfo.backup, c = rsInfo.current
+    confirmBox(`بازیابی انجام شود؟\nدادهٔ فعلی (${faDigit(c.invoices)} فاکتور، ${faDigit(c.payments)} دریافتی) با بکاپ (${faDigit(b.invoices)} فاکتور، ${faDigit(b.payments)} دریافتی، آخرین سند ${faDigit(b.lastDate || '—')}) جایگزین می‌شود. پیش از آن یک بکاپ از وضعیت فعلی گرفته می‌شود.`,
+      async () => {
+        const f = $('#rsFile').files[0]
+        const r = await post('/api/backup/restore', { dataUrl: await readFileDataUrl(f) })
+        toast(`بازیابی شد (${faDigit(r.count)} سند). نسخهٔ پیش از بازیابی ذخیره شد. دوباره وارد شوید.`); setTimeout(() => location.reload(), 2200)
+      }, 'بله، بازیابی شود')
+  }
   wireZip('upFile', 'upLbl', 'upGo', getData => confirmBox('بسته‌ی آپدیت اعمال شود؟ پس از آن برنامه را دوباره اجرا کنید.',
     async () => { const r = await post('/api/update', { dataUrl: getData() }); toast(`${faDigit(r.count)} فایل به‌روزرسانی شد — برنامه را ببندید و دوباره باز کنید`) }))
 }
