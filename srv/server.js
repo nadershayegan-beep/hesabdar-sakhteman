@@ -1040,14 +1040,15 @@ function agingBucket(unitId) {
 }
 // ماتریسِ سنیِ بدهیِ یک واحد: ماندهٔ هر سهمِ باز در ستونِ سنِ خودش (نه کلِ بدهی در ستونِ قدیمی‌ترین قلم)
 const AGE_KEYS = ['۰-۳۰', '۳۱-۶۰', '۶۱-۹۰', '+۹۰']
-function unitAges(unitId, debt) {
+function unitAges(unitId, debt, asOf = '') {
   const ages = { '۰-۳۰': 0, '۳۱-۶۰': 0, '۶۱-۹۰': 0, '+۹۰': 0 }
   if (!(debt > 0)) return ages
-  const open = db.prepare(`SELECT i.g_date g, s.share_amount - (SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE share_id=s.id) rem
-    FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=? ORDER BY i.g_date, i.id`).all(unitId).filter(r => r.rem > 0)
+  const lim = asOf || '9999-12-31'
+  const open = db.prepare(`SELECT i.g_date g, s.share_amount - (SELECT COALESCE(SUM(a.amount),0) FROM payment_allocations a JOIN payments p ON p.id=a.payment_id WHERE a.share_id=s.id AND p.g_date<=?) rem
+    FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=? AND i.g_date<=? ORDER BY i.g_date, i.id`).all(lim, unitId, lim).filter(r => r.rem > 0)
   // پرداختِ تخصیص‌نیافته (اگر باشد) اول از قدیمی‌ترین‌ها کم می‌شود تا جمعِ ستون‌ها = بدهیِ واقعی
   let extra = open.reduce((a, r) => a + r.rem, 0) - debt
-  const today = todayG()
+  const today = asOf || todayG()
   for (const r of open) {
     let rem = r.rem; if (extra > 0) { const k = Math.min(extra, rem); rem -= k; extra -= k }
     if (rem <= 0) continue
@@ -1679,6 +1680,16 @@ function promiseStatus(unitId) {
   const paidSince = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE unit_id=? AND created_at>=?`).get(unitId, p.created_at).s
   const kept = paidSince >= (p.promise_amount || 1)
   return { j: p.promise_j, g: p.promise_g, amount: p.promise_amount, kept, due: !kept && p.promise_g <= todayG() }
+}
+// بدهکاران «تا تاریخ»: ماندهٔ هر واحد در پایانِ یک روزِ مشخص (مثلاً پایان اسفند برای مجمع)
+function debtorsAsOf(g) {
+  const b = balancesAsOf(g)
+  const ph = Object.fromEntries(listUnits().map(u => [u.id, u.phone]))
+  const rows = b.units.filter(u => u.debt > 0).map(u => ({ id: u.id, number: u.number, resident_name: u.name, phone: ph[u.id], debt: u.debt, ages: unitAges(u.id, u.debt, g) }))
+    .sort((x, y) => y.debt - x.debt)
+  const buckets = { '۰-۳۰': 0, '۳۱-۶۰': 0, '۶۱-۹۰': 0, '+۹۰': 0 }
+  for (const r of rows) for (const k of AGE_KEYS) buckets[k] += r.ages[k]
+  return { rows, total: rows.reduce((a, r) => a + r.debt, 0), buckets, asOf: g, asOfJ: gToJStr(g) }
 }
 function debtorsReport() {
   const rows = unitsWithBalance().filter(u => u.debt > 0)
@@ -3784,12 +3795,12 @@ async function handle(req, res) {
 
     // ---- گزارش‌ها ----
     if (path === '/api/report/dashboard' && M === 'GET') return sendJSON(res, 200, dashboard())
-    if (path === '/api/report/debtors' && M === 'GET') return sendJSON(res, 200, debtorsReport())
+    if (path === '/api/report/debtors' && M === 'GET') return sendJSON(res, 200, Q.asOf ? debtorsAsOf(Q.asOf) : debtorsReport())
     if (path === '/api/report/unit-ledger' && M === 'GET') return sendJSON(res, 200, unitLedgerReport())
     if (path === '/api/report/unit-statement' && M === 'GET') { const r = unitStatement(+Q.unitId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'واحد یافت نشد' }) }
     if (path === '/api/report/fund' && M === 'GET') { const r = fundReport(+Q.fundId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'صندوق یافت نشد' }) }
     if (path === '/api/report/income' && M === 'GET') return sendJSON(res, 200, incomeStatement(Q.from, Q.to))
-    if (path === '/api/report/funds-overview' && M === 'GET') return sendJSON(res, 200, fundsOverview())
+    if (path === '/api/report/funds-overview' && M === 'GET') return sendJSON(res, 200, Q.asOf ? { asOf: Q.asOf, asOfJ: gToJStr(Q.asOf), ...balancesAsOf(Q.asOf), ...fundsOverview() } : fundsOverview())
     if (path === '/api/report/journal' && M === 'GET') return sendJSON(res, 200, journalReport(Q))
     if (path === '/api/audit' && M === 'GET') {
       const w = [], a = []
@@ -3834,8 +3845,9 @@ async function handle(req, res) {
           rows.map(p => [p.id, p.number, p.resident_name, p.j_date, c$(p.amount), p.fund_name, p.method, p.note]))
       } else if (kind === 'debtors') {
         name = 'bedehkaran.csv'
-        body = csv(['واحد', 'ساکن', 'تلفن', 'بدهی ' + U, 'قدمت (روز)', 'باکت'],
-          debtorsReport().rows.map(r => [r.number, r.resident_name, r.phone, c$(r.debt), r.aging ? r.aging.days : '', r.aging ? r.aging.bucket : '']))
+        const dr = Q.asOf ? debtorsAsOf(Q.asOf) : debtorsReport()
+        body = csv(['واحد', 'ساکن', 'تلفن', 'بدهی ' + U, ...AGE_KEYS.map(k => k + ' روز')],
+          dr.rows.map(r => [r.number, r.resident_name, r.phone, c$(r.debt), ...AGE_KEYS.map(k => c$(r.ages[k]))]))
       } else if (kind === 'units') {
         name = 'vahedha.csv'
         body = csv(['شماره', 'طبقه', 'متراژ', 'نفرات', 'ساکن', 'تلفن', 'وضعیت', 'شارژ ماهانه', 'بدهی ' + U],
@@ -3857,6 +3869,28 @@ async function handle(req, res) {
           ...r.fundFlow.map(f => ['صندوق', f.name, c$(f.close), `اول ${c$(f.open)} · ورودی ${c$(f.in)} · خروجی ${c$(f.out)} · انتقال ${c$(f.transfer)}`]),
           ['مدیر', 'طلب مدیر از صندوق', c$(r.managerDebt), '']
         ])
+      } else if (kind === 'income') {
+        const r = incomeStatement(Q.from, Q.to); name = 'daramad-hazineh.csv'
+        body = csv(['نوع', 'گروه', 'شرح', ...r.periods.map(p => p.fa), 'جمع ' + U], [
+          ...r.lines.map(l => [l.side === 'in' ? 'درآمد' : 'هزینه', l.group, l.label, ...r.periods.map(p => c$(l.byMonth[p.key] || 0)), c$(l.total)]),
+          ['', '', 'جمع درآمد', ...r.periods.map(p => c$(p.income)), c$(r.income)], ['', '', 'جمع هزینه', ...r.periods.map(p => c$(p.expense)), c$(r.expense)], ['', '', 'خالص', ...r.periods.map(p => c$(p.net)), c$(r.net)]])
+      } else if (kind === 'journal') {
+        const d = journalReport(Q); name = 'daftar-roozname.csv'
+        body = csv(['ردیف', 'شماره سند', 'تاریخ', 'نوع', 'شرح', 'طرف بدهکار', 'طرف بستانکار', 'بدهکار ' + U, 'بستانکار ' + U],
+          [...d.rows.map(x => [x.row, x.no, x.j, x.typeFa, x.title, x.debitAcc, x.creditAcc, c$(x.debit), c$(x.credit)]), ['', '', '', '', 'جمع', '', '', c$(d.totalDebit), c$(d.totalCredit)]])
+      } else if (kind === 'gl') {
+        const d = generalLedger(Q.type, Q.id, Q.from || '', Q.to || ''); if (!d) return sendJSON(res, 404, { error: 'حساب یافت نشد' })
+        name = 'daftar-kol.csv'
+        body = csv(['تاریخ', 'شماره سند', 'شرح', 'بدهکار ' + U, 'بستانکار ' + U, 'مانده ' + U],
+          [['', '', 'ماندهٔ اول دوره', '', '', c$(d.opening)], ...d.rows.map(e => [e.j, e.no, e.title, c$(e.debit), c$(e.credit), c$(e.balance)]), ['', '', 'جمع', c$(d.totalDebit), c$(d.totalCredit), c$(d.finalBalance)]])
+      } else if (kind === 'funds') {
+        const ov = fundsOverview(); name = 'sandoghha.csv'
+        body = csv(['صندوق', 'موجودی اولیه', 'دریافتی', 'مخارج', 'انتقال', 'موجودی', 'بدهی ساکنین'].map((h, i) => i ? h + ' ' + U : h),
+          [...ov.funds.map(f => [f.name, c$(f.opening), c$(f.received), c$(f.spent), c$(f.transferNet), c$(f.balance), c$(f.unitDebt)]), ['جمع', c$(ov.total.opening), c$(ov.total.received), c$(ov.total.spent), c$(ov.total.transferNet), c$(ov.total.balance), c$(ov.total.unitDebt)]])
+      } else if (kind === 'ledger') {
+        const r = unitLedgerReport(); name = 'bedehi-tafkiki.csv'
+        body = csv(['واحد', 'ساکن', 'شارژ ' + U, 'قبوض و متفرقه ' + U, 'پروژه (مصوبه) ' + U, 'جمع ' + U],
+          [...r.rows.map(x => [x.number, x.resident_name, c$(x.charge), c$(x.omrani), c$(x.projectDue), c$(x.net)]), ['جمع', '', c$(r.total.charge), c$(r.total.omrani), c$(r.total.projectDue), c$(r.total.net)]])
       } else if (kind === 'invoice') {
         const inv = db.prepare(`SELECT * FROM invoices WHERE id=?`).get(+Q.id)
         if (!inv) return sendJSON(res, 404, { error: 'فاکتور یافت نشد' })

@@ -1644,7 +1644,7 @@ REPORTS.income = async () => {
         : `<tr><td colspan="${cols.length + 2}" class="dim">موردی نبوده</td></tr>`}
       <tr class="tot"><td>جمع ${side === 'in' ? 'درآمدها' : 'هزینه‌ها'}</td>${cols.map(p => `<td class="num">${money(side === 'in' ? p.income : p.expense)}</td>`).join('')}<td class="num">${money(tot)}</td>${pr ? `<td class="num">${money(side === 'in' ? pr.income : pr.expense)}</td>` : ''}</tr>`
   }
-  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 4).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printOfficial('/print/report/income?from=' + repRange.from + '&to=' + repRange.to, 'صورت درآمد و هزینه')">🖨 چاپ رسمی</button>`) + `
+  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 4).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printOfficial('/print/report/income?from=' + repRange.from + '&to=' + repRange.to, 'صورت درآمد و هزینه')">🖨 چاپ رسمی</button><a class="btn small" href="/api/export/income?from=${repRange.from}&to=${repRange.to}">⬇️ اکسل</a>`) + `
     <div class="panel"><h3 style="margin-bottom:4px">${esc(r.buildingName)} — صورت درآمد و هزینه</h3>
       <p class="sub">دوره: ${escFa(repRange.label)} · مبنا: ${esc(r.basis)}</p></div>
     <div class="kpis">
@@ -1776,13 +1776,16 @@ async function renderBoardBook() {
 }
 
 let LAST_DEBTORS = []
+let debtorsAsOf = null
 REPORTS.debtors = async () => {
-  const r = await api('/api/report/debtors')
+  const r = await api('/api/report/debtors' + (debtorsAsOf ? '?asOf=' + debtorsAsOf.g : ''))
   LAST_DEBTORS = r.rows
   const batchBtn = IS_DESKTOP && r.rows.length
     ? `<button class="btn small" id="dbBatchPdf">📄 صورت‌حساب همه (PDF)</button>` : ''
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="printOfficial('/print/report/debtors', 'گزارش بدهکاران')">🖨 چاپ رسمی</button></div>
+    <div class="filters printhide"><label class="f" style="flex-direction:row;align-items:center;gap:6px">مانده تا تاریخ ${dateBoxHtml('dbAs', debtorsAsOf && debtorsAsOf.j)}</label><button class="btn small" id="dbAsGo">اعمال</button>${debtorsAsOf ? '<button class="btn small" id="dbAsClear">امروز</button>' : ''}</div>
+    ${debtorsAsOf ? `<div class="notice info">بدهی‌ها تا پایانِ روزِ <b>${faDigit(r.asOfJ)}</b> — پیگیری و قول پرداخت فقط در نمای امروز نمایش داده می‌شود.</div>` : ''}
+    <div class="filters printhide"><a class="btn small" href="/api/export/debtors${debtorsAsOf ? '?asOf=' + debtorsAsOf.g : ''}">⬇️ اکسل</a>${batchBtn}<button class="btn small" onclick="printOfficial('/print/report/debtors', 'گزارش بدهکاران')">🖨 چاپ رسمی</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
@@ -1799,6 +1802,9 @@ REPORTS.debtors = async () => {
     </div>`
   wireCommon()
   if ($('#dbBatchPdf')) $('#dbBatchPdf').onclick = () => saveDebtorsBatchPdf(LAST_DEBTORS)
+  wireToday($('#repBody'))
+  $('#dbAsGo').onclick = guard(async () => { const t = readDate('dbAs'); if (!t.jy || !t.jm || !t.jd) throw new Error('تاریخ را کامل وارد کنید'); debtorsAsOf = { g: gStr(t.jy, t.jm, t.jd), j: t }; render() })
+  if ($('#dbAsClear')) $('#dbAsClear').onclick = () => { debtorsAsOf = null; render() }
   document.querySelectorAll('[data-wa]').forEach(b => b.onclick = e => { e.stopPropagation(); openWhatsApp(LAST_DEBTORS[+b.dataset.wa]); setTimeout(render, 600) })
   document.querySelectorAll('[data-fu]').forEach(b => b.onclick = e => { e.stopPropagation(); followupForm(+b.dataset.fu) })
   document.querySelectorAll('[data-pdf]').forEach(b => b.onclick = e => { e.stopPropagation(); saveUnitPdf(LAST_DEBTORS[+b.dataset.pdf]) })
@@ -1823,7 +1829,7 @@ REPORTS.ledger = async () => {
   const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">پیش‌پرداخت ${money(-v)}</span>` : '۰'
   const ownerBal = v => v > 0 ? `<span class="amt-out">بدهی مالکین ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبِ مالکین ${money(-v)}</span>` : '۰'
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><button class="btn small" onclick="printAs('بدهی تفکیکی واحدها')">🖨 چاپ</button></div>
+    <div class="filters printhide"><button class="btn small" onclick="printAs('بدهی تفکیکی واحدها')">🖨 چاپ</button><a class="btn small" href="/api/export/ledger">⬇️ اکسل</a></div>
     <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
     <div class="kpis">
       ${kpi('جمع کل (خالص)', ownerBal(r.total.net), 'شارژ + قبوض + ماندهٔ پروژه', 'hero bad')}
@@ -1883,7 +1889,7 @@ REPORTS.fund = async () => {
   const t = ov.total
   $('#repBody').innerHTML = `
     <div class="filters printhide">
-      <button class="btn small" onclick="printOfficial('/print/report/funds', 'گزارش کامل صندوق‌ها')">🖨 چاپ رسمی</button></div>
+      <button class="btn small" onclick="printOfficial('/print/report/funds', 'گزارش کامل صندوق‌ها')">🖨 چاپ رسمی</button><a class="btn small" href="/api/export/funds">⬇️ اکسل</a></div>
     <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج ± انتقال بین صندوق‌ها = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق. انتقال‌ها جزو دریافتی و مخارج نیستند.</p>
     <div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : 'good')}
@@ -1987,7 +1993,7 @@ REPORTS.gl = async () => {
       <label class="f" style="max-width:260px">حساب<select class="inp" id="glAcc"><option value="">— انتخاب —</option>${accOpts('unit')}</select></label>
       <label class="f" style="max-width:140px">از تاریخ<input class="inp" id="glFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
       <label class="f" style="max-width:140px">تا تاریخ<input class="inp" id="glTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
-      <button class="btn small" id="glPrint">🖨 چاپ</button>
+      <button class="btn small" id="glPrint">🖨 چاپ رسمی</button><button class="btn small" id="glXls">⬇️ اکسل</button>
     </div>
     <div id="glBox"><div class="panel"><div class="empty">یک حساب را انتخاب کنید</div></div></div>`
   const cur = () => ({ t: $('#glType').value, id: $('#glAcc').value, f: $('#glFrom').value, to: $('#glTo').value })
@@ -1995,6 +2001,7 @@ REPORTS.gl = async () => {
   $('#glAcc').onchange = () => { const c = cur(); draw(c.t, c.id, c.f, c.to) }
   $('#glFrom').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
   $('#glTo').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
+  $('#glXls').onclick = () => { const c = cur(); if (!c.id) return toast('اول حساب را انتخاب کنید', true); location.href = `/api/export/gl?type=${c.t}&id=${encodeURIComponent(c.id)}&from=${encodeURIComponent(c.f || '')}&to=${encodeURIComponent(c.to || '')}` }
   $('#glPrint').onclick = () => { const c = cur(); if (!c.id) return toast('اول حساب را انتخاب کنید', true); printOfficial(`/print/report/gl?type=${c.t}&id=${encodeURIComponent(c.id)}&from=${encodeURIComponent(c.f || '')}&to=${encodeURIComponent(c.to || '')}`, 'دفتر کل') }
 }
 
@@ -2028,7 +2035,7 @@ REPORTS.journal = async () => {
       <label class="f" style="max-width:190px">صندوق<select class="inp" id="jnFund"><option value="">همه</option>${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
       <label class="f" style="max-width:190px">واحد<select class="inp" id="jnUnit"><option value="">همه</option>${META.units.filter(u => u.active).map(u => `<option value="${u.id}">واحد ${escFa(u.number)}</option>`).join('')}</select></label>
       <label class="f" style="max-width:160px">جستجو در شرح<input class="inp" id="jnQ" placeholder="مثلاً آب"></label>
-      <button class="btn small" id="jnApply">اعمال</button><button class="btn small" id="jnPrint">🖨 چاپ رسمی</button>
+      <button class="btn small" id="jnApply">اعمال</button><button class="btn small" id="jnPrint">🖨 چاپ رسمی</button><button class="btn small" id="jnXls">⬇️ اکسل</button>
     </div>
     <p class="hint">هر سند دوطرفه و متوازن است؛ با کلیک، برگهٔ سند با همهٔ طرف‌حساب‌ها باز می‌شود.</p>
     <div class="kpis" id="jnKpis"></div>
@@ -2038,6 +2045,7 @@ REPORTS.journal = async () => {
     </table></div></div>`
   const run = () => draw($('#jnFrom').value, $('#jnTo').value, $('#jnType').value, $('#jnFund').value, $('#jnUnit').value, $('#jnQ').value)
   $('#jnApply').onclick = run
+  $('#jnXls').onclick = () => { location.href = '/api/export/journal?' + new URLSearchParams({ from: $('#jnFrom').value, to: $('#jnTo').value, type: $('#jnType').value, fundId: $('#jnFund').value, unitId: $('#jnUnit').value, q: $('#jnQ').value }) }
   $('#jnPrint').onclick = () => printOfficial('/print/report/journal?' + new URLSearchParams({ from: $('#jnFrom').value, to: $('#jnTo').value, type: $('#jnType').value, fundId: $('#jnFund').value, unitId: $('#jnUnit').value, q: $('#jnQ').value }), 'دفتر روزنامه')
   ;['jnType', 'jnFund', 'jnUnit'].forEach(idd => $('#' + idd).onchange = run)
   $('#jnQ').addEventListener('keydown', e => { if (e.key === 'Enter') run() })
