@@ -1145,7 +1145,7 @@ function unitLedgerReport() {
     projBudget[inv.project_id] = (p && p.budget) ? Object.fromEntries(computeShares(u, inv.method, p.budget, {}).map(s => [s.unit_id, s.share_amount])) : {}
     projFinal[inv.project_id] = Object.fromEntries(computeShares(u, inv.method, basis, {}).map(s => [s.unit_id, s.share_amount]))
   }
-  const units = listUnits().filter(u => u.active)
+  const units = listUnits().filter(u => u.active || unitDebt(u.id) !== 0)
   const rows = units.map(u => {
     const shares = db.prepare(`SELECT s.id, s.share_amount, i.is_charge, i.is_billing, i.is_opening, i.from_fund, i.project_id
       FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=?`).all(u.id)
@@ -1205,12 +1205,13 @@ function fundReport(fundId) {
   const cat = bucketOfFund(f)
   const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
   const unitDebts = unitLedgerReport().rows
-    .map(r => ({ id: r.id, number: r.number, resident_name: r.resident_name, debt: r[cat] }))
-    .filter(r => cat === 'project' ? r.debt !== 0 : r.debt > 0)
+    .map(r => ({ id: r.id, number: r.number, resident_name: r.resident_name, debt: cat === 'project' ? r.projectDue : r[cat] }))
+    .filter(r => r.debt > 0)
     .sort((a, b) => faToEn(a.number) - faToEn(b.number))
   return {
     fund: { id: f.id, name: f.name, kindFa: FUND_KIND_FA[f.kind] || f.kind, balance: fundBalance(f.id), received, spent, opening: f.opening_balance || 0 },
-    txns, unitDebts, category: cat, totalUnitDebt: unitDebts.reduce((s, r) => s + (cat === 'project' ? Math.max(0, r.debt) : r.debt), 0)
+    txns, unitDebts, category: cat, basis: cat === 'project' ? 'تعهدِ مصوبهٔ باقی‌مانده (همان مبنای گزارش تفکیکی و داشبورد)' : 'سهم‌های پرداخت‌نشده',
+    totalUnitDebt: unitDebts.reduce((s, r) => s + r.debt, 0)
   }
 }
 

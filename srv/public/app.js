@@ -1705,7 +1705,7 @@ REPORTS.fund = async () => {
         ${kpi('موجودی فعلی', money(d.fund.balance), d.fund.kindFa, d.fund.balance < 0 ? 'bad' : 'good')}
         ${kpi('جمع ورودی', money(d.fund.received), '', 'good')}
         ${kpi('جمع خرج‌شده', money(d.fund.spent), '', 'bad')}
-        ${kpi('بدهی واحدها به این صندوق', money(d.totalUnitDebt), catFa(d.category), d.totalUnitDebt > 0 ? 'bad' : '')}
+        ${kpi('بدهی واحدها به این صندوق', money(d.totalUnitDebt), d.basis ? 'مبنا: ' + d.basis : catFa(d.category), d.totalUnitDebt > 0 ? 'bad' : '')}
       </div>
       <div class="grid2">
         <div class="panel"><div class="phead"><b>ریز ورودی و خروجی</b></div>
