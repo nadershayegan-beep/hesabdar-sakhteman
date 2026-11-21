@@ -465,3 +465,9 @@ tr.clickable:focus-visible{outline-offset:-2px}
   table.tx.mcard tfoot tr{display:flex;flex-wrap:wrap;gap:6px 14px}
   table.tx.mcard tfoot td{border:none;padding:4px 0}
 }
+
+/* مورد ۵۷: آیکون‌های خطی */
+.ic{display:inline-flex;vertical-align:-0.18em;line-height:0}
+.ic svg{width:1.1em;height:1.1em;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.nav-i .g .ic svg{width:18px;height:18px}
+.btn .ic + *, .btn .ic{margin-inline-end:2px}

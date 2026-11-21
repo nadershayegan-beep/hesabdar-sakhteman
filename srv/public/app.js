@@ -38,7 +38,7 @@ function waPhone(p) {
 }
 function debtorWaText(u) {
   const b = (typeof META !== 'undefined' && META && META.buildingName) || 'ساختمان'
-  return `سلام ${u.resident_name || 'ساکن گرامی'} عزیز 🌱\n`
+  return `سلام ${u.resident_name || 'ساکن گرامی'} عزیز\n`
     + `صورت‌حساب واحد ${faDigit(u.number)} — ${b}\n`
     + `بدهی فعلی شما: ${moneyU(u.debt)}\n`
     + (u.aging && u.aging.days > 0 && u.aging.days < 9000 ? `قدمت بدهی: ${faDigit(u.aging.days)} روز\n` : '')
@@ -87,7 +87,7 @@ async function waReceipt(id) {
   const v = await api(`/api/report/voucher?dtype=payment&id=${id}`); const p = v.raw
   const u = (META.units || []).find(x => x.id === p.unit_id) || {}
   if (!u.phone) return toast('برای این واحد شمارهٔ تلفن ثبت نشده است', true)
-  const t = `سلام ${u.resident_name || 'ساکن گرامی'} 🌱\n${faDigit(v.head.no)} — ${META.buildingName || 'ساختمان'}\nمبلغ ${moneyU(p.amount)} در تاریخ ${faDigit(p.j_date)} دریافت شد.\nبا سپاس از پرداخت شما 🙏`
+  const t = `سلام ${u.resident_name || 'ساکن گرامی'}\n${faDigit(v.head.no)} — ${META.buildingName || 'ساختمان'}\nمبلغ ${moneyU(p.amount)} در تاریخ ${faDigit(p.j_date)} دریافت شد.\nبا سپاس از پرداخت شما`
   window.open(`https://wa.me/${waPhone(u.phone)}?text=${encodeURIComponent(t)}`, '_blank', 'noopener')
 }
 const rcptBtns = id => `<button class="btn tiny" data-rcpt="${id}" title="رسید PDF">🧾</button><button class="btn tiny" data-rcwa="${id}" title="ارسال رسید در واتساپ">💬</button>`
@@ -174,7 +174,38 @@ document.addEventListener('keydown', e => {
   if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('tr.clickable,[role=button][tabindex]')) { e.preventDefault(); e.target.click() }
 })
 // برچسب‌گذاریِ خودکار: ردیف‌های قابل‌کلیک با Tab در دسترس، دکمه‌های آیکونی با aria-label از title
+// ---- آیکون‌ها: یک مجموعهٔ خطیِ یکدست (currentColor) ----
+const ICON_PATHS = {
+  edit: 'M4 20h4L18.5 9.5l-4-4L4 16v4zM13.5 6.5l4 4', trash: 'M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6',
+  print: 'M7 9V3h10v6M6 17H4v-7h16v7h-2M7 14h10v7H7z', download: 'M12 4v11M7 10.5l5 5 5-5M5 20h14',
+  clip: 'M15.5 7.5l-6.8 6.8a2 2 0 102.8 2.8l7-7a4 4 0 10-5.6-5.6l-7 7a6 6 0 108.5 8.5L20 14', doc: 'M6 3h8l4 4v14H6zM14 3v4h4M9 12h6M9 16h6',
+  receipt: 'M6 3h12v18l-3-2-3 2-3-2-3 2zM9 8h6M9 12h6', money: 'M3 7h18v10H3zM12 9.5a2.5 2.5 0 110 5 2.5 2.5 0 010-5zM6 10v4M18 10v4',
+  chat: 'M4 5h16v11H9l-5 4z', note: 'M5 4h14v16H5zM8 9h8M8 13h8M8 17h5', chart: 'M4 20V10M10 20V4M16 20v-7M3 20h18',
+  door: 'M6 21V3h12v18M3 21h18M14 12h.01', bank: 'M3 10l9-6 9 6M5 10v8M9 10v8M15 10v8M19 10v8M3 20h18', list: 'M7 3h10v18H7zM10 8h4M10 12h4M10 16h4',
+  cal: 'M4 6h16v15H4zM4 10h16M8 3v4M16 3v4', build: 'M3 21h18M5 21V9l7-5 7 5v12M10 21v-6h4v6',
+  gear: 'M12 15a3 3 0 100-6 3 3 0 000 6zM19.4 13a7.5 7.5 0 000-2l2-1.5-2-3.5-2.4 1a7 7 0 00-1.7-1L15 3h-4l-.3 2.6a7 7 0 00-1.7 1l-2.4-1-2 3.5 2 1.5a7.5 7.5 0 000 2l-2 1.5 2 3.5 2.4-1a7 7 0 001.7 1L11 21h4l.3-2.6a7 7 0 001.7-1l2.4 1 2-3.5z',
+  phone: 'M8 3h8v18H8zM11 18h2', users: 'M9 11a3 3 0 100-6 3 3 0 000 6zM3 20a6 6 0 0112 0M16 5a3 3 0 010 6M21 20a6 6 0 00-4-5.6',
+  theme: 'M12 3a9 9 0 100 18 9 9 0 000-18zM12 3v18', save: 'M5 3h11l3 3v15H5zM8 3v5h7V3M8 21v-7h8v7', folder: 'M3 6h6l2 2h10v12H3z',
+  key: 'M14 10a4 4 0 11-4-4 4 4 0 014 4zM13 13l7 7M17 17l2-2', check: 'M5 12l5 5 9-10', warn: 'M12 4l9 16H3zM12 10v4M12 17h.01',
+  info: 'M12 3a9 9 0 110 18 9 9 0 010-18zM12 11v6M12 7h.01', star: 'M12 3l2.7 5.6 6.1.9-4.4 4.3 1 6.1L12 17l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9z',
+  box: 'M3 7l9-4 9 4v10l-9 4-9-4zM3 7l9 4 9-4M12 11v10', up: 'M12 20V9M7 13.5l5-5 5 5M5 4h14', worker: 'M5 21v-3a7 7 0 0114 0v3M12 11a4 4 0 100-8 4 4 0 000 8zM8 7h8'
+}
+const icon = (n, cls = '') => ICON_PATHS[n] ? `<span class="ic ${cls}" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="${ICON_PATHS[n]}"/></svg></span>` : ''
+const EMOJI_ICON = { '✏': 'edit', '🗑': 'trash', '🖨': 'print', '⬇': 'download', '📎': 'clip', '📄': 'doc', '🧾': 'receipt', '💸': 'money', '💰': 'money', '💬': 'chat', '📝': 'note', '📊': 'chart', '🚪': 'door', '🏦': 'bank', '📑': 'list', '📋': 'list', '📅': 'cal', '🏗': 'build', '⚙': 'gear', '📱': 'phone', '👥': 'users', '🌗': 'theme', '💾': 'save', '📁': 'folder', '🔑': 'key', '📦': 'box', '⬆': 'up', '👷': 'worker', '⭐': 'star' }
+const EMOJI_SRC = '(' + Object.keys(EMOJI_ICON).join('|') + ')\uFE0F?\s?', EMOJI_RE = new RegExp(EMOJI_SRC, 'gu'), EMOJI_TEST = new RegExp(EMOJI_SRC, 'u')
+// ایموجیِ داخلِ دکمه‌ها و منو → آیکونِ SVG (در زمان نمایش؛ متن‌های ذخیره‌شده دست نمی‌خورند)
+function iconize(root) {
+  root.querySelectorAll('button, a.btn, a.link, .nav-i .g, .fab-item, .chip, .doclink, label.drop').forEach(el => {
+    if (el.dataset.ic) return; el.dataset.ic = '1'
+    const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT); const nodes = []
+    while (walk.nextNode()) if (EMOJI_TEST.test(walk.currentNode.nodeValue)) nodes.push(walk.currentNode)
+    for (const t of nodes) { EMOJI_RE.lastIndex = 0
+      const span = document.createElement('span'); span.innerHTML = esc(t.nodeValue).replace(EMOJI_RE, (m, e) => icon(EMOJI_ICON[e]))
+      t.replaceWith(...span.childNodes) }
+  })
+}
 function a11yEnhance(root) {
+  iconize(root)
   root.querySelectorAll('table.mcard').forEach(t => { const hs = [...t.querySelectorAll('thead th')].map(h => h.textContent.trim()); t.querySelectorAll('tbody tr').forEach(tr => [...tr.children].forEach((td, i) => { if (!td.hasAttribute('data-label') && td.colSpan === 1) td.setAttribute('data-label', hs[i] || '') })) })
   root.querySelectorAll('tr.clickable:not([tabindex])').forEach(tr => { tr.tabIndex = 0; tr.setAttribute('role', 'button') })
   root.querySelectorAll('button[title]:not([aria-label])').forEach(b => b.setAttribute('aria-label', b.title))
@@ -330,7 +361,7 @@ async function boot() {
   $('#meName').textContent = ME.name; $('#meRole').textContent = ME.roleFa
   await loadMeta()
   if (!isAdmin()) $('#nav').querySelector('[data-view="settings"]').classList.add('hidden')
-  setupQuickFab()
+  setupQuickFab(); iconize(document.querySelector('#shell')); iconize(document.querySelector('#fabWrap') || document.body)
   routeFromHash() || render()
 }
 // دکمهٔ دسترسی سریعِ شناور (فقط مدیر): فاکتور، پرداخت هزینه، دریافت گروهی/تکی
@@ -404,7 +435,7 @@ async function payExpensePicker() {
       ${rows.map(i => `<tr><td class="num">${faDigit(i.id)}</td><td><b>${esc(i.title)}</b><br><span class="hint">${esc(i.categoryName)} · ${faDigit(i.j_date)}</span></td>
         <td class="hint">${esc(i.fundName)}</td><td class="num amt-out">${money(i.fundUnpaid)}</td>
         <td><button class="btn tiny primary" data-pay="${i.id}">پرداخت</button></td></tr>`).join('')}
-      </tbody></table></div></div>` : '<div class="empty">هیچ هزینهٔ پرداخت‌نشده‌ای از صندوق نیست 🎉</div>',
+      </tbody></table></div></div>` : '<div class="empty">هیچ هزینهٔ پرداخت‌نشده‌ای از صندوق نیست</div>',
     `<button class="btn" id="pxCancel">بستن</button>`)
   $('#pxCancel').onclick = closeModal
   body.querySelectorAll('[data-pay]').forEach(b => b.onclick = async () => {
@@ -979,7 +1010,7 @@ const showInvoice = guard(async id => {
           <td class="num">${faDigit(ep.j_date)}</td><td class="num amt-out">${money(ep.amount)}</td>
           ${adminOnly(`<td><button class="del" data-delep="${ep.id}">🗑</button></td>`)}</tr>`).join('')}
         </tbody></table></div>` : '<p class="hint" style="margin:6px 0 0">هنوز از هیچ صندوقی پرداخت نشده است.</p>'}` : ''}`,
-    `${adminOnly(`<button class="btn" id="invEdit">✏️ ویرایش</button>`)}${(isAdmin() && i.payable && i.fundUnpaid > 0) ? `<button class="btn primary" id="invPay">💸 پرداخت از صندوق</button>` : ''}<a class="btn" href="/api/export/invoice?id=${i.id}">⬇️ CSV</a><button class="btn" id="invClose">بستن</button>`)
+    `${adminOnly(`<button class="btn" id="invEdit">✏️ ویرایش</button>`)}${(isAdmin() && i.payable && i.fundUnpaid > 0) ? `<button class="btn primary" id="invPay">💸 پرداخت از صندوق</button>` : ''}<a class="btn" href="/api/export/invoice?id=${i.id}">⬇️ اکسل</a><button class="btn" id="invClose">بستن</button>`)
   $('#invClose').onclick = closeModal
   if ($('#invEdit')) $('#invEdit').onclick = () => { closeModal(); invoiceForm(i) }
   if ($('#invPay')) $('#invPay').onclick = () => payExpenseForm(i, d.funds)
@@ -1015,7 +1046,7 @@ VIEWS.payments = async () => {
   const rows = await api('/api/payments')
   const total = rows.reduce((s, p) => s + p.amount, 0)
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
-    adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
+    adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ اکسل</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx mcard">
       <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr class="clickable" data-voucher="payment:${p.id}">
@@ -1254,7 +1285,7 @@ function paymentForm(presetUnit, pay, after, presetProject, creditMode) {
 VIEWS.units = async () => {
   const units = META.units
   $('#view').innerHTML = head('واحدها', `${faDigit(units.filter(u => u.active).length)} واحد فعال${META.totalUnits ? ' از ' + faDigit(META.totalUnits) : ''} · ${faDigit(units.filter(u => u.active && !u.occupied).length)} واحد خالی`,
-    adminOnly(`<button class="btn primary" id="newUnit">＋ افزودن واحد</button>`) + `<a class="btn" href="/api/export/units">⬇️ CSV</a>`) +
+    adminOnly(`<button class="btn primary" id="newUnit">＋ افزودن واحد</button>`) + `<a class="btn" href="/api/export/units">⬇️ اکسل</a>`) +
     (units.length ? `<div class="pgrid">${units.map(u => `
       <button class="pcard" data-unit="${u.id}">
         <div class="pctop"><span class="pn">واحد ${escFa(u.number)}</span>
@@ -1355,7 +1386,7 @@ const showUnitCard = guard(async id => {
     `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
     head(`کارت واحد ${faDigit(u.number)}`, `${u.resident_name || 'بدون ساکن'} · ${faDigit(u.area || 0)} متر · ${faDigit(u.occupants || 0)} نفر${u.occupied ? '' : ' · خالی'}`,
       adminOnly(`<button class="btn" id="ucEdit">✏️ ویرایش واحد</button>${d.payments.some(p => p.leftover > 0) && d.shares.some(x => x.remaining > 0) ? '<button class="btn" id="ucCredit">استفاده از پیش‌پرداخت</button>' : ''}<button class="btn primary" id="ucPay">＋ ثبت دریافتی</button>`) +
-      `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><button class="btn" id="ucPdf">📄 PDF</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ CSV</a>`) +
+      `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><button class="btn" id="ucPdf">📄 PDF</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ اکسل</a>`) +
     `<div class="kpis printhide">
       ${kpi(d.debt >= 0 ? 'بدهی کل' : TERMS.credit, money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
       ${kpi('جمع سهم‌ها', money(d.totalShares))}
@@ -1754,7 +1785,7 @@ REPORTS.manager = async () => {
   if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
   const r = await api(`/api/report/manager?from=${repRange.from}&to=${repRange.to}`)
   $('#repBody').innerHTML = `
-    ${rangePickerHtml(periods, `<a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ CSV</a>
+    ${rangePickerHtml(periods, `<a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ اکسل</a>
       <button class="btn small" onclick="printAs('گزارش عملکرد مدیر مالی')">🖨 چاپ</button>
       <button class="btn small" id="repSummary">📄 خلاصه‌ی هیئت‌مدیره${IS_DESKTOP ? ' (PDF)' : ''}</button>
       <label class="chkline"><input type="checkbox" id="repNames"> نمایش نام بدهکاران</label>`)}
@@ -1813,14 +1844,14 @@ function boardWaText(c) {
   if (!r) return `سلام ${c.name || ''}`
   const net = r.cash.net
   const fundTotal = r.fundFlow.reduce((s, f) => s + f.close, 0)
-  return `📊 خلاصه‌ی مالی ${b}\n`
+  return `خلاصه‌ی مالی ${b}\n`
     + `دوره: ${repRange.label}\n`
     + `— درآمد (پول واردشده): ${moneyU(r.cash.income)}\n`
     + `— هزینه (پول پرداخت‌شده): ${moneyU(r.cash.expense)}\n`
     + `— خالص دوره: ${signed(net)} ${curFa()}\n`
     + `— موجودی صندوق‌ها: ${moneyU(fundTotal)}\n`
     + `— طلب مدیر از صندوق: ${moneyU(r.managerDebt)}\n`
-    + `گزارش کامل به‌صورت فایل PDF پیوست می‌شود. 🙏`
+    + `گزارش کامل به‌صورت فایل PDF پیوست می‌شود.`
 }
 function boardWa(c) {
   window.open(`https://wa.me/${waPhone(c.phone)}?text=${encodeURIComponent(boardWaText(c))}`, '_blank', 'noopener')
@@ -2174,7 +2205,7 @@ REPORTS.invoices = async () => {
         <label class="f" style="max-width:150px">از تاریخ<input class="inp" id="invFrom" placeholder="۱۴۰۵/۰۱/۰۱" value="${from ? faDigit(from) : ''}"></label>
         <label class="f" style="max-width:150px">تا تاریخ<input class="inp" id="invTo" placeholder="۱۴۰۵/۱۲/۲۹" value="${to ? faDigit(to) : ''}"></label>
         <label class="check" style="margin:0 6px"><input type="checkbox" id="invDetail" ${detail ? 'checked' : ''}> نمایش ریز بدهیِ واحدها</label>
-        <a class="btn small" href="/api/export/invoices">⬇️ CSV</a>
+        <a class="btn small" href="/api/export/invoices">⬇️ اکسل</a>
         <button class="btn small" id="invPrint">🖨 چاپ / PDF (با فیلترها)</button></div>
       <p class="hint">تاریخ گزارش‌گیری: <b>${faDigit(jStamp())}</b>${(from || to) ? ' · بازه: <b>' + (from ? faDigit(from) : '…') + ' تا ' + (to ? faDigit(to) : '…') + '</b>' : ''}${fundId ? ' · صندوق: <b>' + esc((META.funds.find(f => f.id === fundId) || {}).name || '') + '</b>' : ''}${st ? ' · وضعیت: <b>' + (st === 'settled' ? 'تسویه‌شده' : 'تسویه‌نشده') + '</b>' : ''}</p>
       <div class="kpis">
@@ -2920,7 +2951,7 @@ async function renderUpdateBox() {
     const L = await fetchLatestRelease()
     if (cmpVer(L.tag, APP_VER) > 0) {
       box.innerHTML = `<div class="helpcard" style="border-color:#16a34a;background:#f0fdf4">
-        <h3>🎉 نسخه‌ی جدید ${escFa(L.tag)} منتشر شده است</h3>
+        <h3> نسخه‌ی جدید ${escFa(L.tag)} منتشر شده است</h3>
         <p>نسخه‌ی فعلی شما ${escFa(APP_VER)} است. فایل مربوط به سیستم خودتان را دانلود کنید و روی نسخه‌ی قبلی نصب کنید — <b>داده‌ها و اسناد شما پاک نمی‌شود</b> (در پوشه‌ی جدا نگهداری می‌شوند).</p>
         <p class="hint">🖥 مک: فایل با پسوند <b>dmg</b> · 🪟 ویندوز: فایل با پسوند <b>exe</b></p>
         ${assetLinksHtml(L)}

@@ -2858,7 +2858,7 @@ function printMeetingHtml(id) {
   const inner = `
     <h1>${hEsc(bn)}</h1>
     <div class="sub">صورت‌جلسه رسمی · ${hEsc(m.title)} · تاریخ: ${m.j_date ? faNum(m.j_date) : '—'}</div>
-    ${m.attendees ? `<div class="big" style="font-size:13px">👥 حاضرین: ${hEsc(m.attendees)}</div>` : ''}
+    ${m.attendees ? `<div class="big" style="font-size:13px">حاضرین: ${hEsc(m.attendees)}</div>` : ''}
     ${m.summary ? `<div class="sech">خلاصه‌ی جلسه</div><div style="font-size:13px;line-height:1.9">${hEsc(m.summary).replace(/\n/g, '<br>')}</div>` : ''}
     <div class="sech">مصوبات و پیشنهادات</div>
     <table><thead><tr><th>نوع</th><th>شرح</th><th>وضعیت</th></tr></thead><tbody>
