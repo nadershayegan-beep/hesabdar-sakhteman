@@ -219,6 +219,29 @@ function migrate() {
     g_date TEXT NOT NULL, j_date TEXT NOT NULL, note TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`)
   addCol('contractor_invoices', 'fund_id', 'INTEGER DEFAULT 0')
   addCol('fund_txns', 'ref_cpay_id', 'INTEGER')            // پیوندِ تراکنشِ صندوق به ردیفِ پرداختِ پیمانکار
+  // ---- قفلِ دوره: هر ثبت/ویرایش/حذفِ سندِ مالی با تاریخِ قبل از lockDateG در خودِ پایگاه‌داده رد می‌شود ----
+  db.exec(`CREATE TABLE IF NOT EXISTS period_closes (id INTEGER PRIMARY KEY AUTOINCREMENT, g_date TEXT NOT NULL, j_date TEXT NOT NULL, snapshot TEXT, created_by INTEGER, created_at TEXT NOT NULL, reopened_at TEXT DEFAULT '', reopen_reason TEXT DEFAULT '', reopened_by INTEGER)`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_invoices_ins; CREATE TRIGGER lock_invoices_ins BEFORE INSERT ON invoices WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_invoices_del; CREATE TRIGGER lock_invoices_del BEFORE DELETE ON invoices WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_invoices_upd; CREATE TRIGGER lock_invoices_upd BEFORE UPDATE OF amount, g_date, category_id, fund_id, method, from_fund, paid_by_manager, is_charge ON invoices WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_payments_ins; CREATE TRIGGER lock_payments_ins BEFORE INSERT ON payments WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_payments_del; CREATE TRIGGER lock_payments_del BEFORE DELETE ON payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_payments_upd; CREATE TRIGGER lock_payments_upd BEFORE UPDATE OF amount, g_date, unit_id, fund_id ON payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_fund_txns_ins; CREATE TRIGGER lock_fund_txns_ins BEFORE INSERT ON fund_txns WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_fund_txns_del; CREATE TRIGGER lock_fund_txns_del BEFORE DELETE ON fund_txns WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_fund_txns_upd; CREATE TRIGGER lock_fund_txns_upd BEFORE UPDATE OF amount, g_date, fund_id, type ON fund_txns WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_expense_payments_ins; CREATE TRIGGER lock_expense_payments_ins BEFORE INSERT ON expense_payments WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_expense_payments_del; CREATE TRIGGER lock_expense_payments_del BEFORE DELETE ON expense_payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_expense_payments_upd; CREATE TRIGGER lock_expense_payments_upd BEFORE UPDATE OF amount, g_date, fund_id, invoice_id ON expense_payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_payments_ins; CREATE TRIGGER lock_contractor_payments_ins BEFORE INSERT ON contractor_payments WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_payments_del; CREATE TRIGGER lock_contractor_payments_del BEFORE DELETE ON contractor_payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_payments_upd; CREATE TRIGGER lock_contractor_payments_upd BEFORE UPDATE OF amount, g_date, fund_id ON contractor_payments WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_invoices_ins; CREATE TRIGGER lock_contractor_invoices_ins BEFORE INSERT ON contractor_invoices WHEN NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_invoices_del; CREATE TRIGGER lock_contractor_invoices_del BEFORE DELETE ON contractor_invoices WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_contractor_invoices_upd; CREATE TRIGGER lock_contractor_invoices_upd BEFORE UPDATE OF amount, g_date, kind, fund_id ON contractor_invoices WHEN OLD.g_date <= (SELECT value FROM settings WHERE key='lockDateG') OR NEW.g_date <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_shares_ins; CREATE TRIGGER lock_shares_ins BEFORE INSERT ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=NEW.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_shares_del; CREATE TRIGGER lock_shares_del BEFORE DELETE ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=OLD.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`DROP TRIGGER IF EXISTS lock_shares_upd; CREATE TRIGGER lock_shares_upd BEFORE UPDATE OF share_amount, unit_id ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=OLD.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -1691,8 +1714,10 @@ function incomeStatement(from, to) {
     LEFT JOIN contractor_invoices ci ON ci.id=t.ref_cinvoice_id LEFT JOIN projects pr ON pr.id=ci.project_id
     WHERE t.g_date>=? AND t.g_date<=? ORDER BY t.g_date, t.id`).all(from, to)
   const periods = []
-  { const first = txns.length ? txns[0].g_date : todayG(), lastG = to > todayG() ? todayG() : to
-    let p = periodOf(toJalaali(...(from < first ? first : from).split('-').map(Number))), last = periodOf(toJalaali(...(lastG < from ? from : lastG).split('-').map(Number))), n = 0
+  { // بازهٔ کوتاه (تا ۱۳ ماه، مثل سال مالی): همهٔ ماه‌ها؛ بازهٔ بلند (مثل «از ابتدا»): از اولین گردش تا امروز
+    const short = (Date.parse(to) - Date.parse(from)) < 400 * 86400000
+    const first = txns.length ? txns[0].g_date : todayG(), lastG = short ? to : (to > todayG() ? todayG() : to)
+    let p = periodOf(toJalaali(...(short || from >= first ? from : first).split('-').map(Number))), last = periodOf(toJalaali(...(lastG < from ? from : lastG).split('-').map(Number))), n = 0
     while (n++ < 240) { periods.push(p); if (p === last) break; p = shiftPeriod(p, 1) } }
   const lines = {}   // key → { side, group, label, total, byMonth{} }
   const add = (side, group, label, amount, period) => {
@@ -1739,6 +1764,51 @@ function incomeStatement(from, to) {
     openCash, closeCash, check: openCash + income - expense + nonOp.transferIn - nonOp.transferOut + nonOp.adjustIn - nonOp.adjustOut - closeCash,
     managerDebt: managerDebt(), buildingName: getSetting('buildingName')
   }
+}
+// ---------- بستن دوره ----------
+const lockDateG = () => getSetting('lockDateG', '') || ''
+const MSG_LOCK = () => { const g = lockDateG(); return g ? `دورهٔ مالی تا ${faNum(gToJStr(g))} بسته است؛ سندِ این تاریخ یا قبل از آن را نمی‌شود ثبت، ویرایش یا حذف کرد. برای اصلاح، از تنظیمات ← بستن دوره آن را باز کنید.` : 'دوره بسته است' }
+// عکسِ مانده‌ها در تاریخِ بستن: موجودیِ هر صندوق و بدهیِ هر واحد
+function balancesAsOf(g) {
+  const funds = listFunds().map(f => ({ id: f.id, name: f.name, balance: (f.opening_balance || 0) + db.prepare(`SELECT COALESCE(SUM(CASE WHEN type IN ${FUND_IN} THEN amount ELSE -amount END),0) s FROM fund_txns WHERE fund_id=? AND g_date<=?`).get(f.id, g).s }))
+  const units = listUnits().map(u => ({ id: u.id, number: u.number, name: u.resident_name || '',
+    debt: db.prepare(`SELECT COALESCE(SUM(s.share_amount),0) s FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=? AND i.g_date<=?`).get(u.id, g).s
+      - db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE unit_id=? AND g_date<=?`).get(u.id, g).s })).filter(u => u.debt !== 0)
+  return { funds, units, fundTotal: funds.reduce((a, f) => a + f.balance, 0), unitDebt: units.reduce((a, u) => a + Math.max(0, u.debt), 0), managerDebt: managerDebt() }
+}
+function closePeriod(d, by) {
+  const cur = lockDateG()
+  if (d.g_date > todayG()) throw new Error('تاریخِ بستن نمی‌تواند در آینده باشد')
+  if (cur && d.g_date <= cur) throw new Error(`دوره قبلاً تا ${faNum(gToJStr(cur))} بسته شده؛ تاریخِ بعد از آن را انتخاب کنید`)
+  const snap = balancesAsOf(d.g_date)
+  db.prepare(`INSERT INTO period_closes(g_date,j_date,snapshot,created_by,created_at) VALUES(?,?,?,?,?)`).run(d.g_date, d.j_date, JSON.stringify(snap), by || null, nowISO())
+  setSetting('lockDateG', d.g_date)
+  return snap
+}
+function reopenPeriod(reason, by) {
+  if (!String(reason || '').trim()) throw new Error('علتِ بازکردنِ دوره را بنویسید')
+  const last = db.prepare(`SELECT * FROM period_closes WHERE reopened_at='' ORDER BY g_date DESC, id DESC LIMIT 1`).get()
+  if (!last) throw new Error('دورهٔ بسته‌ای وجود ندارد')
+  db.prepare(`UPDATE period_closes SET reopened_at=?, reopen_reason=?, reopened_by=? WHERE id=?`).run(nowISO(), String(reason).trim(), by || null, last.id)
+  const prev = db.prepare(`SELECT g_date FROM period_closes WHERE reopened_at='' ORDER BY g_date DESC, id DESC LIMIT 1`).get()
+  setSetting('lockDateG', prev ? prev.g_date : '')
+  return { reopened: last.j_date, lock: prev ? prev.g_date : '' }
+}
+// ---------- سال مالی ----------
+const fiscalStartMonth = () => Math.min(12, Math.max(1, +getSetting('fiscalStartMonth', '1') || 1))
+function fiscalYears() {
+  const m = fiscalStartMonth(), t = todayJ()
+  const first = db.prepare(`SELECT MIN(g_date) g FROM (SELECT g_date FROM fund_txns UNION ALL SELECT g_date FROM invoices WHERE is_opening=0 UNION ALL SELECT g_date FROM payments WHERE is_opening=0)`).get().g
+  const fj = first ? toJalaali(...first.split('-').map(Number)) : t
+  const yOf = j => (j.jm >= m ? j.jy : j.jy - 1)
+  const out = []
+  for (let y = yOf(t); y >= yOf(fj) && out.length < 30; y--) {
+    const from = gDateStr(y, m, 1)
+    const endP = shiftPeriod(`${y}/${String(m).padStart(2, '0')}`, 11)
+    const to = periodLastG(endP)
+    out.push({ y, label: 'سال مالی ' + faNum(m === 1 ? y : y + '-' + (y + 1)), from, to })
+  }
+  return out
 }
 // کنترلِ سلامتِ دفاتر: چند آزمونِ واقعی که اگر یکی خطا بدهد، جایی از دفاتر به هم ریخته است
 function ledgerHealth() {
@@ -3631,6 +3701,11 @@ async function handle(req, res) {
     if (path === '/api/report/manager' && M === 'GET') return sendJSON(res, 200, managerReport(Q.from, Q.to))
     if (path === '/api/report/balance' && M === 'GET') return sendJSON(res, 200, balanceCheck())
     if (path === '/api/report/fundpay' && M === 'GET') return sendJSON(res, 200, fundPaymentsReport(Q.from, Q.to))
+    if (path === '/api/report/fiscal-years' && M === 'GET') return sendJSON(res, 200, { startMonth: fiscalStartMonth(), years: fiscalYears() })
+    if (path === '/api/period/closes' && M === 'GET')
+      return sendJSON(res, 200, { lockDateG: lockDateG(), lockDateJ: lockDateG() ? gToJStr(lockDateG()) : '', closes: db.prepare(`SELECT pc.*, u.display_name by_name, r.display_name reopen_name FROM period_closes pc LEFT JOIN users u ON u.id=pc.created_by LEFT JOIN users r ON r.id=pc.reopened_by ORDER BY pc.id DESC`).all().map(c => ({ ...c, snapshot: JSON.parse(c.snapshot || '{}') })) })
+    if (path === '/api/period/close' && M === 'POST') { const b = await jbody(req); return sendJSON(res, 200, { ok: true, snapshot: closePeriod(jDates(b), user.id) }) }
+    if (path === '/api/period/reopen' && M === 'POST') { const b = await jbody(req); return sendJSON(res, 200, { ok: true, ...reopenPeriod(b.reason, user.id) }) }
     if (path === '/api/report/periods' && M === 'GET') {
       const out = []; let p = curPeriod()
       for (let i = 0; i < 24; i++) { out.push({ period: p, fa: periodFa(p), from: periodFirstG(p), to: periodFirstG(shiftPeriod(p, 1)) }); p = shiftPeriod(p, -1) }
@@ -3741,7 +3816,7 @@ async function handle(req, res) {
     if (path === '/api/settings' && M === 'GET')
       return sendJSON(res, 200, {
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
-        totalUnits: +getSetting('totalUnits', '0') || 0, ...payInfo(),
+        totalUnits: +getSetting('totalUnits', '0') || 0, ...payInfo(), fiscalStartMonth: fiscalStartMonth(), lockDateJ: lockDateG() ? gToJStr(lockDateG()) : '',
         lateFeePercent: +getSetting('lateFeePercent', '0') || 0, lateFeeGraceDays: +getSetting('lateFeeGraceDays', '30') || 30,
         ...(isAdmin ? { lanAccess: getSetting('lanAccess', '1') === '1', backupPath: getSetting('backupPath'), defaultBackupDir: DEFAULT_BK_DIR, autoBackup: getSetting('autoBackup') === '1', lastBackupAt: getSetting('lastBackupAt', '') } : {})
       })
@@ -3750,6 +3825,7 @@ async function handle(req, res) {
       if (b.buildingName != null) setSetting('buildingName', b.buildingName.trim())
       if (b.displayUnit != null) setSetting('displayUnit', b.displayUnit === 'rial' ? 'rial' : 'toman')
       if (b.totalUnits != null) setSetting('totalUnits', Math.max(0, Math.round(+b.totalUnits) || 0))
+      if (b.fiscalStartMonth != null) setSetting('fiscalStartMonth', Math.min(12, Math.max(1, Math.round(+b.fiscalStartMonth) || 1)))
       if (b.payCard != null) setSetting('payCard', String(b.payCard).replace(/[^\d۰-۹-]/g, '').trim())
       if (b.payIban != null) setSetting('payIban', String(b.payIban).replace(/\s/g, '').toUpperCase())
       if (b.payHolder != null) setSetting('payHolder', String(b.payHolder).trim())
@@ -3883,7 +3959,9 @@ async function handle(req, res) {
     }
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('صفحه یافت نشد')
   } catch (err) {
-    console.error('خطا:', err); if (!res.headersSent) sendJSON(res, 500, { error: err.message || 'خطای سرور' })
+    const locked = /دورهٔ مالی تا این تاریخ بسته است/.test(err.message || '')
+    if (!locked) console.error('خطا:', err)
+    if (!res.headersSent) sendJSON(res, locked ? 400 : 500, { error: locked ? `${MSG_LOCK()}` : (err.message || 'خطای سرور') })
   }
 }
 

@@ -1615,23 +1615,27 @@ function wireRangePicker() {
 }
 // صورتِ درآمد و هزینه (نقدی، ماه‌به‌ماه)
 REPORTS.income = async () => {
-  const periods = await api('/api/report/periods')
+  const periods = await api('/api/report/periods'), fy = await api('/api/report/fiscal-years')
   if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
   const r = await api(`/api/report/income?from=${repRange.from}&to=${repRange.to}`)
+  const yi = fy.years.findIndex(y => y.from === repRange.from && y.to === repRange.to), prevY = yi >= 0 ? fy.years[yi + 1] : null
+  const pr = prevY ? await api(`/api/report/income?from=${prevY.from}&to=${prevY.to}`) : null
+  const prevOf = l => pr ? ((pr.lines.find(x => x.side === l.side && x.group === l.group && x.label === l.label) || {}).total || 0) : 0
   const months = r.periods.filter(p => p.income || p.expense)
-  const showM = months.length > 1 && months.length <= 12
+  const showM = (months.length > 1 && months.length <= 12) || yi >= 0
+  if (yi >= 0) months.splice(0, months.length, ...r.periods)
   const cols = showM ? months : []
   const block = side => {
     const ls = r.lines.filter(l => l.side === side)
     const groups = [...new Set(ls.map(l => l.group))]
     const tot = side === 'in' ? r.income : r.expense
-    return `<tr class="grp"><td colspan="${cols.length + 2}"><b>${side === 'in' ? 'درآمدها (پول واردشده)' : 'هزینه‌ها (پول پرداخت‌شده)'}</b></td></tr>
+    return `<tr class="grp"><td colspan="${cols.length + 2 + (pr ? 1 : 0)}"><b>${side === 'in' ? 'درآمدها (پول واردشده)' : 'هزینه‌ها (پول پرداخت‌شده)'}</b></td></tr>
       ${ls.length ? groups.map(g => `<tr class="sub"><td colspan="${cols.length + 2}">${esc(g)}</td></tr>` + ls.filter(l => l.group === g).map(l =>
-        `<tr><td style="padding-inline-start:22px">${esc(l.label)}</td>${cols.map(p => `<td class="num">${l.byMonth[p.key] ? money(l.byMonth[p.key]) : '—'}</td>`).join('')}<td class="num">${money(l.total)}</td></tr>`).join('')).join('')
+        `<tr><td style="padding-inline-start:22px">${esc(l.label)}</td>${cols.map(p => `<td class="num">${l.byMonth[p.key] ? money(l.byMonth[p.key]) : '—'}</td>`).join('')}<td class="num">${money(l.total)}</td>${pr ? `<td class="num dim">${money(prevOf(l))}</td>` : ''}</tr>`).join('')).join('')
         : `<tr><td colspan="${cols.length + 2}" class="dim">موردی نبوده</td></tr>`}
-      <tr class="tot"><td>جمع ${side === 'in' ? 'درآمدها' : 'هزینه‌ها'}</td>${cols.map(p => `<td class="num">${money(side === 'in' ? p.income : p.expense)}</td>`).join('')}<td class="num">${money(tot)}</td></tr>`
+      <tr class="tot"><td>جمع ${side === 'in' ? 'درآمدها' : 'هزینه‌ها'}</td>${cols.map(p => `<td class="num">${money(side === 'in' ? p.income : p.expense)}</td>`).join('')}<td class="num">${money(tot)}</td>${pr ? `<td class="num">${money(side === 'in' ? pr.income : pr.expense)}</td>` : ''}</tr>`
   }
-  $('#repBody').innerHTML = rangePickerHtml(periods, `<button class="btn small" onclick="printAs('صورت درآمد و هزینه')">🖨 چاپ</button>`) + `
+  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 4).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printAs('صورت درآمد و هزینه')">🖨 چاپ</button>`) + `
     <div class="panel"><h3 style="margin-bottom:4px">${esc(r.buildingName)} — صورت درآمد و هزینه</h3>
       <p class="sub">دوره: ${escFa(repRange.label)} · مبنا: ${esc(r.basis)}</p></div>
     <div class="kpis">
@@ -1641,9 +1645,9 @@ REPORTS.income = async () => {
       ${kpi('موجودی صندوق‌ها', money(r.closeCash), 'اول دوره: ' + money(r.openCash))}
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>شرح</th>${cols.map(p => `<th>${escFa(p.fa)}</th>`).join('')}<th>جمع دوره</th></tr></thead><tbody>
+      <thead><tr><th>شرح</th>${cols.map(p => `<th>${escFa(p.fa)}</th>`).join('')}<th>جمع دوره</th>${pr ? `<th>${escFa(prevY.label)}</th>` : ''}</tr></thead><tbody>
       ${block('in')}${block('out')}
-      <tr class="tot"><td>خالص (درآمد منهای هزینه)</td>${cols.map(p => `<td class="num ${p.net < 0 ? 'amt-out' : ''}">${signed(p.net)}</td>`).join('')}<td class="num ${r.net < 0 ? 'amt-out' : ''}"><b>${signed(r.net)}</b></td></tr>
+      <tr class="tot"><td>خالص (درآمد منهای هزینه)</td>${cols.map(p => `<td class="num ${p.net < 0 ? 'amt-out' : ''}">${signed(p.net)}</td>`).join('')}<td class="num ${r.net < 0 ? 'amt-out' : ''}"><b>${signed(r.net)}</b></td>${pr ? `<td class="num">${signed(pr.net)}</td>` : ''}</tr>
       </tbody></table></div></div>
     <div class="panel"><div class="phead"><b>تطبیق با موجودی صندوق‌ها</b></div><div class="tablewrap"><table class="tx"><tbody>
       <tr><td>موجودی اول دوره</td><td class="num">${money(r.openCash)}</td></tr>
@@ -1656,6 +1660,7 @@ REPORTS.income = async () => {
       ${r.managerDebt > 0 ? ` · مدیر ${money(r.managerDebt)} از جیب خودش هزینه کرده که هنوز از صندوق پس نگرفته؛ این مبلغ وقتی تسویه شود در «تسویه با مدیر» می‌آید.` : ''}</p></div>
     <p class="hint">شارژ صادرشده یا فاکتور ثبت‌شده تا وقتی پولش جابه‌جا نشده اینجا نمی‌آید؛ تعهدها را در «بدهی تفکیکی واحدها» و «فاکتورها» ببینید.</p>`
   wireCommon(); wireToday($('#repBody')); wireRangePicker()
+  document.querySelectorAll('[data-fy]').forEach(b => b.onclick = () => { const [from, to, label] = b.dataset.fy.split('|'); repRange = { from, to, label }; render() })
 }
 REPORTS.manager = async () => {
   const periods = await api('/api/report/periods')
@@ -2279,7 +2284,7 @@ let setTab = 'general'
 VIEWS.settings = async () => {
   if (!isAdmin()) { $('#view').innerHTML = head('تنظیمات', '') + '<div class="panel"><div class="empty">شما دسترسی فقط-مشاهده دارید</div></div>'; return }
   const tabs = [['general', 'عمومی'], ['charge', 'شارژ ماهانه'], ['recurring', 'هزینه‌های دوره‌ای'], ['categories', 'دسته‌های هزینه'], ['funds', 'صندوق‌ها'],
-  ['openings', 'مانده اولیه'], ['handover', 'تحویل مدیریت'], ['users', 'کاربران'], ['backup', 'پشتیبان و آپدیت']]
+  ['openings', 'مانده اولیه'], ['close', 'بستن دوره'], ['handover', 'تحویل مدیریت'], ['users', 'کاربران'], ['backup', 'پشتیبان و آپدیت']]
   $('#view').innerHTML = head('تنظیمات', 'همه‌ی مقادیر قابل سفارشی‌سازی است') +
     `<div class="filters"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${setTab === v ? 'on' : ''}" data-set="${v}">${t}</button>`).join('')}</div></div>
      <div id="setBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -2287,6 +2292,34 @@ VIEWS.settings = async () => {
   await SETTINGS[setTab]()
 }
 const SETTINGS = {}
+SETTINGS.close = async () => {
+  const d = await api('/api/period/closes'), st = await api('/api/settings')
+  const MN = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند']
+  $('#setBody').innerHTML = `
+    <div class="panel"><div class="phead"><b>بستن دوره</b><span class="hint strong">${d.lockDateJ ? 'بسته تا ' + faDigit(d.lockDateJ) : 'هیچ دوره‌ای بسته نشده'}</span></div>
+      <p class="sub">بعد از بستن، هیچ سندی با تاریخِ آن روز یا قبل از آن ثبت، ویرایش یا حذف نمی‌شود؛ پس گزارشی که برای هیئت‌مدیره چاپ شده، فردا هم همان عدد را نشان می‌دهد. مانده‌های همان روز هم ذخیره می‌شود.</p>
+      <div class="form" style="max-width:520px">
+        <label class="f">بستن تا تاریخ (معمولاً آخرین روزِ ماه) ${dateBoxHtml('pcd')}</label>
+        <div class="fbtns"><button class="btn primary" id="pcGo">بستن دوره</button>${d.lockDateJ ? '<button class="btn" id="pcOpen">بازکردنِ آخرین دوره</button>' : ''}</div></div></div>
+    <div class="panel"><div class="phead"><b>سال مالی</b></div><div class="form" style="max-width:520px">
+      <label class="f">شروع سال مالی<select class="inp" id="fyStart">${MN.map((m, i) => `<option value="${i + 1}" ${st.fiscalStartMonth === i + 1 ? 'selected' : ''}>${m}</option>`).join('')}</select>
+        <span class="hint">گزارش سالانه (درآمد و هزینه ۱۲ ماهه و مقایسه با سال قبل) بر اساس همین ماه ساخته می‌شود.</span></label>
+      <div class="fbtns"><button class="btn" id="fySave">ذخیره</button></div></div></div>
+    <div class="panel"><div class="phead"><b>سابقهٔ بستن دوره</b></div><div class="tablewrap"><table class="tx">
+      <thead><tr><th>تا تاریخ</th><th>موجودی صندوق‌ها</th><th>بدهی ساکنین</th><th>بست</th><th>وضعیت</th></tr></thead><tbody>
+      ${d.closes.length ? d.closes.map(c => `<tr><td class="num"><b>${faDigit(c.j_date)}</b></td><td class="num">${money(c.snapshot.fundTotal || 0)}</td><td class="num">${money(c.snapshot.unitDebt || 0)}</td>
+        <td>${esc(c.by_name || '—')}</td><td>${c.reopened_at ? `<span class="badge b-open">بازشده</span> <span class="hint">${esc(c.reopen_reason)}${c.reopen_name ? ' — ' + esc(c.reopen_name) : ''}</span>` : '<span class="badge b-settled">بسته</span>'}</td></tr>`).join('') : emptyRow(5, 'هنوز دوره‌ای بسته نشده')}
+      </tbody></table></div></div>`
+  wireToday($('#setBody'))
+  $('#pcGo').onclick = guard(async () => {
+    const t = readDate('pcd'); if (!t.jy || !t.jm || !t.jd) throw new Error('تاریخ را کامل وارد کنید')
+    confirmBox(`دوره تا ${faDigit(t.jy)}/${faDigit(t.jm)}/${faDigit(t.jd)} بسته شود؟ بعد از آن، سندهای این بازه قابل تغییر نیستند (مگر با بازکردن و ثبت علت).`,
+      async () => { await post('/api/period/close', t); toast('دوره بسته شد'); render() }, 'بستن دوره')
+  })
+  if ($('#pcOpen')) $('#pcOpen').onclick = () => confirmReason('آخرین دورهٔ بسته باز شود؟ این کار با نام شما و علتش ثبت می‌شود.',
+    async r => { await post('/api/period/reopen', { reason: r }); toast('دوره باز شد'); render() })
+  $('#fySave').onclick = guard(async () => { await post('/api/settings', { fiscalStartMonth: +$('#fyStart').value }); toast('ذخیره شد') })
+}
 SETTINGS.general = async () => {
   const s = await api('/api/settings')
   $('#setBody').innerHTML = `<div class="panel"><div class="form" style="max-width:520px">
