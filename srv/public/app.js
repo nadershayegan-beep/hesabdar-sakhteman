@@ -1668,9 +1668,8 @@ async function renderBoardBook() {
     toast('مخاطب افزوده شد'); renderBoardBook()
   })
   box.querySelectorAll('[data-bcwa]').forEach(b => b.onclick = () => boardWa(LAST_CONTACTS[+b.dataset.bcwa]))
-  box.querySelectorAll('[data-bcdel]').forEach(b => b.onclick = guard(async () => {
-    await api('/api/report-contacts/' + b.dataset.bcdel, { method: 'DELETE' }); toast('حذف شد'); renderBoardBook()
-  }))
+  box.querySelectorAll('[data-bcdel]').forEach(b => b.onclick = () => confirmBox('این مخاطب از دفترچهٔ هیئت‌مدیره حذف شود؟',
+    async () => { await api('/api/report-contacts/' + b.dataset.bcdel, { method: 'DELETE' }); toast('حذف شد'); renderBoardBook() }))
 }
 
 let LAST_DEBTORS = []
@@ -2784,9 +2783,8 @@ VIEWS.events = async () => {
     })
   })
   document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && render()))
-  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = guard(async () => {
-    await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); toast('سند حذف شد'); render()
-  }))
+  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = () => confirmBox('این فایل پیوست برای همیشه پاک شود؟ (اگر لازمش دارید، اول از آن بکاپ بگیرید)',
+    async () => { await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); toast('فایل پیوست حذف شد'); render() }))
 }
 
 const saveMeetingPdf = guard(async m => {
@@ -2961,7 +2959,7 @@ const showProject = guard(async id => {
   document.querySelectorAll('[data-ci-del]').forEach(b => b.onclick = () => confirmReason('این فاکتور پیمانکار حذف شود؟ اثرش روی صندوق برگشت می‌خورد.', async r => { await api('/api/contractor-invoices/' + b.dataset.ciDel + '?reason=' + encodeURIComponent(r), { method: 'DELETE' }); toast('حذف شد'); refresh() }))
   document.querySelectorAll('[data-ci-att]').forEach(b => b.onclick = () => doAttachUpload('cinvoice', +b.dataset.ciAtt).then(ok => ok && refresh()))
   document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && refresh()))
-  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = guard(async () => { await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); refresh() }))
+  document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = () => confirmBox('این فایل پیوست برای همیشه پاک شود؟', async () => { await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); toast('فایل پیوست حذف شد'); refresh() }))
 })
 
 async function projectForm(p = null, after) {
@@ -3153,9 +3151,8 @@ function vendorsManager() {
       toast('افزوده شد'); draw()
     })
     document.querySelectorAll('[data-vn-edit]').forEach(b => b.onclick = () => vendorEditForm(vs.find(x => x.id === +b.dataset.vnEdit), draw))
-    document.querySelectorAll('[data-vn-del]').forEach(b => b.onclick = guard(async () => {
-      await api('/api/vendors/' + b.dataset.vnDel, { method: 'DELETE' }); toast('حذف شد'); draw()
-    }))
+    document.querySelectorAll('[data-vn-del]').forEach(b => b.onclick = () => { const v = vs.find(x => x.id === +b.dataset.vnDel)
+      confirmBox(`پیمانکار «${v ? v.name : ''}» از فهرست حذف شود؟ فاکتورهای ثبت‌شده‌اش سر جایشان می‌مانند.`, async () => { await api('/api/vendors/' + b.dataset.vnDel, { method: 'DELETE' }); toast('حذف شد'); draw() }) })
   })
   draw()
 }
