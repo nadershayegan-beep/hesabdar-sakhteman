@@ -305,6 +305,34 @@ function setupQuickFab() {
     else if (q === 'charge') quickIssueCharge()
   })
 }
+// صدورِ شارژ با پیش‌نمایش: ماه‌ها، مبلغِ هر واحد و جمع؛ بعد از صدور امکانِ «برگرداندن»
+async function chargeIssueFlow(periods) {
+  if (!periods.length) return
+  const pv = await api('/api/charge/preview?periods=' + periods.join(','))
+  const todo = pv.filter(x => !x.exists)
+  if (!todo.length) return toast('شارژِ این ماه‌ها قبلاً صادر شده است', true)
+  const total = todo.reduce((a, x) => a + x.amount, 0)
+  const rows = todo[todo.length - 1].rows
+  const same = todo.every(x => x.amount === todo[0].amount)
+  openModal('پیش‌نمایشِ صدور شارژ', `<div class="form">
+    <div class="tablewrap"><table class="tx"><thead><tr><th>ماه</th><th>تعداد واحد</th><th>جمع شارژ</th></tr></thead><tbody>
+      ${todo.map(x => `<tr><td><b>${escFa(x.fa)}</b></td><td class="num">${faDigit(x.units)}</td><td class="num">${money(x.amount)}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td>جمع (${faDigit(todo.length)} ماه)</td><td></td><td class="num">${money(total)}</td></tr></tfoot></table></div>
+    <details style="margin-top:8px"><summary class="hint">مبلغِ هر واحد${same ? '' : ' (ماهِ آخر)'}</summary>
+      <div class="tablewrap" style="max-height:220px;overflow:auto"><table class="tx"><tbody>${rows.map(r => `<tr><td>واحد ${escFa(r.number)}</td><td>${esc(r.name)}</td><td class="num">${money(r.amount)}</td></tr>`).join('')}</tbody></table></div></details>
+    <p class="hint">برای هر ماه یک سندِ بدهی برای همهٔ واحدهای مشمول ساخته می‌شود. پیش‌پرداختِ واحدها خودکار رویش می‌نشیند.</p></div>`,
+    `<button class="btn primary" id="ciGo">صدور ${faDigit(todo.length)} ماه</button><button class="btn" id="ciNo">انصراف</button>`)
+  $('#ciNo').onclick = closeModal
+  $('#ciGo').onclick = guard(async () => {
+    const r = await post('/api/charge/issue', { periods: todo.map(x => x.period) })
+    openModal('شارژ صادر شد', `<div class="form"><p>شارژِ <b>${faDigit(r.months)} ماه</b> برای <b>${faDigit(r.units)} واحد</b> صادر شد — جمع <b>${moneyU(r.amount)}</b>.</p>
+      <p class="hint">اگر اشتباه بود، همین الان می‌توانید برگردانید (تا وقتی دریافتیِ تازه‌ای رویش ننشسته).</p></div>`,
+      `<button class="btn" id="ciUndo">برگرداندن صدور</button><button class="btn primary" id="ciOk">باشه</button>`)
+    refresh()
+    $('#ciOk').onclick = closeModal
+    $('#ciUndo').onclick = guard(async () => { await post('/api/charge/undo', { ids: r.ids }); closeModal(); toast('صدور شارژ برگردانده شد'); refresh() })
+  })
+}
 // صدور سریعِ شارژ ماهانه از دکمهٔ دسترسی سریع
 async function quickIssueCharge() {
   const p = await api('/api/charge/periods')
@@ -317,8 +345,8 @@ async function quickIssueCharge() {
     : '<div class="empty">شارژِ همهٔ ماه‌ها صادر شده است ✔</div>'}
   </div>`, `<button class="btn" id="qiCancel">بستن</button>`)
   $('#qiCancel').onclick = closeModal
-  body.querySelectorAll('[data-qissue]').forEach(b => b.onclick = guard(async () => { const r = await post('/api/charge/issue', { period: b.dataset.qissue }); toast(r.created === false ? 'این ماه قبلاً صادر شده' : 'شارژ صادر شد'); closeModal(); refresh() }))
-  if ($('#qiAll')) $('#qiAll').onclick = guard(async () => { for (const m of p.missing) await post('/api/charge/issue', { period: m.period }); toast('شارژِ ماه‌های عقب‌افتاده صادر شد'); closeModal(); refresh() })
+  body.querySelectorAll('[data-qissue]').forEach(b => b.onclick = guard(() => chargeIssueFlow([b.dataset.qissue])))
+  if ($('#qiAll')) $('#qiAll').onclick = guard(() => chargeIssueFlow(p.missing.map(m => m.period)))
 }
 // انتخابِ یک فاکتورِ هزینهٔ پرداخت‌نشده از صندوق و رفتن به فرم پرداخت
 async function payExpensePicker() {
@@ -551,10 +579,7 @@ VIEWS.dashboard = async () => {
   document.querySelectorAll('#view [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
   if ($('#dJournal')) $('#dJournal').onclick = () => { VIEW = 'reports'; repTab = 'journal'; $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === 'reports')); render() }
   if ($('#dPayExp')) $('#dPayExp').onclick = () => payExpensePicker()
-  if ($('#issueAll')) $('#issueAll').onclick = guard(async () => {
-    for (const m of missing) await post('/api/charge/issue', { period: m.period })
-    toast('شارژ ماه‌های جامانده صادر شد'); refresh()
-  })
+  if ($('#issueAll')) $('#issueAll').onclick = guard(() => chargeIssueFlow(missing.map(m => m.period)))
   if ($('#qInvoice')) $('#qInvoice').onclick = () => invoiceForm()
   if ($('#qPayment')) $('#qPayment').onclick = () => paymentForm()
   if ($('#getRc')) $('#getRc').onclick = guard(async () => {
@@ -2288,10 +2313,7 @@ SETTINGS.charge = async () => {
     const r = await post('/api/latefee/apply', {})
     toast(`جریمه اعمال شد: ${moneyU(r.total)} برای ${faDigit(r.units)} واحد`); refresh()
   })
-  document.querySelectorAll('[data-issue]').forEach(b => b.onclick = guard(async () => {
-    const r = await post('/api/charge/issue', { period: b.dataset.issue })
-    toast(`شارژ صادر شد: ${moneyU(r.amount)} بین ${faDigit(r.units)} واحد`); refresh()
-  }))
+  document.querySelectorAll('[data-issue]').forEach(b => b.onclick = guard(() => chargeIssueFlow([b.dataset.issue])))
   document.querySelectorAll('[data-delch]').forEach(b => b.onclick = () => confirmBox('این ردیف تاریخچه حذف شود؟',
     async () => { await api(`/api/charge/amount/${b.dataset.delch}`, { method: 'DELETE' }); refresh() }))
 }

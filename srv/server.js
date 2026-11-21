@@ -1085,6 +1085,32 @@ function issueCharge(period, by = null) {
   writeShares(invId, shares)
   return { created: true, id: invId, amount, units: shares.length }
 }
+// پیش‌نمایشِ صدورِ شارژ (بدون ثبت): برای هر ماه، تعداد واحد، مبلغ هر واحد و جمع
+function chargePreview(periods) {
+  const cat = chargeCategory(); if (!cat) throw new Error('دسته‌ی «شارژ ماهانه» پیدا نشد')
+  const units = eligibleUnits(!!cat.include_vacant)
+  return periods.map(period => {
+    if (!/^\d{4}\/\d{2}$/.test(period || '')) throw new Error('ماه نامعتبر است')
+    const exists = !!db.prepare(`SELECT 1 FROM invoices WHERE is_charge=1 AND charge_period=?`).get(period)
+    const shares = computeShares(units, 'per_unit_charge', 0, { period })
+    const byId = Object.fromEntries(units.map(u => [u.id, u]))
+    return { period, fa: periodFa(period), exists, units: shares.length, amount: sumShares(shares),
+      rows: shares.map(x => ({ number: (byId[x.unit_id] || {}).number, name: (byId[x.unit_id] || {}).resident_name || '', amount: x.share_amount })) }
+  })
+}
+// برگرداندنِ صدورِ شارژ: فقط اگر بعد از صدور، دریافتیِ تازه‌ای روی آن ننشسته باشد
+// (پیش‌پرداخت‌های قبلی که خودکار رویش نشسته‌اند، با حذف دوباره پیش‌پرداخت می‌شوند و ضرری ندارد)
+function undoCharges(ids) {
+  const invs = ids.map(id => db.prepare(`SELECT * FROM invoices WHERE id=? AND is_charge=1`).get(+id)).filter(Boolean)
+  if (!invs.length) throw new Error('شارژی برای برگرداندن پیدا نشد')
+  for (const inv of invs) {
+    const late = db.prepare(`SELECT 1 FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id JOIN payments p ON p.id=a.payment_id
+      WHERE s.invoice_id=? AND p.created_at > ?`).get(inv.id, inv.created_at)
+    if (late) throw new Error(`بعد از صدورِ «${inv.title}» دریافتی ثبت شده و روی آن نشسته؛ برگرداندنِ خودکار ممکن نیست — از فهرست فاکتورها با علتِ حذف پاکش کنید`)
+  }
+  for (const inv of invs) deleteInvoice(inv.id)
+  return invs.length
+}
 // ماه‌های جامانده‌ی قابل صدور (از قدیمی‌ترین ردیف تاریخچه‌ی شارژ تا ماه جاری)
 function missingChargePeriods() {
   const first = db.prepare(`SELECT effective_j FROM charge_history ORDER BY effective_j, id`).get()
@@ -2649,7 +2675,7 @@ const AUDIT_ENT = [
   [/^\/api\/contractor-invoices\/(\d+)$/, 'contractor_invoices', 'فاکتور پیمانکار'], [/^\/api\/expense-payments\/(\d+)$/, 'expense_payments', 'پرداخت هزینه'],
   [/^\/api\/funds\/(\d+)$/, 'funds', 'صندوق'], [/^\/api\/units\/(\d+)$/, 'units', 'واحد'], [/^\/api\/projects\/(\d+)$/, 'projects', 'پروژه']
 ]
-const AUDIT_CREATE = { '/api/invoices': ['invoices', 'فاکتور'], '/api/payments': ['payments', 'دریافتی'], '/api/payments/bulk': ['payments', 'دریافت گروهی'], '/api/contractor-invoices': ['contractor_invoices', 'فاکتور پیمانکار'], '/api/charge/issue': ['invoices', 'صدور شارژ'] }
+const AUDIT_CREATE = { '/api/invoices': ['invoices', 'فاکتور'], '/api/payments': ['payments', 'دریافتی'], '/api/payments/bulk': ['payments', 'دریافت گروهی'], '/api/contractor-invoices': ['contractor_invoices', 'فاکتور پیمانکار'], '/api/charge/issue': ['invoices', 'صدور شارژ'], '/api/charge/undo': ['invoices', 'برگرداندن صدور شارژ'] }
 function auditSnapshot(table, id) {
   const row = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id); if (!row) return null
   if (table === 'invoices') { row._shares = db.prepare('SELECT unit_id, share_amount FROM invoice_shares WHERE invoice_id=?').all(id); row._fundPaid = invoiceFundPaid(id) }
@@ -3457,11 +3483,27 @@ async function handle(req, res) {
       if (!r.created) return sendJSON(res, 400, { error: r.reason })
       return sendJSON(res, 200, { ok: true, ...r })
     }
+    if (path === '/api/charge/preview' && M === 'GET')
+      return sendJSON(res, 200, chargePreview(String(Q.periods || curPeriod()).split(',').filter(Boolean)))
     if (path === '/api/charge/issue' && M === 'POST') {
       const b = await jbody(req)
+      // چند ماه با هم: یا همه ثبت می‌شوند یا هیچ‌کدام (تراکنشِ درخواست)
+      if (Array.isArray(b.periods) && b.periods.length) {
+        const out = []
+        for (const p of b.periods) {
+          const r = issueCharge(p, user.id)
+          if (!r.created) return sendJSON(res, 400, { error: `${periodFa(p)}: ${r.reason || 'قبلاً صادر شده است'}` })
+          out.push(r)
+        }
+        return sendJSON(res, 200, { ok: true, ids: out.map(r => r.id), amount: out.reduce((a, r) => a + r.amount, 0), months: out.length, units: out[0].units })
+      }
       const r = issueCharge(b.period || curPeriod(), user.id)
       if (!r.created) return sendJSON(res, 400, { error: r.reason || 'شارژ این ماه قبلاً صادر شده است' })
-      return sendJSON(res, 200, { ok: true, ...r })
+      return sendJSON(res, 200, { ok: true, ...r, ids: [r.id], months: 1 })
+    }
+    if (path === '/api/charge/undo' && M === 'POST') {
+      const b = await jbody(req)
+      return sendJSON(res, 200, { ok: true, removed: undoCharges(Array.isArray(b.ids) ? b.ids : []) })
     }
 
     // ---- هزینه‌های دوره‌ای ----
