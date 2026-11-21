@@ -214,6 +214,11 @@ function migrate() {
     id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id INTEGER, user_name TEXT,
     action TEXT NOT NULL, entity TEXT, entity_id INTEGER, label TEXT, reason TEXT DEFAULT '',
     before_json TEXT, after_json TEXT, body_json TEXT, path TEXT)`)
+  db.exec(`CREATE TABLE IF NOT EXISTS contractor_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, cinvoice_id INTEGER NOT NULL, fund_id INTEGER, amount INTEGER NOT NULL,
+    g_date TEXT NOT NULL, j_date TEXT NOT NULL, note TEXT DEFAULT '', created_by INTEGER, created_at TEXT NOT NULL)`)
+  addCol('contractor_invoices', 'fund_id', 'INTEGER DEFAULT 0')
+  addCol('fund_txns', 'ref_cpay_id', 'INTEGER')            // پیوندِ تراکنشِ صندوق به ردیفِ پرداختِ پیمانکار
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -363,6 +368,18 @@ function migrateFundBuckets() {
     db.prepare(`UPDATE funds SET bucket=? WHERE id=?`).run(bucketOfFund({ name: f.name }), f.id)
 }
 migrateFundBuckets()
+function migrateCiPayments() {
+  if (getSetting('mig_ci_payments', '') === '1') return
+  for (const ci of db.prepare(`SELECT * FROM contractor_invoices WHERE COALESCE(paid_amount,0) > 0`).all()) {
+    if (db.prepare(`SELECT 1 FROM contractor_payments WHERE cinvoice_id=?`).get(ci.id)) continue
+    const tx = db.prepare(`SELECT * FROM fund_txns WHERE ref_cinvoice_id=? ORDER BY id LIMIT 1`).get(ci.id)
+    const cpId = Number(db.prepare(`INSERT INTO contractor_payments(cinvoice_id,fund_id,amount,g_date,j_date,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+      .run(ci.id, tx ? tx.fund_id : null, ci.paid_amount, tx ? tx.g_date : ci.g_date, tx ? tx.j_date : ci.j_date, 'انتقال از سابقهٔ قبلی', null, nowISO()).lastInsertRowid)
+    if (tx) db.prepare(`UPDATE fund_txns SET ref_cpay_id=? WHERE id=?`).run(cpId, tx.id)
+  }
+  setSetting('mig_ci_payments', '1')
+}
+migrateCiPayments()
 
 // ---------- احراز هویت ----------
 const sessions = new Map()
@@ -687,28 +704,59 @@ function addFundTxn(fundId, type, amount, extra = {}) {
   if (!(amount > 0)) return
   const g = extra.g_date || todayG()
   const j = extra.j_date || (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
-  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,ref_exppay_id,g_date,j_date,note,created_by,created_at)
-    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, extra.epId || null, g, j, extra.note || '', extra.by || null, nowISO())
+  db.prepare(`INSERT INTO fund_txns(fund_id,type,amount,ref_payment_id,ref_invoice_id,peer_fund_id,ref_cinvoice_id,ref_exppay_id,ref_cpay_id,g_date,j_date,note,created_by,created_at)
+    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(fundId, type, amount, extra.payId || null, extra.invId || null, extra.peer || null, extra.cinvId || null, extra.epId || null, extra.cpId || null, g, j, extra.note || '', extra.by || null, nowISO())
 }
 // صندوق اصلی (اولین صندوق)
 const mainFundId = () => { const f = db.prepare(`SELECT id FROM funds ORDER BY id LIMIT 1`).get(); return f ? f.id : null }
 // صندوق عمرانی — مقصد پیش‌فرضِ خرید/فروشِ پیمانکارِ پروژه (اگر نبود، صندوق اصلی)
 const omraniFundId = () => { const f = db.prepare(`SELECT id FROM funds WHERE bucket='project' ORDER BY id LIMIT 1`).get() || db.prepare(`SELECT id FROM funds WHERE name LIKE '%عمران%' ORDER BY id LIMIT 1`).get(); return f ? f.id : mainFundId() }
 // هم‌گام‌سازی اثر یک فاکتور پیمانکار روی صندوق: خریدِ پرداخت‌شده = خروج، فروشِ دریافت‌شده = ورود، پرداخت‌نشده = بدون تراکنش
-// idempotent: تراکنش قبلیِ همین فاکتور حذف و در صورت لزوم دوباره ساخته می‌شود
-function syncContractorFundTxn(ci, by) {
-  db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(ci.id)
-  // مبلغِ مؤثر = پرداخت‌شدهٔ واقعی (پرداختِ جزئی)؛ سازگاری با رکوردهای قدیمیِ فقط‌تیک‌دار
-  const paidAmt = Math.min(ci.amount || 0, ci.paid_amount != null ? (ci.paid_amount || 0) : (ci.paid ? (ci.amount || 0) : 0))
-  if (!(paidAmt > 0)) return
-  const fundId = ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : omraniFundId()
-  if (!fundId) return
-  const isSale = ci.kind === 'sale'
-  addFundTxn(fundId, isSale ? 'in' : 'out', paidAmt, {
-    g_date: ci.g_date, j_date: ci.j_date, cinvId: ci.id, by,
-    note: (isSale ? 'درآمد فروش پروژه: ' : 'پرداخت هزینهٔ پروژه: ') + (ci.title || (isSale ? 'فروش' : 'خرید'))
-  })
+// پرداخت‌های پیمانکار: هر پرداخت ردیفِ جدا با تاریخ و صندوقِ خودش و یک تراکنشِ صندوقِ مستقل دارد.
+// ویرایشِ فاکتور (مبلغ/عنوان/تاریخ) به تراکنش‌های گذشتهٔ صندوق دست نمی‌زند.
+const ciPaidSum = ciId => db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM contractor_payments WHERE cinvoice_id=?`).get(ciId).s
+function ciFundOf(ci) { return ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : omraniFundId() }
+function refreshCiPaid(ciId) {
+  const ci = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(ciId); if (!ci) return
+  const paid = ciPaidSum(ciId)
+  db.prepare(`UPDATE contractor_invoices SET paid_amount=?, paid=? WHERE id=?`).run(paid, paid >= ci.amount ? 1 : 0, ciId)
 }
+function addCiPayment(ci, amount, d, fundId, note, by) {
+  amount = Math.round(+amount); if (!(amount > 0)) throw new Error('مبلغ پرداخت را وارد کنید')
+  const rem = ci.amount - ciPaidSum(ci.id)
+  if (amount > rem) throw new Error(`ماندهٔ این فاکتور ${pMoney(rem)} ${pUnitFa()} است؛ مبلغ بیشتر مجاز نیست`)
+  fundId = fundId && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(fundId) ? fundId : ciFundOf(ci)
+  const cpId = Number(db.prepare(`INSERT INTO contractor_payments(cinvoice_id,fund_id,amount,g_date,j_date,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)`)
+    .run(ci.id, fundId, amount, d.g_date, d.j_date, note || '', by || null, nowISO()).lastInsertRowid)
+  const isSale = ci.kind === 'sale'
+  addFundTxn(fundId, isSale ? 'in' : 'out', amount, { g_date: d.g_date, j_date: d.j_date, cinvId: ci.id, cpId, by,
+    note: (isSale ? 'دریافت از فروش پروژه: ' : 'پرداخت به پیمانکار: ') + (ci.title || '') + (ci.vendor_name ? ' (' + ci.vendor_name + ')' : '') })
+  refreshCiPaid(ci.id)
+  return cpId
+}
+function deleteCiPayment(cpId) {
+  const cp = db.prepare(`SELECT * FROM contractor_payments WHERE id=?`).get(cpId); if (!cp) return
+  db.prepare(`DELETE FROM fund_txns WHERE ref_cpay_id=?`).run(cpId)
+  db.prepare(`DELETE FROM contractor_payments WHERE id=?`).run(cpId)
+  refreshCiPaid(cp.cinvoice_id)
+}
+// تنظیمِ مجموعِ پرداخت به مقدارِ هدف (سازگاری با فرمِ قدیمی): کم → پرداختِ جدید با تاریخِ داده‌شده، زیاد → حذف از آخرین پرداخت‌ها
+function setCiPaidTarget(ci, target, d, by) {
+  target = Math.max(0, Math.min(ci.amount, Math.round(+target || 0)))
+  let cur = ciPaidSum(ci.id)
+  if (target > cur) addCiPayment(ci, target - cur, d, null, '', by)
+  else if (target < cur) {
+    for (const cp of db.prepare(`SELECT * FROM contractor_payments WHERE cinvoice_id=? ORDER BY g_date DESC, id DESC`).all(ci.id)) {
+      if (cur <= target) break
+      const over = cur - target
+      deleteCiPayment(cp.id)
+      if (cp.amount > over) addCiPayment(ci, cp.amount - over, { g_date: cp.g_date, j_date: cp.j_date }, cp.fund_id, cp.note, cp.created_by)
+      cur = ciPaidSum(ci.id)
+    }
+  }
+}
+// سازگاری: فراخوانی‌های قدیمی فقط وضعیت را هم‌سان می‌کنند (دیگر تراکنش‌ها را بازنویسی نمی‌کند)
+function syncContractorFundTxn(ci) { if (ci) refreshCiPaid(ci.id) }
 // عطف‌به‌ماسبق: برای فاکتورهای پیمانکارِ پرداخت‌شده‌ای که هنوز تراکنش صندوق ندارند، تراکنش ساخته می‌شود (یک‌بار)
 function backfillContractorFundTxns() {
   if (getSetting('cinvoiceFundBackfill') === '1') return
@@ -1318,7 +1366,8 @@ function generalLedger(type, id, from, to) {
       const sale = c.kind === 'sale', paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0)
       // بستانکار = طلبِ پیمانکار از ما (خرید)؛ بدهکار = پرداختِ ما
       ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (c.title || '') + (sale ? ' (فروش)' : ''), cat: c.proj || '—', debit: sale ? c.amount : 0, credit: sale ? 0 : c.amount })
-      if (paid > 0) ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (sale ? 'دریافت از فروش' : 'پرداخت به پیمانکار'), cat: c.proj || '—', debit: sale ? 0 : paid, credit: sale ? paid : 0 })
+      for (const cp of db.prepare(`SELECT * FROM contractor_payments WHERE cinvoice_id=? ORDER BY g_date, id`).all(c.id))
+        ent.push({ g: cp.g_date, j: cp.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (sale ? 'دریافت از فروش' : 'پرداخت به پیمانکار') + (cp.note ? ' · ' + cp.note : ''), cat: c.proj || '—', debit: sale ? 0 : cp.amount, credit: sale ? cp.amount : 0 })
     }
   } else if (type === 'project') {
     const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+id); if (!p) return null
@@ -2436,6 +2485,8 @@ function auditBegin(req, p) {
     return { table, label, id: +mm[1], action: m === 'DELETE' ? 'حذف' : 'ویرایش', before: auditSnapshot(table, +mm[1]), path: p }
   }
   const pay = /^\/api\/invoices\/(\d+)\/pay$/.exec(p); if (pay) return { table: 'invoices', label: 'پرداخت از صندوق', id: +pay[1], action: 'پرداخت', before: auditSnapshot('invoices', +pay[1]), path: p }
+  const cip = /^\/api\/contractor-invoices\/(\d+)\/payments$/.exec(p); if (cip && m === 'POST') return { table: 'contractor_invoices', label: 'پرداخت به پیمانکار', id: +cip[1], action: 'پرداخت', before: auditSnapshot('contractor_invoices', +cip[1]), path: p }
+  const cpd = /^\/api\/contractor-payments\/(\d+)$/.exec(p); if (cpd) return { table: 'contractor_payments', label: 'پرداخت پیمانکار', id: +cpd[1], action: 'حذف', before: auditSnapshot('contractor_payments', +cpd[1]), path: p }
   const adj = /^\/api\/funds\/(\d+)\/adjust$/.exec(p); if (adj) return { table: 'funds', label: 'سند تعدیل', id: +adj[1], action: 'تعدیل', before: null, path: p }
   if (m === 'POST' && AUDIT_CREATE[p]) return { table: AUDIT_CREATE[p][0], label: AUDIT_CREATE[p][1], id: null, action: 'ثبت', before: null, path: p }
   return null
@@ -2743,9 +2794,10 @@ async function handle(req, res) {
       const amt = Math.round(+b.amount)
       // مبلغِ پرداختی: اگر آمده همان؛ وگرنه از تیکِ «تسویه‌شده» (کل یا صفر)؛ سقف = مبلغ فاکتور
       const paidAmt = Math.max(0, Math.min(amt, b.paidAmount != null ? Math.round(+b.paidAmount) : (b.paid ? amt : 0)))
-      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,paid_amount,note,kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), amt, d.g_date, d.j_date, paidAmt >= amt ? 1 : 0, paidAmt, (b.note || '').trim(), kind, nowISO()).lastInsertRowid)
-      syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(id), user.id)
+      const fundId = +b.fundId && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(+b.fundId) ? +b.fundId : omraniFundId()
+      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,paid_amount,note,kind,fund_id,created_at) VALUES(?,?,?,?,?,?,?,0,0,?,?,?,?)`)
+        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), amt, d.g_date, d.j_date, (b.note || '').trim(), kind, fundId, nowISO()).lastInsertRowid)
+      if (paidAmt > 0) addCiPayment(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(id), paidAmt, d, fundId, 'پرداخت هنگام ثبت', user.id)
       return sendJSON(res, 200, { ok: true, id })
     }
     const ciM = /^\/api\/contractor-invoices\/(\d+)$/.exec(path)
@@ -2760,18 +2812,35 @@ async function handle(req, res) {
         b.paidAmount != null ? Math.round(+b.paidAmount)
           : b.paid != null ? (b.paid ? amt : 0)
             : (cur.paid_amount != null ? cur.paid_amount : (cur.paid ? cur.amount : 0))))
-      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,paid_amount=?,note=?,kind=? WHERE id=?`)
+      if (amt < ciPaidSum(cur.id) && b.paidAmount == null) return sendJSON(res, 400, { error: 'مبلغ فاکتور از جمعِ پرداخت‌هایش کمتر می‌شود؛ اول پرداخت‌ها را اصلاح کنید.' })
+      if ((b.kind && b.kind !== cur.kind) && ciPaidSum(cur.id) > 0) return sendJSON(res, 400, { error: 'نوعِ (خرید/فروش) فاکتوری که پرداخت دارد قابل تغییر نیست.' })
+      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,note=?,kind=? WHERE id=?`)
         .run(b.vendorId != null ? +b.vendorId : cur.vendor_id, vname, (b.title ?? cur.title).trim(),
-          amt, d.g_date, d.j_date,
-          paidAmt >= amt ? 1 : 0, paidAmt, (b.note ?? cur.note).trim(),
+          amt, d.g_date, d.j_date, (b.note ?? cur.note).trim(),
           b.kind ? (b.kind === 'sale' ? 'sale' : 'purchase') : cur.kind, +ciM[1])
-      syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]), user.id)
+      const ciNow = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1])
+      if (b.paidAmount != null || b.paid != null) {
+        const today = (() => { const t = todayJ(); return jDates({ jy: t.jy, jm: t.jm, jd: t.jd }) })()
+        setCiPaidTarget(ciNow, paidAmt, b.payJy ? jDates({ jy: b.payJy, jm: b.payJm, jd: b.payJd }) : today, user.id)
+      }
+      refreshCiPaid(ciNow.id)
       return sendJSON(res, 200, { ok: true })
     }
+    const ciPayM = /^\/api\/contractor-invoices\/(\d+)\/payments$/.exec(path)
+    if (ciPayM && M === 'GET') return sendJSON(res, 200, db.prepare(`SELECT cp.*, f.name fund_name FROM contractor_payments cp LEFT JOIN funds f ON f.id=cp.fund_id WHERE cp.cinvoice_id=? ORDER BY cp.g_date, cp.id`).all(+ciPayM[1]))
+    if (ciPayM && M === 'POST') {
+      const ci = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciPayM[1]); if (!ci) return sendJSON(res, 404, { error: 'فاکتور یافت نشد' })
+      const b = await jbody(req); const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      const id = addCiPayment(ci, b.amount, d, +b.fundId || null, (b.note || '').trim(), user.id)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const cpM = /^\/api\/contractor-payments\/(\d+)$/.exec(path)
+    if (cpM && M === 'DELETE') { deleteCiPayment(+cpM[1]); return sendJSON(res, 200, { ok: true }) }
     if (ciM && M === 'DELETE') {
       for (const a of listAttachments('cinvoice', +ciM[1])) await rm(join(UP_DIR, a.file), { force: true })
       db.prepare(`DELETE FROM attachments WHERE entity_type='cinvoice' AND entity_id=?`).run(+ciM[1])
       db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(+ciM[1]) // اثر صندوقِ این فاکتور هم حذف شود
+      db.prepare(`DELETE FROM contractor_payments WHERE cinvoice_id=?`).run(+ciM[1])
       db.prepare(`DELETE FROM contractor_invoices WHERE id=?`).run(+ciM[1])
       return sendJSON(res, 200, { ok: true })
     }

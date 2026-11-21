@@ -2900,6 +2900,7 @@ const showProject = guard(async id => {
   if ($('#ciNew')) $('#ciNew').onclick = () => cInvoiceForm(id, null, refresh)
   document.querySelectorAll('[data-ci-paid]').forEach(b => b.onclick = guard(async () => { await post('/api/contractor-invoices/' + b.dataset.ciPaid, { paid: b.dataset.ciPaidOn !== '1' }, 'PUT'); refresh() }))
   document.querySelectorAll('[data-ci-edit]').forEach(b => b.onclick = () => cInvoiceForm(id, d.invoices.find(x => x.id === +b.dataset.ciEdit), refresh))
+  document.querySelectorAll('[data-ci-pay]').forEach(b => b.onclick = guard(() => ciPayForm(d.invoices.find(x => x.id === +b.dataset.ciPay), refresh)))
   document.querySelectorAll('[data-ci-del]').forEach(b => b.onclick = () => confirmReason('این فاکتور پیمانکار حذف شود؟ اثرش روی صندوق برگشت می‌خورد.', async r => { await api('/api/contractor-invoices/' + b.dataset.ciDel + '?reason=' + encodeURIComponent(r), { method: 'DELETE' }); toast('حذف شد'); refresh() }))
   document.querySelectorAll('[data-ci-att]').forEach(b => b.onclick = () => doAttachUpload('cinvoice', +b.dataset.ciAtt).then(ok => ok && refresh()))
   document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && refresh()))
@@ -2997,7 +2998,7 @@ function cInvoiceRow(ci) {
     <td class="num">${ci.j_date ? faDigit(ci.j_date) : '—'}</td>
     <td>${paid}</td>
     <td>${files}${adminOnly(`<button class="btn tiny" data-ci-att="${ci.id}" title="افزودن سند">＋</button>`)}</td>
-    <td class="rowact">${adminOnly(`${rem > 0 ? `<button class="btn tiny primary" data-ci-edit="${ci.id}" title="ثبت مبلغ پرداخت/دریافت">💸 پرداخت</button>` : ''}<button class="btn tiny" data-ci-edit="${ci.id}" title="ویرایش">✏️</button><button class="btn tiny" data-ci-del="${ci.id}">🗑</button>`)}</td></tr>`
+    <td class="rowact">${adminOnly(`<button class="btn tiny ${rem > 0 ? 'primary' : ''}" data-ci-pay="${ci.id}" title="پرداخت‌ها (با تاریخ هر قسط)">💸 پرداخت‌ها</button><button class="btn tiny" data-ci-edit="${ci.id}" title="ویرایش">✏️</button><button class="btn tiny" data-ci-del="${ci.id}">🗑</button>`)}</td></tr>`
 }
 async function cInvoiceForm(projectId, ci = null, after) {
   const vendors = await api('/api/vendors')
@@ -3012,19 +3013,22 @@ async function cInvoiceForm(projectId, ci = null, after) {
       <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
     </div>
     <label class="f">نوع<select class="inp" id="ciKind"><option value="purchase" ${!ci || ci.kind !== 'sale' ? 'selected' : ''}>خرید / هزینه (به هزینه اضافه می‌شود)</option><option value="sale" ${ci && ci.kind === 'sale' ? 'selected' : ''}>فروش / درآمد (از هزینه کم می‌شود)</option></select></label>
-    <div class="frow" style="align-items:end">
-      <label class="f">مبلغ پرداخت/دریافت‌شده (${curFa()})<input class="inp num" id="ciPaidAmount" data-money="ciPaidHint" inputmode="numeric" value="${ci ? sep(Math.round(r2d(ci.paid_amount || 0))) : ''}"><span class="hint" id="ciPaidHint"></span></label>
+    ${ci ? `<div class="notice" style="margin:0">پرداخت‌شده تا امروز: <b class="num">${moneyU(ci.paid_amount || 0)}</b> — پرداخت‌ها (با تاریخ هر قسط) از دکمهٔ «💸 پرداخت‌ها» ثبت یا اصلاح می‌شوند.</div>
+      <input type="hidden" id="ciPaidAmount" value="">`
+    : `<div class="frow" style="align-items:end">
+      <label class="f">پرداخت/دریافت همین الان (${curFa()})<input class="inp num" id="ciPaidAmount" data-money="ciPaidHint" inputmode="numeric"><span class="hint" id="ciPaidHint">خالی = هنوز پرداخت نشده؛ قسط‌های بعدی از دکمهٔ «پرداخت‌ها»</span></label>
       <button type="button" class="btn" id="ciPaidFull">= کل مبلغ</button>
     </div>
-    <p class="hint" id="ciRemHint"></p>
+    <p class="hint" id="ciRemHint"></p>`}
     <label class="f">توضیح<input class="inp" id="ciNote" value="${ci ? esc(ci.note || '') : ''}"></label>
     ${!ci ? `<p class="hint">مثال فروش: فروش داغیِ منبع قدیمی. پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
   </div>`, `<button class="btn primary" id="ciSave">ذخیره</button><button class="btn" id="ciCancel">انصراف</button>`)
   wireToday($('#modalBody')); wireMoney($('#modalBody'))
   $('#ciCancel').onclick = closeModal
   // مبلغ پرداختی تا وقتی کاربر دستی نزده، با مبلغِ فاکتور هم‌گام می‌ماند (پیش‌فرض: پرداخت کامل)
-  const store = { paidEdited: !!ci }
+  const store = { paidEdited: true }
   const refreshRem = () => {
+    if (ci || !$('#ciRemHint')) return
     const amt = readMoney($('#ciAmount')), paid = readMoney($('#ciPaidAmount')), rem = amt - paid
     $('#ciRemHint').innerHTML = amt > 0
       ? (rem > 0 ? `مانده بدهی به پیمانکار: <b class="amt-out">${moneyU(rem)}</b>` : rem < 0 ? `<b class="amt-out">مبلغ پرداختی از فاکتور بیشتر است!</b>` : '<b class="amt-in">تسویهٔ کامل ✓</b>')
@@ -3032,20 +3036,47 @@ async function cInvoiceForm(projectId, ci = null, after) {
   }
   $('#ciAmount').addEventListener('input', () => { if (!store.paidEdited) { $('#ciPaidAmount').value = $('#ciAmount').value } refreshRem() })
   $('#ciPaidAmount').addEventListener('input', () => { store.paidEdited = true; refreshRem() })
-  $('#ciPaidFull').onclick = () => { $('#ciPaidAmount').value = $('#ciAmount').value; store.paidEdited = true; refreshRem() }
-  if (!ci) { $('#ciPaidAmount').value = $('#ciAmount').value } // فاکتور جدید: پیش‌فرض پرداخت کامل
+  if ($('#ciPaidFull')) $('#ciPaidFull').onclick = () => { $('#ciPaidAmount').value = $('#ciAmount').value; refreshRem() }
   refreshRem()
   $('#ciSave').onclick = guard(async () => {
     const amount = readMoney($('#ciAmount')); if (!amount) throw new Error('مبلغ فاکتور لازم است')
-    const paidAmount = readMoney($('#ciPaidAmount'))
-    if (paidAmount > amount) throw new Error('مبلغ پرداختی از مبلغ فاکتور بیشتر است')
+    const paidAmount = ci ? null : readMoney($('#ciPaidAmount'))
+    if (paidAmount != null && paidAmount > amount) throw new Error('مبلغ پرداختی از مبلغ فاکتور بیشتر است')
     const dt = readDate('cid')
-    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, paidAmount, note: $('#ciNote').value.trim() }
+    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, note: $('#ciNote').value.trim() }
+    if (paidAmount != null) payload.paidAmount = paidAmount
     if (ci) await post('/api/contractor-invoices/' + ci.id, payload, 'PUT'); else await post('/api/contractor-invoices', payload)
     closeModal(); toast('ذخیره شد'); after ? after() : render()
   })
 }
 
+// پرداخت‌های یک فاکتور پیمانکار: هر قسط با تاریخ و صندوقِ خودش
+async function ciPayForm(ci, after) {
+  const pays = await api(`/api/contractor-invoices/${ci.id}/payments`)
+  const paid = pays.reduce((s, p) => s + p.amount, 0), rem = ci.amount - paid, sale = ci.kind === 'sale'
+  const defFund = ci.fund_id || (META.funds.find(f => f.bucket === 'project') || META.funds[0] || {}).id
+  const body = openModal(`${sale ? 'دریافت‌های' : 'پرداخت‌های'} فاکتور «${ci.title || ci.vendorLabel || ''}»`, `<div class="form">
+    <div class="kpis" style="margin-bottom:6px">${kpi('مبلغ فاکتور', money(ci.amount))}${kpi(sale ? 'دریافت‌شده' : 'پرداخت‌شده', money(paid), '', 'good')}${kpi('مانده', money(rem), '', rem > 0 ? 'bad' : '')}</div>
+    <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>صندوق</th><th>مبلغ</th><th>توضیح</th><th></th></tr></thead><tbody>
+      ${pays.length ? pays.map(p => `<tr><td class="num">${faDigit(p.j_date)}</td><td>${esc(p.fund_name || '—')}</td><td class="num">${money(p.amount)}</td><td class="hint">${esc(p.note || '')}</td>
+        <td>${isAdmin() ? `<button class="btn tiny del" data-cpdel="${p.id}" title="حذف">🗑</button>` : ''}</td></tr>`).join('') : emptyRow(5, 'هنوز پرداختی ثبت نشده')}
+    </tbody></table></div>
+    ${isAdmin() && rem > 0 ? `<h4 style="margin:14px 0 6px">ثبتِ ${sale ? 'دریافتِ' : 'پرداختِ'} جدید</h4>
+      <div class="frow"><label class="f">مبلغ (${curFa()})<input class="inp num" id="cpAmt" data-money="cpHint" inputmode="numeric" value="${sep(Math.round(r2d(rem)))}"><span class="hint" id="cpHint"></span></label>
+        <label class="f">تاریخ${dateBoxHtml('cp')}</label></div>
+      <div class="frow"><label class="f">از صندوق<select class="inp" id="cpFund">${META.funds.map(f => `<option value="${f.id}" ${f.id === defFund ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
+        <label class="f">توضیح<input class="inp" id="cpNote" placeholder="مثلاً: قسط دوم"></label></div>` : ''}
+  </div>`, `${isAdmin() && rem > 0 ? '<button class="btn primary" id="cpSave">ثبت</button>' : ''}<button class="btn" id="cpClose">بستن</button>`)
+  wireMoney(body); wireToday(body)
+  $('#cpClose').onclick = () => { closeModal(); after ? after() : refresh() }
+  if ($('#cpSave')) $('#cpSave').onclick = guard(async () => {
+    await post(`/api/contractor-invoices/${ci.id}/payments`, { amount: readMoney($('#cpAmt')), fundId: +$('#cpFund').value, note: $('#cpNote').value.trim(), ...readDate('cp') })
+    toast('ثبت شد'); const fresh = { ...ci, paid_amount: paid + readMoney($('#cpAmt')) }; closeModal(); after ? after() : refresh(); ciPayForm(fresh, after)
+  })
+  body.querySelectorAll('[data-cpdel]').forEach(b => b.onclick = () => confirmReason('این پرداخت حذف شود؟ اثرش از صندوق برمی‌گردد.', async r => {
+    await api(`/api/contractor-payments/${b.dataset.cpdel}?reason=${encodeURIComponent(r)}`, { method: 'DELETE' }); toast('حذف شد'); closeModal(); after ? after() : refresh(); ciPayForm(ci, after)
+  }))
+}
 function vendorsManager() {
   const draw = guard(async () => {
     const vs = await api('/api/vendors')
