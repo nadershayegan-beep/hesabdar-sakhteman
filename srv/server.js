@@ -941,7 +941,7 @@ function setOpeningBalance(unitId, amount, note, by) {
   } else {
     // بستانکاری اولیه: دریافتی بدون تأثیر روی صندوق (موجودی اولیه‌ی صندوق جدا وارد می‌شود)
     const payId = Number(db.prepare(`INSERT INTO payments(unit_id,amount,g_date,j_date,fund_id,method,note,is_opening,created_by,created_at)
-      VALUES(?,?,?,?,?,'','بستانکاری انتقالی از قبل',1,?,?)`).run(unitId, -amount, OPENING_G, OPENING_J, fund.id, by || null, nowISO()).lastInsertRowid)
+      VALUES(?,?,?,?,?,'','پیش‌پرداخت انتقالی از قبل',1,?,?)`).run(unitId, -amount, OPENING_G, OPENING_J, fund.id, by || null, nowISO()).lastInsertRowid)
     allocatePayment(payId)
   }
 }
@@ -2343,7 +2343,7 @@ function printUnitHtml(c) {
   const u = c.unit, open = c.shares.filter(s => s.remaining > 0)
   const debtLine = c.debt > 0
     ? `بدهی فعلی: <span class="amt-out">${pMoney(c.debt)} ${pUnitFa()}</span>${c.aging ? ` · قدمت: ${c.aging.days > 9000 ? 'انتقالی' : faNum(c.aging.days) + ' روز'}` : ''}`
-    : c.debt < 0 ? `بستانکاری: <span class="amt-in">${pMoney(-c.debt)} ${pUnitFa()}</span>` : 'تسویه‌ی کامل — بدهی ندارید'
+    : c.debt < 0 ? `پیش‌پرداخت: <span class="amt-in">${pMoney(-c.debt)} ${pUnitFa()}</span>` : 'تسویه‌ی کامل — بدهی ندارید'
   const inner = `
     <h1>${hEsc(c.buildingName || 'ساختمان')}</h1>
     <div class="sub">صورت‌حساب واحد ${faNum(u.number)}${u.resident_name ? ' — ' + hEsc(u.resident_name) : ''} · تاریخ صدور: ${faNum(c.today)}</div>
@@ -2567,7 +2567,7 @@ function printExpensesHtml(r) {
       ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
       ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U, 'ok')}
       ${kpi(r.isProject ? 'مانده بدهی ساکنین (طبق مصوبه)' : 'مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
-      ${r.unitCredit ? kpi(r.isProject ? 'مازاد نسبت به هزینهٔ واقعی' : 'بستانکاری ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
+      ${r.unitCredit ? kpi(r.isProject ? 'مازاد نسبت به هزینهٔ واقعی' : 'پیش‌پرداخت ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, r.contractor.outstanding > 0 ? 'warn' : 'ok') : ''}
     </div>
@@ -2581,9 +2581,9 @@ function printExpensesHtml(r) {
     </tbody></table>
     <div class="sech">تفکیک هر واحد</div>
     ${(() => {
-      const bal = (v) => v > 0 ? `<span class="amt-out">بدهکار ${pMoney(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${pMoney(-v)}</span>` : 'تسویه'
+      const bal = (v) => v > 0 ? `<span class="amt-out">بدهکار ${pMoney(v)}</span>` : v < 0 ? `<span class="amt-in">پیش‌پرداخت ${pMoney(-v)}</span>` : 'تسویه'
       const sum = f => r.units.reduce((a, u) => a + f(u), 0)
-      const totBal = key => { const d = sum(u => Math.max(0, u[key])), c = sum(u => Math.max(0, -u[key])); return (d ? `<span class="amt-out">بدهکار ${pMoney(d)}</span>` : '') + (d && c ? ' · ' : '') + (c ? `<span class="amt-in">طلبکار ${pMoney(c)}</span>` : '') || 'تسویه' }
+      const totBal = key => { const d = sum(u => Math.max(0, u[key])), c = sum(u => Math.max(0, -u[key])); return (d ? `<span class="amt-out">بدهی ${pMoney(d)}</span>` : '') + (d && c ? ' · ' : '') + (c ? `<span class="amt-in">پیش‌پرداخت ${pMoney(c)}</span>` : '') || 'تسویه' }
       if (r.isProject) return `<table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم برآوردی (مصوبه)</th><th>سهم نهایی (مخارج)</th><th>پرداختی</th><th>بدهی/طلب طبق مصوبه</th><th>بدهی/طلب طبق مخارج</th></tr></thead><tbody>
       ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
         <td class="num">${pMoney(u.budgetShare)}</td><td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td>
@@ -2591,7 +2591,7 @@ function printExpensesHtml(r) {
         : '<tr><td colspan="7" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
       <tr class="tot"><td>جمع</td><td></td><td class="num">${pMoney(sum(u => u.budgetShare))}</td><td class="num">${pMoney(sum(u => u.share))}</td><td class="num">${pMoney(sum(u => u.paid))}</td><td class="num">${totBal('balBudget')}</td><td class="num">${totBal('balExpense')}</td></tr>
       </tbody></table>`
-      return `<table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم هر واحد</th><th>پرداختی</th><th>بدهکار / طلبکار</th></tr></thead><tbody>
+      return `<table><thead><tr><th>واحد</th><th>ساکن</th><th>سهم هر واحد</th><th>پرداختی</th><th>بدهی / پیش‌پرداخت</th></tr></thead><tbody>
       ${r.units.length ? r.units.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.resident_name || '—')}</td>
         <td class="num">${pMoney(u.share)}</td><td class="num amt-in">${pMoney(u.paid)}</td><td class="num">${bal(u.balance)}</td></tr>`).join('')
         : '<tr><td colspan="5" style="text-align:center;color:#888">سهمی برای واحدها ثبت نشده</td></tr>'}
@@ -3333,7 +3333,7 @@ async function handle(req, res) {
       const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId)
       if (!u) return sendJSON(res, 400, { error: 'واحد را انتخاب کنید' })
       const avail = unitCredit(unitId)
-      if (!(avail > 0)) return sendJSON(res, 400, { error: 'این واحد طلبی (بستانکاری) ندارد' })
+      if (!(avail > 0)) return sendJSON(res, 400, { error: 'این واحد پیش‌پرداختی ندارد' })
       const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
       let ids = Array.isArray(b.invoiceIds) ? b.invoiceIds.map(Number).filter(Boolean) : null
       if ((!ids || !ids.length) && +b.projectId) { const inv = projectChargeInvoice(+b.projectId); if (inv) ids = [inv.id] }
@@ -3374,7 +3374,7 @@ async function handle(req, res) {
     if (payM && M === 'DELETE') {
       const p = db.prepare(`SELECT * FROM payments WHERE id=?`).get(+payM[1])
       if (!p) return sendJSON(res, 404, { error: 'دریافتی یافت نشد' })
-      if (p.is_opening) return sendJSON(res, 400, { error: 'بستانکاری اولیه از منوی «مانده اولیه» صفر شود' })
+      if (p.is_opening) return sendJSON(res, 400, { error: 'پیش‌پرداخت اولیه از منوی «مانده اولیه» صفر شود' })
       if (p.doc_file) await rm(join(UP_DIR, p.doc_file), { force: true })
       deletePayment(p.id)
       return sendJSON(res, 200, { ok: true })
@@ -3383,7 +3383,7 @@ async function handle(req, res) {
       const id = +payM[1], b = await jbody(req)
       const cur = db.prepare(`SELECT * FROM payments WHERE id=?`).get(id)
       if (!cur) return sendJSON(res, 404, { error: 'دریافتی یافت نشد' })
-      if (cur.is_opening) return sendJSON(res, 400, { error: 'بستانکاری اولیه از منوی «مانده اولیه» ویرایش شود' })
+      if (cur.is_opening) return sendJSON(res, 400, { error: 'پیش‌پرداخت اولیه از منوی «مانده اولیه» ویرایش شود' })
       const amount = Math.round(+b.amount) || cur.amount
       if (!(amount > 0)) return sendJSON(res, 400, { error: 'مبلغ باید بزرگ‌تر از صفر باشد' })
       const fundId = +b.fundId || cur.fund_id

@@ -19,6 +19,8 @@ const d2r = d => MONEY_UNIT === 'toman' ? Math.round(d * 10) : Math.round(d)
 const money = r => sep(Math.round(r2d(r)))
 const curFa = () => MONEY_UNIT === 'toman' ? 'تومان' : 'ریال'
 const moneyU = r => money(r) + ' ' + curFa()
+// واژه‌نامهٔ مرکزی (مورد ۲۲ ممیزی)
+const TERMS = { debt: 'بدهی', credit: 'پیش‌پرداخت', residentCredit: 'پیش‌پرداخت ساکنین', useCredit: 'استفاده از پیش‌پرداخت', managerClaim: 'طلب مدیر از صندوق', fundReceivable: 'بدهی ساکنین' }
 const signed = r => (r < 0 ? '−' : '') + money(Math.abs(r))
 
 // ---------- واتساپ ----------
@@ -477,7 +479,7 @@ VIEWS.dashboard = async () => {
   const totalFundDebt = fundsOv.reduce((a, f) => a + (f.unitDebt || 0), 0)
   const fundCards = fundsOv.map(f => `<div class="kpi kclick" data-fundcard="${f.id}"><div class="lbl">${esc(f.name)}</div>
       <div class="val num">${bal(f.balance)}<span class="r"> ${curFa()}</span></div>
-      <div class="d">طلب از ساکنین: <b class="num">${money(f.unitDebt || 0)}</b>${f.balance < 0 ? ' · <span class="amt-out">کسری</span>' : ''}</div></div>`).join('')
+      <div class="d">بدهی ساکنین: <b class="num">${money(f.unitDebt || 0)}</b>${f.balance < 0 ? ' · <span class="amt-out">کسری</span>' : ''}</div></div>`).join('')
   // ---- ساکنین ----
   const ch = d.charge
   const chargeKpi = ch ? `<div class="kpi"><div class="lbl">وصولِ شارژِ ${escFa(d.monthFa)}</div>
@@ -499,7 +501,7 @@ VIEWS.dashboard = async () => {
     `<div class="dsec">نقدینگی صندوق‌ها</div>
     <div class="kpis dfunds">
       <div class="kpi"><div class="lbl">موجودی کل صندوق‌ها</div><div class="val num">${bal(d.fundTotal)}<span class="r"> ${curFa()}</span></div>
-        <div class="d">طلب صندوق‌ها از ساکنین: <b class="num">${money(totalFundDebt)}</b></div></div>
+        <div class="d">بدهی ساکنین به صندوق‌ها: <b class="num">${money(totalFundDebt)}</b></div></div>
       ${fundCards}
     </div>
     <div class="dsec">وضعیت ساکنین</div>
@@ -507,7 +509,7 @@ VIEWS.dashboard = async () => {
       ${kpi('کل بدهی ساکنین', money(d.totalDebt), '', 'bad')}
       ${chargeKpi}
       ${kpi('بدهیِ معوق (بیش از ۹۰ روز)', money(d.overdue ? d.overdue.total : 0), faDigit(d.overdue ? d.overdue.count : 0) + ' واحد', d.overdue && d.overdue.count ? 'bad' : '')}
-      ${d.totalCredit > 0 ? kpi('کل بستانکاری واحدها', money(d.totalCredit), 'علی‌الحساب', 'good') : kpi('شکافِ وصولِ شارژ ماه', money(ch ? Math.max(0, ch.gap) : 0), 'تعهد منهای وصول', ch && ch.gap > 0 ? 'bad' : '')}
+      ${d.totalCredit > 0 ? kpi(TERMS.residentCredit, money(d.totalCredit), 'پرداختِ بیش از بدهی') : kpi('شکافِ وصولِ شارژ ماه', money(ch ? Math.max(0, ch.gap) : 0), 'تعهد منهای وصول', ch && ch.gap > 0 ? 'bad' : '')}
     </div>
     <div class="dsec">جریانِ ${escFa(d.monthFa)}</div>
     <div class="kpis">
@@ -863,7 +865,7 @@ VIEWS.payments = async () => {
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
     adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
+      <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr>
         <td class="num"><b>${faDigit(p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
         <td class="num amt-in">${money(p.amount)}</td><td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td>
@@ -1056,7 +1058,7 @@ function paymentForm(presetUnit, pay, after, presetProject) {
     else $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th></th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
       ${d.rows.map(r => `<tr><td>${pay ? '' : `<input type="checkbox" data-inv="${r.invoice_id}" style="width:16px;height:16px;accent-color:var(--accent)">`}</td>
         <td>${esc(r.title)}</td><td class="num">${r.is_opening ? 'انتقالی' : faDigit(r.j_date)}</td><td class="num amt-out">${money(r.remaining)}</td></tr>`).join('')}
-      </tbody></table></div>` : '<div class="empty">این واحد بدهی بازی ندارد — مبلغ به‌عنوان بستانکاری ثبت می‌شود</div>'
+      </tbody></table></div>` : '<div class="empty">این واحد بدهی بازی ندارد — مبلغ به‌عنوان پیش‌پرداخت ثبت می‌شود</div>'
     syncSource()
   })
   if (srcEl()) srcEl().onchange = () => { syncSource(); loadOpen() }
@@ -1071,7 +1073,7 @@ function paymentForm(presetUnit, pay, after, presetProject) {
       if (forProject) payload.projectId = forProject
       else if (invoiceIds.length) payload.invoiceIds = invoiceIds
       const r = await post('/api/pay-from-credit', payload)
-      closeModal(); toast(`از طلب پرداخت شد — ${moneyU(r.used)} تسویه${r.creditLeft > 0 ? ` · ${moneyU(r.creditLeft)} طلبِ باقی‌مانده` : ''}`)
+      closeModal(); toast(`از پیش‌پرداخت کسر شد — ${moneyU(r.used)} تسویه${r.creditLeft > 0 ? ` · ${moneyU(r.creditLeft)} پیش‌پرداختِ باقی‌مانده` : ''}`)
       after ? after() : refresh(); return
     }
     const amount = readMoney($('#pyAmount')); if (!(amount > 0)) throw new Error('مبلغ را وارد کنید')
@@ -1106,7 +1108,7 @@ VIEWS.units = async () => {
           ${u.active ? (u.occupied ? '' : '<span class="badge b-vacant">خالی</span>') : '<span class="badge b-vacant">بایگانی</span>'}</div>
         <div class="pline"><span>ساکن</span><b>${esc(u.resident_name || '—')}</b></div>
         <div class="pline"><span>متراژ / نفرات</span><b class="num">${faDigit(u.area || 0)} م² · ${faDigit(u.occupants || 0)} نفر</b></div>
-        <div class="pline big"><span>${u.debt >= 0 ? 'بدهی' : 'بستانکار'}</span><b class="${u.debt > 0 ? 'neg' : u.debt < 0 ? 'pos' : ''}">${money(Math.abs(u.debt))}</b></div>
+        <div class="pline big"><span>${u.debt >= 0 ? TERMS.debt : TERMS.credit}</span><b class="${u.debt > 0 ? 'neg' : u.debt < 0 ? 'pos' : ''}">${money(Math.abs(u.debt))}</b></div>
         ${u.aging ? `<div class="pfoot">قدمت بدهی: ${u.aging.bucket} روز</div>` : ''}
       </button>`).join('')}</div>` : '<div class="panel"><div class="empty">هنوز واحدی تعریف نشده — با دکمه‌ی «افزودن واحد» شروع کنید</div></div>')
   wireCommon()
@@ -1201,7 +1203,7 @@ const showUnitCard = guard(async id => {
       adminOnly(`<button class="btn" id="ucEdit">✏️ ویرایش واحد</button><button class="btn primary" id="ucPay">＋ ثبت دریافتی</button>`) +
       `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><button class="btn" id="ucPdf">📄 PDF</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ CSV</a>`) +
     `<div class="kpis printhide">
-      ${kpi(d.debt >= 0 ? 'بدهی کل' : 'بستانکاری', money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
+      ${kpi(d.debt >= 0 ? 'بدهی کل' : TERMS.credit, money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
       ${kpi('جمع سهم‌ها', money(d.totalShares))}
       ${kpi('جمع پرداخت‌ها', money(d.totalPaid), '', 'good')}
       ${kpi('شارژ ماهانه', money(u.chargeAmount), u.monthly_charge != null ? 'اختصاصی این واحد' : 'مبلغ سراسری')}
@@ -1233,14 +1235,14 @@ const showUnitCard = guard(async id => {
           <td class="num ${mFinal > 0 ? 'amt-out' : mFinal < 0 ? 'amt-in' : ''}">${mFinal > 0 ? money(mFinal) : mFinal < 0 ? '(' + money(-mFinal) + ')' : '۰'}</td><td class="printhide"></td></tr></tfoot></table></div>
       </div></div>
     <div class="panel printhide"><div class="phead"><b>پرداخت‌ها</b></div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th><th class="printhide">عملیات</th></tr></thead><tbody>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th class="printhide">عملیات</th></tr></thead><tbody>
       ${d.payments.length ? d.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td class="num amt-in">${money(p.amount)}</td>
         <td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td><td class="num">${money(p.allocated)}</td>
         <td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
         <td class="printhide rowact">${p.is_opening ? '' : rcptBtns(p.id) + docActs('payment', p.id)}</td></tr>`).join('') : emptyRow(8, 'پرداختی ثبت نشده')}
       </tbody></table></div></div>
-    ${d.creditUses && d.creditUses.length ? `<div class="panel printhide"><div class="phead"><b>پرداخت از محل طلب</b><span class="hint">استفاده از بستانکاریِ واحد بابت بدهی‌های دیگر (بدون ورود نقدینگی)</span></div>
+    ${d.creditUses && d.creditUses.length ? `<div class="panel printhide"><div class="phead"><b>استفاده از پیش‌پرداخت</b><span class="hint">کسر از پیش‌پرداختِ واحد بابت بدهی‌های دیگر (بدون ورود نقدینگی)</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>بابت</th><th>توضیح</th></tr></thead><tbody>
       ${d.creditUses.map(c => `<tr><td class="num">${faDigit(c.j_date)}</td><td class="num amt-in">${money(c.amount)}</td><td>${esc(c.title || '—')}</td><td>${esc(c.note || '—')}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}
@@ -1289,7 +1291,7 @@ function statementHtml(d) {
       : '<tr><td colspan="3">پرداختی ثبت نشده است</td></tr>'}
       <tr><th>جمع پرداخت‌ها</th><th></th><th>${money(d.totalPaid)}</th></tr>
     </tbody></table>
-    <div class="total">${d.debt > 0 ? `مانده‌ی بدهی: ${moneyU(d.debt)}` : d.debt < 0 ? `بستانکاری: ${moneyU(-d.debt)}` : 'تسویه‌ی کامل — بدهی ندارید'}</div>
+    <div class="total">${d.debt > 0 ? `مانده‌ی بدهی: ${moneyU(d.debt)}` : d.debt < 0 ? `پیش‌پرداخت: ${moneyU(-d.debt)}` : 'تسویه‌ی کامل — بدهی ندارید'}</div>
     <div class="stfoot">این صورت‌حساب از نرم‌افزار «حسابدار ساختمان توی دید» صادر شده است.</div>
   </div>`
 }
@@ -1464,7 +1466,7 @@ REPORTS.expenses = async () => {
       ${kpi('جمع هزینه‌ها', money(r.totals.amount))}
       ${kpi('وصول از ساکنین', money(r.totals.collected), '', 'good')}
       ${kpi('مانده بدهی ساکنین', money(r.unitDebt), '', r.unitDebt > 0 ? 'bad' : 'good')}
-      ${r.unitCredit ? kpi('بستانکاری ساکنین', money(r.unitCredit), '', 'good') : ''}
+      ${r.unitCredit ? kpi(TERMS.residentCredit, money(r.unitCredit)) : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', money(r.contractor.paid)) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', money(r.contractor.outstanding), '', r.contractor.outstanding > 0 ? 'warn' : 'good') : ''}
     </div>
@@ -1479,7 +1481,7 @@ REPORTS.expenses = async () => {
       <thead><tr><th>واحد</th><th>ساکن</th><th>سهم</th><th>پرداختی</th><th>وضعیت</th></tr></thead><tbody>
       ${r.units.length ? r.units.map(u => `<tr class="clickable" data-unit="${u.unit_id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num">${money(u.share)}</td><td class="num amt-in">${money(u.paid)}</td>
-        <td>${u.balance > 0 ? `<span class="badge b-no">بدهکار ${money(u.balance)}</span>` : u.balance < 0 ? `<span class="badge b-done">بستانکار ${money(-u.balance)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td></tr>`).join('') : emptyRow(5, 'سهمی ثبت نشده')}
+        <td>${u.balance > 0 ? `<span class="badge b-no">بدهکار ${money(u.balance)}</span>` : u.balance < 0 ? `<span class="badge b-done">پیش‌پرداخت ${money(-u.balance)}</span>` : `<span class="badge b-ok">تسویه</span>`}</td></tr>`).join('') : emptyRow(5, 'سهمی ثبت نشده')}
       </tbody></table></div></div>`}`
   wireCommon()
   document.querySelectorAll('[data-em]').forEach(b => b.onclick = () => { expMode = b.dataset.em; render() })
@@ -1723,7 +1725,7 @@ const saveDebtorsBatchPdf = guard(async rows => {
 })
 REPORTS.ledger = async () => {
   const r = await api('/api/report/unit-ledger')
-  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${money(-v)}</span>` : '۰'
+  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">پیش‌پرداخت ${money(-v)}</span>` : '۰'
   const ownerBal = v => v > 0 ? `<span class="amt-out">بدهی مالکین ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبِ مالکین ${money(-v)}</span>` : '۰'
   $('#repBody').innerHTML = `
     <div class="filters printhide"><button class="btn small" onclick="printAs('بدهی تفکیکی واحدها')">🖨 چاپ</button></div>
@@ -1745,7 +1747,7 @@ REPORTS.ledger = async () => {
         <td class="num ${u.omrani > 0 ? 'amt-out' : ''}">${u.omrani > 0 ? money(u.omrani) : '۰'}</td>
         <td class="num">${bal(u.projectDue)}</td>
         <td class="num">${bal(u.projectBal)}</td>
-        <td class="num ${u.net > 0 ? 'amt-out' : u.net < 0 ? 'amt-in' : ''}">${u.net > 0 ? money(u.net) : u.net < 0 ? 'طلبکار ' + money(-u.net) : '۰'}</td></tr>`).join('')
+        <td class="num ${u.net > 0 ? 'amt-out' : u.net < 0 ? 'amt-in' : ''}">${u.net > 0 ? money(u.net) : u.net < 0 ? 'پیش‌پرداخت ' + money(-u.net) : '۰'}</td></tr>`).join('')
       : emptyRow(7, 'واحدی ثبت نشده')}
       </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.projectDue)}</td><td class="num">${bal(r.total.projectBal)}</td><td class="num">${ownerBal(r.total.net)}</td></tr></tfoot>
     </table></div></div>`
@@ -1777,7 +1779,7 @@ REPORTS.fund = async () => {
         <div class="panel"><div class="phead"><b>بدهی هر واحد به این صندوق</b><span class="hint">${catFa(d.category)}</span></div>
           <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی/طلب</th></tr></thead><tbody>
           ${d.unitDebts.length ? d.unitDebts.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>واحد ${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
-            <td class="num">${u.debt > 0 ? `<span class="amt-out">بدهکار ${money(u.debt)}</span>` : u.debt < 0 ? `<span class="amt-in">طلبکار ${money(-u.debt)}</span>` : 'تسویه'}</td></tr>`).join('') : emptyRow(3, 'واحدی به این صندوق بدهکار نیست')}
+            <td class="num">${u.debt > 0 ? `<span class="amt-out">بدهکار ${money(u.debt)}</span>` : u.debt < 0 ? `<span class="amt-in">پیش‌پرداخت ${money(-u.debt)}</span>` : 'تسویه'}</td></tr>`).join('') : emptyRow(3, 'واحدی به این صندوق بدهکار نیست')}
           </tbody></table></div></div>
       </div>`
     wireCommon()
@@ -2090,7 +2092,7 @@ REPORTS.fundpay = async () => {
 }
 REPORTS.unit = async () => {
   const units = META.units
-  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${money(-v)}</span>` : 'تسویه'
+  const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">پیش‌پرداخت ${money(-v)}</span>` : 'تسویه'
   const sect = (title, data, isProj) => {
     const rows = data.rows
     return `<div class="panel"><div class="phead"><b>${title}</b><span class="hint strong">${isProj ? bal(data.total) : (data.total > 0 ? `<span class="amt-out">بدهکار ${money(data.total)}</span>` : 'تسویه')}</span></div>
@@ -2449,7 +2451,7 @@ SETTINGS.openings = async () => {
   const d = await api('/api/openings')
   $('#setBody').innerHTML = `
     <div class="notice">مانده‌ی اولیه یعنی وضعیت مالی «قبل از شروع کار با نرم‌افزار». بدهی اولیه مثل قدیمی‌ترین بدهی رفتار می‌کند و اول از همه تسویه می‌شود.</div>
-    <div class="panel"><div class="phead"><b>بدهی/بستانکاری اولیه‌ی واحدها</b><span class="hint">مثبت = بدهکار · منفی = بستانکار</span></div>
+    <div class="panel"><div class="phead"><b>بدهی/پیش‌پرداخت اولیه‌ی واحدها</b><span class="hint">مثبت = بدهی · منفی = پیش‌پرداخت</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>مبلغ (${curFa()})</th><th>توضیح</th></tr></thead><tbody>
       ${d.units.map(u => `<tr><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td><input class="inp num" style="width:150px;padding:7px 9px" data-ob="${u.unit_id}" inputmode="numeric" value="${u.amount ? (u.amount < 0 ? '-' : '') + sep(Math.round(Math.abs(r2d(u.amount)))) : ''}"></td>
@@ -2919,7 +2921,7 @@ const showProject = guard(async id => {
       </div>
       ${d.reconciled ? `<div class="notice printhide" style="border-color:${d.box.fund.balance >= 0 ? 'var(--accent)' : 'var(--out)'}">جمع‌بندی صندوقِ پروژه: وصول ${money(d.box.fund.collected)} − مخارج نهایی ${money(d.box.fund.finalCost)} = ${d.box.fund.balance >= 0 ? `<b class="amt-in">صندوق بستانکار (مازاد) ${money(d.box.fund.balance)}</b>` : `<b class="amt-out">صندوق بدهکار (کسری) ${money(-d.box.fund.balance)}</b>`} ${curFa()}</div>` : ''}
       <div class="tablewrap"><table class="tx"><thead><tr><th>ردیف</th><th>واحد</th><th>ساکن</th><th>سهم مصوبه</th>${d.reconciled ? '<th>سهم نهایی (مخارج)</th>' : ''}<th>پرداختی</th><th>بدهی/طلب طبق مصوبه</th>${d.reconciled ? '<th>بدهی/طلب طبق مخارج</th>' : ''}${adminOnly('<th></th>')}</tr></thead><tbody>
-      ${d.chargeShares.map(s => { const badge = v => v > 0 ? `<span class="badge b-no">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="badge b-done">طلبکار ${money(-v)}</span>` : `<span class="badge b-ok">تسویه</span>`; return `<tr>
+      ${d.chargeShares.map(s => { const badge = v => v > 0 ? `<span class="badge b-no">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="badge b-done">پیش‌پرداخت ${money(-v)}</span>` : `<span class="badge b-ok">تسویه</span>`; return `<tr>
         <td class="num">${faDigit(s.row)}</td><td><b>واحد ${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
         <td class="num">${money(s.budgetShare)}</td>${d.reconciled ? `<td class="num">${money(s.finalShare)}</td>` : ''}
         <td class="num amt-in">${money(s.paid)}</td>
@@ -3200,11 +3202,11 @@ VIEWS.help = async () => {
   const cards = [
     ['🚪', 'واحدها', 'ابتدا واحدهای ساختمان را با شماره، طبقه، متراژ، تعداد نفرات و نام ساکن وارد کنید. هر واحد می‌تواند شارژ اختصاصی داشته باشد. واحد خالی را با برداشتن تیک «واحد پر است» مشخص کنید تا از هزینه‌های خاص معاف شود.'],
     ['🧾', 'فاکتورها و تسهیم', 'هر هزینه‌ی ساختمان را به‌عنوان یک فاکتور ثبت کنید. مبلغ کل بین واحدهای مشمول به یکی از پنج روش (مساوی، متراژ، نفرات، شارژ هر واحد، دستی) تقسیم می‌شود و جمع سهم‌ها همیشه دقیقاً برابر مبلغ فاکتور می‌ماند.'],
-    ['💰', 'دریافتی‌ها', 'واریز هر واحد را ثبت کنید. مبلغ خودکار از قدیمی‌ترین بدهی همان واحد تسویه می‌شود (FIFO) یا می‌توانید فاکتور مشخصی را تیک بزنید. مازاد، بستانکاری واحد می‌شود و در فاکتورهای بعدی خودکار مصرف می‌گردد.'],
+    ['💰', 'دریافتی‌ها', 'واریز هر واحد را ثبت کنید. مبلغ خودکار از قدیمی‌ترین بدهی همان واحد تسویه می‌شود (اول قدیمی‌ترین بدهی) یا می‌توانید فاکتور مشخصی را تیک بزنید. مازاد، پیش‌پرداختِ واحد می‌شود و در فاکتورهای بعدی خودکار مصرف می‌گردد.'],
     ['🏦', 'صندوق‌ها و طلب مدیر', 'هر واریز به یک صندوق می‌رود و هر فاکتور از یک صندوق پرداخت می‌شود. اگر مدیر هزینه‌ای را از جیب خود بدهد، «طلب مدیر» بالا می‌رود و بعداً از صندوق تسویه می‌شود.'],
     ['📅', 'شارژ ماهانه', 'مبلغ شارژ سراسری را در تنظیمات تعیین کنید؛ در ابتدای هر ماه شارژ به‌صورت خودکار برای همه‌ی واحدهای مشمول صادر می‌شود. تغییر مبلغ شارژ، شارژهای صادرشده‌ی قبلی را تغییر نمی‌دهد.'],
     ['📑', 'گزارش‌ها', 'گزارش عملکرد مدیر مالی برای ارائه به هیئت مدیره، گزارش بدهکاران با قدمت بدهی، گزارش فاکتوری، کارت واحد با صورت‌حساب چاپی و تراز کل. همه‌ی جدول‌ها خروجی CSV سازگار با اکسل دارند.'],
-    ['⚖️', 'مانده اولیه', 'اگر پیش از شروع کار با نرم‌افزار، واحدها بدهی/بستانکاری یا صندوق‌ها موجودی داشته‌اند، از تنظیمات ← مانده اولیه واردشان کنید تا دفاتر از همان نقطه تراز بماند.'],
+    ['⚖️', 'مانده اولیه', 'اگر پیش از شروع کار با نرم‌افزار، واحدها بدهی/پیش‌پرداخت یا صندوق‌ها موجودی داشته‌اند، از تنظیمات ← مانده اولیه واردشان کنید تا دفاتر از همان نقطه تراز بماند.'],
     ['💾', 'پشتیبان و آپدیت', 'از تنظیمات ← پشتیبان، یک فایل zip شامل کل دیتابیس و اسناد بسازید که مستقیماً قابل بازیابی است. بسته‌ی آپدیت فقط کد را عوض می‌کند و به داده‌ها و اسناد دست نمی‌زند.']
   ]
   $('#view').innerHTML = head('راهنما و کار با موبایل', 'کار با نرم‌افزار، اتصال از گوشی، و درباره‌ی توی دید') +
