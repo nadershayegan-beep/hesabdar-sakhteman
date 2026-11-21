@@ -47,6 +47,34 @@ function openWhatsApp(u) {
   window.open(url, '_blank', 'noopener')
 }
 
+// رسیدِ پرداخت: PDF (اپ نصبی) یا صفحهٔ چاپ (مرورگر) + ارسال در واتساپ
+function openReceipt(id) {
+  const rel = '/print/payment/' + id
+  if (typeof IS_DESKTOP !== 'undefined' && IS_DESKTOP && window.hesabdar && window.hesabdar.savePdf) {
+    toast('در حال ساخت رسید…')
+    window.hesabdar.savePdf(rel, 'رسید پرداخت ' + id).then(x => toast(x && x.ok ? 'رسید در پوشهٔ «اسناد صادرشده» ذخیره شد' : 'ساخت رسید ناموفق بود', !(x && x.ok)))
+  } else window.open(rel + '?print=1', '_blank')
+}
+async function waReceipt(id) {
+  const v = await api(`/api/report/voucher?dtype=payment&id=${id}`); const p = v.raw
+  const u = (META.units || []).find(x => x.id === p.unit_id) || {}
+  if (!u.phone) return toast('برای این واحد شمارهٔ تلفن ثبت نشده است', true)
+  const t = `سلام ${u.resident_name || 'ساکن گرامی'} 🌱\nرسید پرداخت شمارهٔ ${faDigit(p.id)} — ${META.buildingName || 'ساختمان'}\nمبلغ ${moneyU(p.amount)} در تاریخ ${faDigit(p.j_date)} دریافت شد.\nبا سپاس از پرداخت شما 🙏`
+  window.open(`https://wa.me/${waPhone(u.phone)}?text=${encodeURIComponent(t)}`, '_blank', 'noopener')
+}
+const rcptBtns = id => `<button class="btn tiny" data-rcpt="${id}" title="رسید PDF">🧾</button><button class="btn tiny" data-rcwa="${id}" title="ارسال رسید در واتساپ">💬</button>`
+document.addEventListener('click', e => {
+  const r = e.target.closest('[data-rcpt]'); if (r) { e.stopPropagation(); return openReceipt(+r.dataset.rcpt) }
+  const w = e.target.closest('[data-rcwa]'); if (w) { e.stopPropagation(); return waReceipt(+w.dataset.rcwa).catch(err => toast(err.message, true)) }
+})
+function receiptOffer(id, msg) {
+  openModal('دریافتی ثبت شد', `<p style="font-size:14px;line-height:2">${esc(msg)}</p><p class="hint">رسیدِ این پرداخت را برای ساکن بفرستید:</p>`,
+    `<button class="btn primary" id="roPdf">رسید PDF</button><button class="btn" id="roWa">ارسال در واتساپ</button><button class="btn" id="roClose">بستن</button>`)
+  $('#roPdf').onclick = () => openReceipt(id)
+  $('#roWa').onclick = guard(() => waReceipt(id))
+  $('#roClose').onclick = closeModal
+}
+
 const api = (u, o) => fetch(u, o).then(async r => {
   const d = await r.json().catch(() => ({}))
   if (r.status === 401) { location.reload(); throw new Error('نیاز به ورود') }
@@ -118,6 +146,23 @@ function confirmBox(msg, onYes, yesLabel = 'بله، انجام شود') {
   d.onclick = e => { if (e.target === d) close() }
   d.querySelector('[data-y]').onclick = guard(async () => { close(); await onYes() })
   d.querySelector('[data-n]').focus()
+}
+
+// تأییدِ حذفِ سندِ مالی با ذکرِ علت (در سابقهٔ تغییرات ثبت می‌شود)
+function confirmReason(msg, onYes) {
+  const d = document.createElement('div'); d.className = 'cfm'
+  d.innerHTML = `<div class="cbox" role="alertdialog"><p>${esc(msg)}</p>
+    <label class="f">علتِ حذف (الزامی؛ در سابقهٔ تغییرات می‌ماند)<input class="inp" data-r placeholder="مثلاً: ثبت تکراری / مبلغ اشتباه"></label>
+    <div class="cbtns" style="margin-top:12px"><button class="btn danger" data-y>حذف شود</button><button class="btn" data-n>انصراف</button></div></div>`
+  document.body.appendChild(d)
+  const close = () => d.remove(), inp = d.querySelector('[data-r]')
+  d.querySelector('[data-n]').onclick = close
+  d.onclick = e => { if (e.target === d) close() }
+  d.querySelector('[data-y]').onclick = guard(async () => {
+    const r = inp.value.trim(); if (r.length < 3) { inp.classList.add('bad'); inp.focus(); throw new Error('علتِ حذف را بنویسید') }
+    close(); await onYes(r)
+  })
+  inp.focus()
 }
 
 // ---------- تاریخ ----------
@@ -561,8 +606,8 @@ VIEWS.invoices = async () => {
   })
   document.querySelectorAll('[data-delinv]').forEach(b => b.onclick = e => {
     e.stopPropagation()
-    confirmBox('این فاکتور و همه‌ی سهم‌هایش حذف شود؟ پرداخت‌های تخصیص‌یافته آزاد و به بدهی‌های دیگر منتقل می‌شوند.',
-      async () => { await api(`/api/invoices/${b.dataset.delinv}`, { method: 'DELETE' }); toast('فاکتور حذف شد'); refresh() })
+    confirmReason('این فاکتور و همه‌ی سهم‌هایش حذف شود؟ پرداخت‌های تخصیص‌یافته آزاد و به بدهی‌های دیگر منتقل می‌شوند.',
+      async r => { await api(`/api/invoices/${b.dataset.delinv}?reason=${encodeURIComponent(r)}`, { method: 'DELETE' }); toast('فاکتور حذف شد'); refresh() })
   })
   if ($('#newInv')) $('#newInv').onclick = () => invoiceForm()
   if ($('#batchInv')) $('#batchInv').onclick = () => batchExpenseForm()
@@ -780,8 +825,8 @@ const showInvoice = guard(async id => {
     if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت صورت‌ریز…'); window.hesabdar.savePdf(rel, `صورت‌ریز ${i.title}`).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
     else window.open(rel, '_blank')
   }
-  document.querySelectorAll('[data-delep]').forEach(b => b.onclick = () => confirmBox('این پرداخت از صندوق حذف شود؟ پول به صندوق برمی‌گردد.',
-    async () => { await api(`/api/expense-payments/${b.dataset.delep}`, { method: 'DELETE' }); toast('پرداخت حذف شد'); closeModal(); refresh(); showInvoice(i.id) }))
+  document.querySelectorAll('[data-delep]').forEach(b => b.onclick = () => confirmReason('این پرداخت از صندوق حذف شود؟ پول به صندوق برمی‌گردد.',
+    async r => { await api(`/api/expense-payments/${b.dataset.delep}?reason=${encodeURIComponent(r)}`, { method: 'DELETE' }); toast('پرداخت حذف شد'); closeModal(); refresh(); showInvoice(i.id) }))
 })
 function payExpenseForm(inv, funds) {
   const responsible = (funds.find(f => f.id === inv.fund_id) || {}).name || '—'
@@ -809,19 +854,20 @@ VIEWS.payments = async () => {
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
     adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th>${adminOnly('<th></th>')}</tr></thead>
+      <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr>
         <td class="num"><b>${faDigit(p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
         <td class="num amt-in">${money(p.amount)}</td><td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td>
         <td class="num">${money(p.allocated)}</td><td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
+        <td class="rowact">${p.is_opening ? '' : rcptBtns(p.id)}</td>
         ${adminOnly(`<td class="actcell"><button class="mini-btn" data-editpay="${p.id}">ویرایش</button><button class="del" data-delpay="${p.id}">🗑</button></td>`)}</tr>`).join('')
-      : emptyRow(isAdmin() ? 11 : 10, 'هنوز دریافتی ثبت نشده است')}</tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="4">جمع (${faDigit(rows.length)} فقره)</td><td class="num">${money(total)}</td><td colspan="${isAdmin() ? 6 : 5}"></td></tr></tfoot>` : ''}
+      : emptyRow(isAdmin() ? 12 : 11, 'هنوز دریافتی ثبت نشده است')}</tbody>
+      ${rows.length ? `<tfoot><tr><td colspan="4">جمع (${faDigit(rows.length)} فقره)</td><td class="num">${money(total)}</td><td colspan="${isAdmin() ? 7 : 6}"></td></tr></tfoot>` : ''}
     </table></div></div>`
   document.querySelectorAll('[data-delpay]').forEach(b => b.onclick = () =>
-    confirmBox('این دریافتی حذف شود؟ تخصیص‌هایش آزاد می‌شود و بدهی واحد برمی‌گردد.',
-      async () => { await api(`/api/payments/${b.dataset.delpay}`, { method: 'DELETE' }); toast('دریافتی حذف شد'); refresh() }))
+    confirmReason('این دریافتی حذف شود؟ تخصیص‌هایش آزاد می‌شود و بدهی واحد برمی‌گردد.',
+      async r => { await api(`/api/payments/${b.dataset.delpay}?reason=${encodeURIComponent(r)}`, { method: 'DELETE' }); toast('دریافتی حذف شد'); refresh() }))
   document.querySelectorAll('[data-editpay]').forEach(b => b.onclick = () => {
     const p = rows.find(x => x.id === +b.dataset.editpay); if (p) paymentForm(null, p)
   })
@@ -1033,9 +1079,10 @@ function paymentForm(presetUnit, pay, after, presetProject) {
     payload.invoiceIds = invoiceIds.length ? invoiceIds : null
     const r = await post('/api/payments', payload)
     closeModal()
-    toast(forProject ? (r.credit > 0 ? `پرداختِ پروژه ثبت شد — ${moneyU(r.allocated)} بابت سهم و ${moneyU(r.credit)} طلبِ پروژه` : `پرداختِ پروژه ثبت شد`)
-      : (r.credit > 0 ? `ثبت شد — ${moneyU(r.allocated)} تسویه و ${moneyU(r.credit)} بستانکار شد` : `دریافتی ثبت و ${moneyU(r.allocated)} تسویه شد`))
+    const msg = forProject ? (r.credit > 0 ? `پرداختِ پروژه ثبت شد — ${moneyU(r.allocated)} بابت سهم و ${moneyU(r.credit)} پیش‌پرداختِ پروژه` : `پرداختِ پروژه ثبت شد`)
+      : (r.credit > 0 ? `ثبت شد — ${moneyU(r.allocated)} تسویه و ${moneyU(r.credit)} پیش‌پرداخت شد` : `دریافتی ثبت و ${moneyU(r.allocated)} تسویه شد`)
     after ? after() : refresh()
+    receiptOffer(r.id, msg)
   })
 }
 
@@ -1182,7 +1229,7 @@ const showUnitCard = guard(async id => {
         <td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td><td class="num">${money(p.allocated)}</td>
         <td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
-        <td class="printhide rowact">${p.is_opening ? '' : docActs('payment', p.id)}</td></tr>`).join('') : emptyRow(8, 'پرداختی ثبت نشده')}
+        <td class="printhide rowact">${p.is_opening ? '' : rcptBtns(p.id) + docActs('payment', p.id)}</td></tr>`).join('') : emptyRow(8, 'پرداختی ثبت نشده')}
       </tbody></table></div></div>
     ${d.creditUses && d.creditUses.length ? `<div class="panel printhide"><div class="phead"><b>پرداخت از محل طلب</b><span class="hint">استفاده از بستانکاریِ واحد بابت بدهی‌های دیگر (بدون ورود نقدینگی)</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>بابت</th><th>توضیح</th></tr></thead><tbody>
@@ -1362,7 +1409,7 @@ let repTab = 'manager', repRange = null
 const REP_GROUPS = [
   ['برای ساکنین', [['debtors', 'بدهکاران'], ['unit', 'صورت‌حساب واحد'], ['ledger', 'بدهی تفکیکی واحدها']]],
   ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
-  ['دفاتر حسابداری', [['journal', 'دفتر روزنامه'], ['gl', 'دفتر کل'], ['fundpay', 'پرداخت‌های صندوق'], ['balance', 'کنترل سلامت دفاتر']], true]
+  ['دفاتر حسابداری', [['journal', 'دفتر روزنامه'], ['gl', 'دفتر کل'], ['fundpay', 'پرداخت‌های صندوق'], ['balance', 'کنترل سلامت دفاتر'], ['audit', 'سابقهٔ تغییرات']], true]
 ]
 VIEWS.reports = async () => {
   let adv = false; try { adv = localStorage.getItem('repAdv') === '1' } catch { }
@@ -1714,8 +1761,8 @@ async function editDoc(dtype, id) {
 function deleteDoc(dtype, id) {
   const ep = dtype === 'invoice' ? '/api/invoices/' : dtype === 'payment' ? '/api/payments/' : '/api/contractor-invoices/'
   const what = dtype === 'invoice' ? 'این فاکتور' : dtype === 'payment' ? 'این دریافتی' : 'این فاکتور پیمانکار'
-  confirmBox(`${what} حذف شود؟ اثرش روی بدهیِ واحدها و موجودیِ صندوق‌ها برگشت می‌خورد.`,
-    async () => { await api(ep + id, { method: 'DELETE' }); toast('سند حذف شد'); refresh() })
+  confirmReason(`${what} حذف شود؟ اثرش روی بدهیِ واحدها و موجودیِ صندوق‌ها برگشت می‌خورد.`,
+    async r => { await api(ep + id + '?reason=' + encodeURIComponent(r), { method: 'DELETE' }); toast('سند حذف شد'); refresh() })
 }
 const docActs = (dtype, id) => isAdmin() ? `<button class="btn tiny" data-dedit="${dtype}:${id}" title="ویرایش">✏️</button> <button class="btn tiny del" data-ddel="${dtype}:${id}" title="حذف">🗑</button>` : ''
 // شنوندهٔ سراسری (یک‌بار): دکمه‌های ✏️/🗑 در همهٔ جدول‌ها
@@ -1737,10 +1784,11 @@ async function showVoucher(dtype, id) {
       <td class="num ${l.credit ? 'amt-in' : 'muted'}">${l.credit ? money(l.credit) : '—'}</td></tr>`).join('')}
     </tbody><tfoot><tr><td colspan="2">جمع ${v.balanced ? '<span class="amt-in">متوازن ✓</span>' : '<span class="amt-out">نامتوازن!</span>'}</td>
       <td class="num">${money(v.totalDebit)}</td><td class="num">${money(v.totalCredit)}</td></tr></tfoot></table></div></div>`,
-    `${isAdmin() ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}<button class="btn" id="vCancel">بستن</button>`)
+    `${isAdmin() ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}${dtype === 'payment' ? `<button class="btn" data-rcpt="${id}">رسید PDF</button>` : ''}<button class="btn" id="vHist">سابقه</button><button class="btn" id="vCancel">بستن</button>`)
   $('#vCancel').onclick = closeModal
   if ($('#vEdit')) $('#vEdit').onclick = () => { closeModal(); editDoc(dtype, id) }
   if ($('#vDel')) $('#vDel').onclick = () => { closeModal(); deleteDoc(dtype, id) }
+  $('#vHist').onclick = guard(() => showDocHistory(dtype === 'invoice' ? 'invoices' : dtype === 'payment' ? 'payments' : 'contractor_invoices', id))
 }
 const voucherAttr = e => e.inv ? `data-voucher="invoice:${e.inv}"` : e.pid ? `data-voucher="payment:${e.pid}"` : e.cid ? `data-voucher="contractor:${e.cid}"` : (e.refid && e.dtype) ? `data-voucher="${e.dtype}:${e.refid}"` : ''
 
@@ -2026,6 +2074,36 @@ REPORTS.balance = async () => {
           <ul class="hlist">${c.items.map(i => `<li>${escFa(i.text)}</li>`).join('')}</ul>${c.hint ? `<div class="hint">${esc(c.hint)}</div>` : ''}`}</div></div>`).join('')}
     </div>
     <div class="kpis">${kpi('جمع بدهیِ خالصِ واحدها', signed(h.totals.netDebt))}${kpi('جمع سهم‌ها', money(h.totals.totalShares))}${kpi('جمع دریافتی‌ها', money(h.totals.totalPayments))}${kpi('موجودی کل صندوق‌ها', money(h.totals.funds.reduce((a, f) => a + f.balance, 0)))}</div>`
+}
+// سابقهٔ تغییرات: چه کسی، کی، چه سندی را ثبت/ویرایش/حذف کرد و چرا
+const AUD_FIELDS = { amount: 'مبلغ', title: 'عنوان', j_date: 'تاریخ', fund_id: 'صندوق', unit_id: 'واحد', method: 'روش تقسیم', note: 'توضیح', paid_amount: 'پرداخت‌شده', vendor_name: 'پیمانکار', opening_balance: 'موجودی اولیه', name: 'نام', _fundPaid: 'پرداخت از صندوق' }
+const audFmt = (k, v) => v == null ? '—' : (k === 'amount' || k === 'paid_amount' || k === 'opening_balance' || k === '_fundPaid') ? money(v) : k === 'fund_id' ? esc((META.funds.find(f => f.id === v) || {}).name || v) : k === 'unit_id' ? 'واحد ' + escFa((META.units.find(u => u.id === v) || {}).number || v) : escFa(String(v))
+function audDetail(r) {
+  if (r.action === 'حذف' && r.before) return Object.keys(AUD_FIELDS).filter(k => r.before[k] != null && r.before[k] !== '').map(k => `${AUD_FIELDS[k]}: ${audFmt(k, r.before[k])}`).join(' · ')
+  if (r.before && r.after) { const ch = Object.keys(AUD_FIELDS).filter(k => JSON.stringify(r.before[k]) !== JSON.stringify(r.after[k])); return ch.length ? ch.map(k => `${AUD_FIELDS[k]}: ${audFmt(k, r.before[k])} ← ${audFmt(k, r.after[k])}`).join(' · ') : 'بدون تغییر در مبلغ/تاریخ/طرف‌حساب' }
+  if (r.body) return Object.keys(AUD_FIELDS).filter(k => r.body[k] != null && r.body[k] !== '').map(k => `${AUD_FIELDS[k]}: ${audFmt(k, r.body[k])}`).join(' · ') || ''
+  return ''
+}
+const audTable = rows => `<div class="tablewrap"><table class="tx"><thead><tr><th>زمان</th><th>کاربر</th><th>عمل</th><th>سند</th><th>جزئیات</th><th>علت</th></tr></thead><tbody>
+  ${rows.length ? rows.map(r => `<tr><td class="num">${faDigit(new Date(r.at).toLocaleString('fa-IR'))}</td><td>${esc(r.user_name || '—')}</td>
+    <td><span class="catpill ${r.action === 'حذف' ? 'amt-out' : ''}">${esc(r.action)}</span></td><td>${esc(r.label || '')}${r.entity_id ? ' ' + faDigit(r.entity_id) : ''}</td>
+    <td class="hint">${audDetail(r)}</td><td>${esc(r.reason || '')}</td></tr>`).join('') : emptyRow(6, 'هنوز تغییری ثبت نشده')}</tbody></table></div>`
+REPORTS.audit = async () => {
+  const draw = guard(async act => {
+    const rows = await api('/api/audit?limit=300' + (act ? '&action=' + encodeURIComponent(act) : ''))
+    $('#audBox').innerHTML = audTable(rows)
+  })
+  $('#repBody').innerHTML = `<div class="filters printhide"><label class="f" style="max-width:200px">نوع عمل<select class="inp" id="audAct"><option value="">همه</option><option>ثبت</option><option>ویرایش</option><option>حذف</option><option>پرداخت</option><option>تعدیل</option></select></label>
+    <button class="btn small" onclick="printAs('سابقهٔ تغییرات')">🖨 چاپ</button></div>
+    <p class="hint">هر ثبت، ویرایش و حذفِ سندِ مالی با نامِ کاربر، زمان و وضعیتِ قبل و بعد در اینجا می‌ماند و قابل پاک کردن نیست.</p>
+    <div class="panel" id="audBox"><div class="empty">در حال بارگذاری…</div></div>`
+  $('#audAct').onchange = e => draw(e.target.value)
+  draw('')
+}
+async function showDocHistory(entity, id) {
+  const rows = await api(`/api/audit?entity=${entity}&entityId=${id}`)
+  openModal('سابقهٔ این سند', audTable(rows), `<button class="btn" id="dhClose">بستن</button>`)
+  $('#dhClose').onclick = closeModal
 }
 REPORTS.projects = async () => {
   const rows = await api('/api/report/projects')
@@ -2822,7 +2900,7 @@ const showProject = guard(async id => {
   if ($('#ciNew')) $('#ciNew').onclick = () => cInvoiceForm(id, null, refresh)
   document.querySelectorAll('[data-ci-paid]').forEach(b => b.onclick = guard(async () => { await post('/api/contractor-invoices/' + b.dataset.ciPaid, { paid: b.dataset.ciPaidOn !== '1' }, 'PUT'); refresh() }))
   document.querySelectorAll('[data-ci-edit]').forEach(b => b.onclick = () => cInvoiceForm(id, d.invoices.find(x => x.id === +b.dataset.ciEdit), refresh))
-  document.querySelectorAll('[data-ci-del]').forEach(b => b.onclick = () => confirmBox('این فاکتور حذف شود؟', async () => { await api('/api/contractor-invoices/' + b.dataset.ciDel, { method: 'DELETE' }); toast('حذف شد'); refresh() }))
+  document.querySelectorAll('[data-ci-del]').forEach(b => b.onclick = () => confirmReason('این فاکتور پیمانکار حذف شود؟ اثرش روی صندوق برگشت می‌خورد.', async r => { await api('/api/contractor-invoices/' + b.dataset.ciDel + '?reason=' + encodeURIComponent(r), { method: 'DELETE' }); toast('حذف شد'); refresh() }))
   document.querySelectorAll('[data-ci-att]').forEach(b => b.onclick = () => doAttachUpload('cinvoice', +b.dataset.ciAtt).then(ok => ok && refresh()))
   document.querySelectorAll('[data-att-add]').forEach(b => b.onclick = () => doAttachUpload(b.dataset.attType, +b.dataset.attAdd).then(ok => ok && refresh()))
   document.querySelectorAll('[data-att-del]').forEach(b => b.onclick = guard(async () => { await api('/api/attachments/' + b.dataset.attDel, { method: 'DELETE' }); refresh() }))

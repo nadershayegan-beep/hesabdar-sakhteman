@@ -210,6 +210,10 @@ function migrate() {
   addCol('invoices', 'from_fund', 'INTEGER DEFAULT 0')    // 1 = هزینهٔ جاری از صندوق (بدون تقسیم/بدهکار کردن واحدها)
   addCol('contractor_invoices', 'paid_amount', 'INTEGER DEFAULT 0')
   addCol('fund_txns', 'ref_exppay_id', 'INTEGER')
+  db.exec(`CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, at TEXT NOT NULL, user_id INTEGER, user_name TEXT,
+    action TEXT NOT NULL, entity TEXT, entity_id INTEGER, label TEXT, reason TEXT DEFAULT '',
+    before_json TEXT, after_json TEXT, body_json TEXT, path TEXT)`)
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -425,6 +429,7 @@ async function resetRequestFresh() {
 
 // ---------- کمک‌کارهای HTTP ----------
 function sendJSON(res, code, obj, headers = {}) {
+  res._json = obj
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...headers })
   res.end(JSON.stringify(obj))
 }
@@ -436,7 +441,7 @@ function readBody(req, limit = 25 * 1024 * 1024) {
     req.on('error', reject)
   })
 }
-const jbody = async req => JSON.parse((await readBody(req)).toString('utf8') || '{}')
+const jbody = async req => { const b = JSON.parse((await readBody(req)).toString('utf8') || '{}'); req._body = b; return b }
 let docSeq = 0
 const safeFolder = s => ((s || '').trim().replace(/[\/\\:*?"<>| -]/g, '-').replace(/\s+/g, ' ').slice(0, 60) || 'بدون-نام')
 async function saveDoc(doc, subdir = '') {
@@ -2068,6 +2073,49 @@ tr,td,th,.kpi{break-inside:avoid}
 thead{display:table-header-group}
 </style></head><body><div class="stmt">${inner}</div></body></html>`
 
+// عدد به حروفِ فارسی (برای رسید)
+function numToFaWords(n) {
+  n = Math.floor(Math.abs(+n || 0)); if (n === 0) return 'صفر'
+  const ones = ['', 'یک', 'دو', 'سه', 'چهار', 'پنج', 'شش', 'هفت', 'هشت', 'نه']
+  const teens = ['ده', 'یازده', 'دوازده', 'سیزده', 'چهارده', 'پانزده', 'شانزده', 'هفده', 'هجده', 'نوزده']
+  const tens = ['', '', 'بیست', 'سی', 'چهل', 'پنجاه', 'شصت', 'هفتاد', 'هشتاد', 'نود']
+  const hund = ['', 'یکصد', 'دویست', 'سیصد', 'چهارصد', 'پانصد', 'ششصد', 'هفتصد', 'هشتصد', 'نهصد']
+  const big = ['', 'هزار', 'میلیون', 'میلیارد', 'هزار میلیارد']
+  const three = x => { const p = []; const h = Math.floor(x / 100), r = x % 100
+    if (h) p.push(hund[h]); if (r >= 10 && r < 20) p.push(teens[r - 10]); else { if (Math.floor(r / 10)) p.push(tens[Math.floor(r / 10)]); if (r % 10) p.push(ones[r % 10]) }
+    return p.join(' و ') }
+  const parts = []; let i = 0
+  while (n > 0 && i < big.length) { const c = n % 1000; if (c) parts.unshift(three(c) + (big[i] ? ' ' + big[i] : '')); n = Math.floor(n / 1000); i++ }
+  return parts.join(' و ')
+}
+// رسیدِ پرداختِ ساکن
+function printPaymentHtml(id) {
+  const p = db.prepare(`SELECT p.*, u.number, u.resident_name, u.owner_name, f.name fund_name FROM payments p LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id WHERE p.id=?`).get(id)
+  if (!p) return null
+  const allocs = db.prepare(`SELECT SUM(a.amount) amount, i.id inv_id, i.title, i.j_date FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id JOIN invoices i ON i.id=s.invoice_id WHERE a.payment_id=? GROUP BY i.id ORDER BY i.g_date, i.id`).all(id)
+  const used = allocs.reduce((a, x) => a + x.amount, 0), credit = p.amount - used
+  const debtAfter = unitDebt(p.unit_id)
+  const U = pUnitFa(), amtDisp = isTomanDisp() ? Math.round(p.amount / 10) : p.amount
+  const inner = `
+    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
+    <div class="sub">رسیدِ دریافت وجه · شمارهٔ رسید: <b>${faNum(p.id)}</b> · تاریخ: ${faNum(p.j_date)}</div>
+    <div class="big">مبلغ ${pMoney(p.amount)} ${U}<div style="font-size:13px;font-weight:600;margin-top:4px">(به حروف: ${numToFaWords(amtDisp)} ${U})</div></div>
+    <table><tbody>
+      <tr><th style="width:30%">از</th><td>واحد ${faNum(p.number)}${p.resident_name ? ' — ' + hEsc(p.resident_name) : ''}</td></tr>
+      <tr><th>واریز به</th><td>${hEsc(p.fund_name || '—')}${p.method ? ' · روش: ' + hEsc(p.method) : ''}</td></tr>
+      ${p.note ? `<tr><th>توضیح</th><td>${hEsc(p.note)}</td></tr>` : ''}
+    </tbody></table>
+    <div class="sech">بابتِ این بدهی‌ها تسویه شد</div>
+    <table><thead><tr><th>سند</th><th>شرح</th><th>تاریخ</th><th>مبلغ</th></tr></thead><tbody>
+      ${allocs.length ? allocs.map(a => `<tr><td class="num">${faNum(a.inv_id)}</td><td>${hEsc(a.title)}</td><td class="num">${faNum(a.j_date)}</td><td class="num">${pMoney(a.amount)}</td></tr>`).join('') : '<tr><td colspan="4">— به‌صورت پیش‌پرداخت (علی‌الحساب) ثبت شد —</td></tr>'}
+      ${credit > 0 ? `<tr><td></td><td>پیش‌پرداخت (برای بدهی‌های بعدی)</td><td></td><td class="num">${pMoney(credit)}</td></tr>` : ''}
+      <tr class="tot"><td colspan="3">جمع</td><td class="num">${pMoney(p.amount)}</td></tr>
+    </tbody></table>
+    <div class="big" style="font-size:14px;border-width:1px">${debtAfter > 0 ? `ماندهٔ بدهیِ فعلیِ واحد (تا امروز): <b>${pMoney(debtAfter)} ${U}</b>` : debtAfter < 0 ? `پیش‌پرداختِ فعلیِ واحد: <b>${pMoney(-debtAfter)} ${U}</b>` : 'حسابِ واحد تا امروز تسویه است.'}</div>
+    <div class="sign"><span>امضای دریافت‌کننده (مدیر ساختمان):</span><span>امضای پرداخت‌کننده:</span></div>
+    <div class="foot">صادرشده از «حسابدار ساختمان»</div>`
+  return printLayout(`رسید ${p.id} — واحد ${p.number}`, inner)
+}
 function printUnitHtml(c) {
   const u = c.unit, open = c.shares.filter(s => s.remaining > 0)
   const debtLine = c.debt > 0
@@ -2363,10 +2411,49 @@ const server = createServer((req, res) => {
     if (NO_TX.has(p)) return handle(req, res)
     db.exec('BEGIN IMMEDIATE')
     let ok = false
-    try { await handle(req, res); ok = res.statusCode < 400 }
+    const aud = auditBegin(req, p)
+    try { await handle(req, res); ok = res.statusCode < 400; if (ok && aud) auditEnd(aud, req, res) }
     finally { try { db.exec(ok ? 'COMMIT' : 'ROLLBACK') } catch (e) { console.error('تراکنش:', e.message) } }
   })
 })
+// ---- سابقهٔ تغییرات (audit trail): هر ثبت/ویرایش/حذفِ سندِ مالی با وضعیتِ قبل و بعد و کاربر ----
+const AUDIT_ENT = [
+  [/^\/api\/invoices\/(\d+)$/, 'invoices', 'فاکتور'], [/^\/api\/payments\/(\d+)$/, 'payments', 'دریافتی'],
+  [/^\/api\/contractor-invoices\/(\d+)$/, 'contractor_invoices', 'فاکتور پیمانکار'], [/^\/api\/expense-payments\/(\d+)$/, 'expense_payments', 'پرداخت هزینه'],
+  [/^\/api\/funds\/(\d+)$/, 'funds', 'صندوق'], [/^\/api\/units\/(\d+)$/, 'units', 'واحد'], [/^\/api\/projects\/(\d+)$/, 'projects', 'پروژه']
+]
+const AUDIT_CREATE = { '/api/invoices': ['invoices', 'فاکتور'], '/api/payments': ['payments', 'دریافتی'], '/api/payments/bulk': ['payments', 'دریافت گروهی'], '/api/contractor-invoices': ['contractor_invoices', 'فاکتور پیمانکار'], '/api/charge/issue': ['invoices', 'صدور شارژ'] }
+function auditSnapshot(table, id) {
+  const row = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id); if (!row) return null
+  if (table === 'invoices') { row._shares = db.prepare('SELECT unit_id, share_amount FROM invoice_shares WHERE invoice_id=?').all(id); row._fundPaid = invoiceFundPaid(id) }
+  if (table === 'payments') row._allocations = db.prepare('SELECT share_id, amount FROM payment_allocations WHERE payment_id=?').all(id)
+  return row
+}
+function auditBegin(req, p) {
+  const m = req.method
+  for (const [re, table, label] of AUDIT_ENT) {
+    const mm = re.exec(p); if (!mm) continue
+    return { table, label, id: +mm[1], action: m === 'DELETE' ? 'حذف' : 'ویرایش', before: auditSnapshot(table, +mm[1]), path: p }
+  }
+  const pay = /^\/api\/invoices\/(\d+)\/pay$/.exec(p); if (pay) return { table: 'invoices', label: 'پرداخت از صندوق', id: +pay[1], action: 'پرداخت', before: auditSnapshot('invoices', +pay[1]), path: p }
+  const adj = /^\/api\/funds\/(\d+)\/adjust$/.exec(p); if (adj) return { table: 'funds', label: 'سند تعدیل', id: +adj[1], action: 'تعدیل', before: null, path: p }
+  if (m === 'POST' && AUDIT_CREATE[p]) return { table: AUDIT_CREATE[p][0], label: AUDIT_CREATE[p][1], id: null, action: 'ثبت', before: null, path: p }
+  return null
+}
+function auditEnd(a, req, res) {
+  try {
+    const u = authUser(req)
+    const after = a.id && a.action !== 'حذف' ? auditSnapshot(a.table, a.id) : null
+    let body = req._body ? { ...req._body } : null
+    if (body) { delete body.doc; delete body.dataUrl; delete body.password; delete body.newPassword }
+    let id = a.id
+    if (!id && res._json && res._json.id) id = res._json.id
+    const reason = (req._body && req._body.reason) || new URL(req.url, 'http://x').searchParams.get('reason') || ''
+    db.prepare(`INSERT INTO audit_log(at,user_id,user_name,action,entity,entity_id,label,reason,before_json,after_json,body_json,path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(nowISO(), u ? u.id : null, u ? u.display_name : '', a.action, a.table, id || null, a.label, String(reason).slice(0, 300),
+        a.before ? JSON.stringify(a.before) : null, after ? JSON.stringify(after) : null, body ? JSON.stringify(body).slice(0, 20000) : null, a.path)
+  } catch (e) { console.error('سابقه:', e.message) }
+}
 async function handle(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`)
@@ -2594,6 +2681,12 @@ async function handle(req, res) {
     }
     if (prM && M === 'DELETE') {
       const pid = +prM[1]
+      // پروژه‌ای که سندِ مالی دارد حذف نمی‌شود (پول ساکنین و پیمانکار یتیم می‌ماند)؛ اول اسنادش را تعیین تکلیف کنید
+      const ciN = db.prepare(`SELECT COUNT(*) c FROM contractor_invoices WHERE project_id=?`).get(pid).c
+      const payN = db.prepare(`SELECT COUNT(*) c FROM payments WHERE project_id=?`).get(pid).c
+      const chg0 = projectChargeInvoice(pid)
+      const allocN = chg0 ? db.prepare(`SELECT COUNT(*) c FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id WHERE s.invoice_id=?`).get(chg0.id).c : 0
+      if (ciN || payN || allocN) return sendJSON(res, 400, { error: `این پروژه سندِ مالی دارد (${ciN} فاکتور پیمانکار، ${payN + allocN} دریافتی) و حذفش پول ساکنین را بلاتکلیف می‌کند. اگر پروژه منتفی شده، وضعیتش را «لغوشده» کنید.` })
       for (const q of db.prepare(`SELECT id FROM quotes WHERE project_id=?`).all(pid)) {
         for (const a of listAttachments('quote', q.id)) await rm(join(UP_DIR, a.file), { force: true })
         db.prepare(`DELETE FROM attachments WHERE entity_type='quote' AND entity_id=?`).run(q.id)
@@ -2661,6 +2754,7 @@ async function handle(req, res) {
       const b = await jbody(req); const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }; if (d.error) return sendJSON(res, 400, d)
       const vname = b.vendorId != null ? (+b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()) : cur.vendor_name
       const amt = b.amount != null ? Math.round(+b.amount) : cur.amount
+      if (!(amt > 0)) return sendJSON(res, 400, { error: 'مبلغ فاکتور باید بزرگ‌تر از صفر باشد' })
       // مبلغِ پرداختی: اگر paidAmount آمده همان؛ وگرنه از تیکِ paid؛ وگرنه مقدارِ فعلی (با سقفِ مبلغ)
       const paidAmt = Math.max(0, Math.min(amt,
         b.paidAmount != null ? Math.round(+b.paidAmount)
@@ -3045,17 +3139,26 @@ async function handle(req, res) {
         const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId)
         docFile = await saveDoc(b.doc, `واحد ${safeFolder(u.number)}`)
       }
-      // تخصیص‌ها آزاد و دوباره از قدیمی‌ترین بدهی محاسبه می‌شوند
-      const oldInvs = db.prepare(`SELECT DISTINCT s.invoice_id i FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id WHERE a.payment_id=?`).all(id).map(r => r.i)
-      db.prepare(`DELETE FROM payment_allocations WHERE payment_id=?`).run(id)
+      if (!db.prepare(`SELECT 1 FROM units WHERE id=?`).get(unitId)) return sendJSON(res, 400, { error: 'واحد نامعتبر است' })
+      if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(fundId)) return sendJSON(res, 400, { error: 'صندوق نامعتبر است' })
+      const u = db.prepare(`SELECT number FROM units WHERE id=?`).get(unitId)
+      const moneyChanged = amount !== cur.amount || unitId !== cur.unit_id || fundId !== cur.fund_id
       db.prepare(`UPDATE payments SET unit_id=?,amount=?,g_date=?,j_date=?,fund_id=?,method=?,doc_file=?,note=? WHERE id=?`)
         .run(unitId, amount, d.g_date, d.j_date, fundId, b.method ?? cur.method, docFile, b.note ?? cur.note, id)
+      if (!moneyChanged) {
+        // فقط تاریخ/روش/توضیح/سند عوض شده: تخصیص‌ها و صورت‌حسابِ ساکن دست نمی‌خورد
+        db.prepare(`UPDATE fund_txns SET g_date=?, j_date=? WHERE ref_payment_id=?`).run(d.g_date, d.j_date, id)
+        return sendJSON(res, 200, { ok: true, reallocated: false })
+      }
+      // مبلغ/واحد/صندوق عوض شده: اول همان بدهی‌هایی که قبلاً تسویه می‌کرد، بعد بقیهٔ همان سبد
+      const oldInvs = db.prepare(`SELECT DISTINCT s.invoice_id i FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id WHERE a.payment_id=?`).all(id).map(r => r.i)
+      db.prepare(`DELETE FROM payment_allocations WHERE payment_id=?`).run(id)
       db.prepare(`DELETE FROM fund_txns WHERE ref_payment_id=?`).run(id)
-      const u = db.prepare(`SELECT number FROM units WHERE id=?`).get(unitId)
       addFundTxn(fundId, 'in', amount, { ...d, payId: id, note: `دریافتی واحد ${u.number}`, by: user.id })
+      allocatePayment(id, unitId === cur.unit_id ? oldInvs : null)
       applyCreditsOfUnit(cur.unit_id); if (unitId !== cur.unit_id) applyCreditsOfUnit(unitId)
       for (const i of oldInvs) refreshInvoiceStatus(i)
-      return sendJSON(res, 200, { ok: true })
+      return sendJSON(res, 200, { ok: true, reallocated: true })
     }
     // بدهی‌های باز یک واحد (برای تخصیص دستی موقع ثبت دریافتی)
     const openM = /^\/api\/unit\/(\d+)\/open$/.exec(path)
@@ -3215,6 +3318,14 @@ async function handle(req, res) {
     if (path === '/api/report/fund' && M === 'GET') { const r = fundReport(+Q.fundId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'صندوق یافت نشد' }) }
     if (path === '/api/report/funds-overview' && M === 'GET') return sendJSON(res, 200, fundsOverview())
     if (path === '/api/report/journal' && M === 'GET') return sendJSON(res, 200, journalReport(Q))
+    if (path === '/api/audit' && M === 'GET') {
+      const w = [], a = []
+      if (Q.entity) { w.push('entity=?'); a.push(Q.entity) }
+      if (Q.entityId) { w.push('entity_id=?'); a.push(+Q.entityId) }
+      if (Q.action) { w.push('action=?'); a.push(Q.action) }
+      const rows = db.prepare(`SELECT * FROM audit_log ${w.length ? 'WHERE ' + w.join(' AND ') : ''} ORDER BY id DESC LIMIT ${Math.min(500, +Q.limit || 200)}`).all(...a)
+      return sendJSON(res, 200, rows.map(r => ({ ...r, before: r.before_json ? JSON.parse(r.before_json) : null, after: r.after_json ? JSON.parse(r.after_json) : null, body: r.body_json ? JSON.parse(r.body_json) : null, before_json: undefined, after_json: undefined, body_json: undefined })))
+    }
     if (path === '/api/report/ledger-accounts' && M === 'GET') return sendJSON(res, 200, ledgerAccounts())
     if (path === '/api/report/ledger' && M === 'GET') { const r = generalLedger(Q.type, Q.id, Q.from || '', Q.to || ''); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'حساب یافت نشد' }) }
     if (path === '/api/report/voucher' && M === 'GET') { const r = voucherOf(Q.dtype, +Q.id); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'سند یافت نشد' }) }
@@ -3419,6 +3530,13 @@ async function handle(req, res) {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(html)
       }
+      const ppM = /^\/print\/payment\/(\d+)$/.exec(path)
+      if (ppM) {
+        const html = printPaymentHtml(+ppM[1])
+        if (!html) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">رسید یافت نشد</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(Q.print === '1' ? html.replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script></body>') : html)
+      }
       const piM = /^\/print\/invoice\/(\d+)$/.exec(path)
       if (piM) {
         const html = printInvoiceHtml(+piM[1])
@@ -3464,7 +3582,10 @@ async function handle(req, res) {
 function jDates(b) {
   let jy = +b.jy, jm = +b.jm, jd = +b.jd
   if (!jy || !jm || !jd) { const t = todayJ(); jy = t.jy; jm = t.jm; jd = t.jd }
-  if (jm < 1 || jm > 12 || jd < 1 || jd > 31) return { error: 'تاریخ نامعتبر است' }
+  if (jy < 1300 || jy > 1500 || jm < 1 || jm > 12 || jd < 1) return { error: 'تاریخ نامعتبر است' }
+  // سقفِ روزِ هر ماهِ شمسی: ۶ ماهِ اول ۳۱، بعدی‌ها ۳۰، اسفند ۲۹ (و در سالِ کبیسه ۳۰)
+  const maxD = jm <= 6 ? 31 : jm <= 11 ? 30 : (() => { const g = toGregorian(jy, 12, 30); const back = toJalaali(g.gy, g.gm, g.gd); return back.jm === 12 && back.jd === 30 ? 30 : 29 })()
+  if (jd > maxD) return { error: `ماهِ ${faNum(jm)} سالِ ${faNum(jy)} فقط ${faNum(maxD)} روز دارد` }
   return { g_date: gDateStr(jy, jm, jd), j_date: jStr(jy, jm, jd) }
 }
 
@@ -3487,6 +3608,10 @@ async function saveInvoice(id, b, user) {
   if (d.error) return d
   const fromFund = b.fromFund != null ? (b.fromFund ? 1 : 0) : (cur ? (cur.from_fund || 0) : 0)
   let amount = Math.round(+b.amount) || (cur && b.amount == null ? cur.amount : 0)
+  if (cur && amount > 0) {
+    const fp = invoiceFundPaid(cur.id)
+    if (amount < fp && !(b.paidNow != null && Math.round(+b.paidNow) <= amount)) return { error: `مبلغ فاکتور نمی‌تواند کمتر از مبلغی باشد که از صندوق پرداخت شده (${pMoney(fp)} ${pUnitFa()}). اول پرداخت را اصلاح کنید.` }
+  }
   let shares = []
   if (fromFund) {
     // هزینهٔ جاری از صندوق: فقط از صندوق کسر می‌شود و بین واحدها تقسیم/بدهکار نمی‌شود
