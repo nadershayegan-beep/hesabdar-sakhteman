@@ -586,7 +586,7 @@ VIEWS.dashboard = async () => {
       <td class="num ${t.isIn ? 'amt-in' : 'amt-out'}">${t.isIn ? '+' : '−'}${money(t.amount)}</td></tr>`).join('')
   const K = { charge: 'شارژ', bill: 'قبوض', proj: 'پروژه', exp: 'جاری', pay: 'دریافتی', ci: 'پیمانکار' }
   const docs = (d.recentDocs || []).map(r => `<tr class="clickable" data-voucher="${r.dtype}:${r.id}">
-      <td class="num">${esc(r.no)}</td><td><span class="catpill">${K[r.kind] || ''}</span></td><td>${esc(r.title)}</td><td class="num">${money(r.debit)}</td></tr>`).join('')
+      <td class="num">${escFa(r.no)}</td><td><span class="catpill">${K[r.kind] || ''}</span></td><td>${esc(r.title)}</td><td class="num">${money(r.debit)}</td></tr>`).join('')
   const ciRows = (d.ciOpen || []).map(c => `<tr class="clickable" data-voucher="contractor:${c.id}"><td>${esc(c.title || '—')}<br><span class="hint">${esc(c.vendor || '')}</span></td><td class="num amt-out">${money(c.rem)}</td></tr>`).join('')
 
   $('#view').innerHTML = head('داشبورد', `${META.buildingName || ''} · ${d.monthFa} · ${d.unitCount} واحد فعال`,
@@ -675,7 +675,7 @@ VIEWS.invoices = async () => {
   const qn = normFa(invFilter.q), shown = qn ? rows.filter(i => invQ(i).includes(qn)) : rows
   const totals = sumOf(shown)
   $('#view').innerHTML = head('فاکتورها و هزینه‌ها', 'هر فاکتور بین واحدهای مشمول تقسیم می‌شود',
-    adminOnly(`<button class="btn primary" id="newInv">＋ ثبت فاکتور</button>`) + `<a class="btn" href="/api/export/invoices">⬇️ CSV</a>`) +
+    adminOnly(`<button class="btn" id="batchInv">🧾 ثبت گروهی (صندوق‌دار)</button><button class="btn primary" id="newInv">＋ ثبت فاکتور</button>`) + `<a class="btn" href="/api/export/invoices">⬇️ اکسل</a>`) +
     `<div class="filters printhide">
       <input class="inp" id="fq" placeholder="جستجو در عنوان، فروشنده یا شماره سند…" value="${esc(invFilter.q)}">
       <select class="inp" id="fcat"><option value="">همه‌ی دسته‌ها</option>${META.categories.map(c => `<option value="${c.id}" ${invFilter.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
@@ -994,7 +994,7 @@ VIEWS.payments = async () => {
     adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx">
       <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
-      <tbody>${rows.length ? rows.map(p => `<tr>
+      <tbody>${rows.length ? rows.map(p => `<tr class="clickable" data-voucher="payment:${p.id}">
         <td class="num"><b>${faDigit(p.seqNo || p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
         <td class="num amt-in">${money(p.amount)}</td><td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td>
         <td class="num">${money(p.allocated)}</td><td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
@@ -1366,7 +1366,7 @@ const showUnitCard = guard(async id => {
       </div></div>
     <div class="panel printhide"><div class="phead"><b>پرداخت‌ها</b></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th class="printhide">عملیات</th></tr></thead><tbody>
-      ${d.payments.length ? d.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td class="num amt-in">${money(p.amount)}</td>
+      ${d.payments.length ? d.payments.map(p => `<tr class="${p.is_opening ? '' : 'clickable'}" ${p.is_opening ? '' : `data-voucher="payment:${p.id}"`}><td class="num">${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td class="num amt-in">${money(p.amount)}</td>
         <td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td><td class="num">${money(p.allocated)}</td>
         <td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
@@ -1988,12 +1988,15 @@ if (!window.__docActsWired) {
   document.addEventListener('click', e => {
     const ed = e.target.closest('[data-dedit]'); if (ed) { e.stopPropagation(); const [dt, id] = ed.dataset.dedit.split(':'); editDoc(dt, +id); return }
     const dl = e.target.closest('[data-ddel]'); if (dl) { e.stopPropagation(); const [dt, id] = dl.dataset.ddel.split(':'); deleteDoc(dt, +id); return }
+    // قرارداد واحد (مورد ۵۴): کلیک روی هر ردیفِ data-voucher = برگهٔ سند، مگر صفحه خودش کنترلش کرده باشد
+    const vr = e.target.closest('#view tr[data-voucher]')
+    if (vr && !vr.onclick && !e.target.closest('button,a,input,select')) { const [dt, vid] = vr.dataset.voucher.split(':'); showVoucher(dt, +vid) }
   })
 }
 async function showVoucher(dtype, id) {
   const v = await api(`/api/report/voucher?dtype=${dtype}&id=${id}`).catch(() => null)
   if (!v) return toast('سند یافت نشد', true)
-  openModal(`🧾 ${esc(v.head.no)} — ${esc(v.head.title)}`, `<div class="form">
+  openModal(`🧾 ${escFa(v.head.no)} — ${esc(v.head.title)}`, `<div class="form">
     <p class="hint">${esc(v.head.typeFa)} · تاریخ ${faDigit(v.head.j)} · مبلغ ${money(v.head.amount)} · ${esc(v.head.meta)}</p>
     <div class="tablewrap"><table class="tx"><thead><tr><th>طرف‌حساب</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th></tr></thead><tbody>
     ${v.lines.map(l => `<tr><td><b>${esc(l.acc)}</b></td><td class="hint">${esc(l.desc)}</td>
@@ -2030,7 +2033,7 @@ REPORTS.gl = async () => {
         <thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>دسته</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
         <tr><td class="num">—</td><td class="num">—</td><td><b>ماندهٔ اول دوره</b></td><td class="hint">—</td><td class="num muted">—</td><td class="num muted">—</td><td class="num">${balCell(d.opening)}</td><td class="printhide"></td></tr>
         ${d.rows.length ? d.rows.map(e => { const da = e.inv ? ['invoice', e.inv] : e.pid ? ['payment', e.pid] : e.cid ? ['contractor', e.cid] : (e.refid && e.dtype) ? [e.dtype, e.refid] : null; return `<tr class="${voucherAttr(e) ? 'clickable' : ''}" ${voucherAttr(e)}>
-          <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td><td class="num">${esc(e.no)}</td>
+          <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td><td class="num">${escFa(e.no)}</td>
           <td><b>${esc(e.title)}</b></td><td><span class="catpill">${esc(e.cat)}</span></td>
           <td class="num ${e.debit ? '' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
           <td class="num ${e.credit ? '' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
@@ -2066,7 +2069,7 @@ REPORTS.journal = async () => {
     const K = d.kindFa || {}
     const pillCls = { charge: 'b-charge', bill: 'b-open', proj: 'b-settled', exp: 'b-no', pay: 'b-ok', ci: 'b-mgr', ftxn: 'b-open' }
     $('#jnRows').innerHTML = d.rows.length ? d.rows.map(r => `<tr class="clickable" data-voucher="${r.dtype}:${r.id}">
-      <td class="num">${faDigit(r.row)}</td><td class="num">${esc(r.no)}</td><td class="num">${faDigit(r.j)}</td>
+      <td class="num">${faDigit(r.row)}</td><td class="num">${escFa(r.no)}</td><td class="num">${faDigit(r.j)}</td>
       <td><span class="badge ${pillCls[r.kind] || 'b-open'}">${esc(K[r.kind] || r.kind)}</span></td>
       <td>${esc(r.debitAcc)}<br><span class="hint">${esc(r.title)}</span></td>
       <td>${esc(r.creditAcc)}</td>
@@ -3236,14 +3239,17 @@ async function quoteForm(projectId, q = null, after) {
       <label class="f">تاریخ${dateBoxHtml('qd', j)}</label>
     </div>
     <label class="f">توضیح<input class="inp" id="qNote" value="${q ? esc(q.note || '') : ''}"></label>
-    ${!q ? `<p class="hint">پس از ثبت، از ستون «سند» فایل استعلام را پیوست کنید.</p>` : ''}
+    ${docPickerHtml('qDoc')}
   </div>`, `<button class="btn primary" id="qSave">ذخیره</button><button class="btn" id="qCancel">انصراف</button>`)
-  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  const qStore = { doc: null }
+  wireToday($('#modalBody')); wireMoney($('#modalBody')); wireDocPicker('qDoc', qStore)
   $('#qCancel').onclick = closeModal
   $('#qSave').onclick = guard(async () => {
     const dt = readDate('qd')
     const payload = { projectId, vendorId: +$('#qVendor').value, vendorName: $('#qVendorName').value.trim(), amount: readMoney($('#qAmount')), jy: dt.jy, jm: dt.jm, jd: dt.jd, note: $('#qNote').value.trim() }
-    if (q) await post('/api/quotes/' + q.id, payload, 'PUT'); else await post('/api/quotes', payload)
+    const r = q ? await post('/api/quotes/' + q.id, payload, 'PUT') : await post('/api/quotes', payload)
+    const qid = q ? q.id : r.id
+    if (qStore.doc && qid) await post(`/api/attachments/quote/${qid}`, { doc: qStore.doc })
     closeModal(); toast('ذخیره شد'); after ? after() : render()
   })
 }
@@ -3285,9 +3291,11 @@ async function cInvoiceForm(projectId, ci = null, after) {
     </div>
     <p class="hint" id="ciRemHint"></p>`}
     <label class="f">توضیح<input class="inp" id="ciNote" value="${ci ? esc(ci.note || '') : ''}"></label>
-    ${!ci ? `<p class="hint">مثال فروش: فروش داغیِ منبع قدیمی. پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
+    ${!ci ? `<p class="hint">مثال فروش: فروش داغیِ منبع قدیمی.</p>` : ''}
+    ${docPickerHtml('ciDoc')}
   </div>`, `<button class="btn primary" id="ciSave">ذخیره</button><button class="btn" id="ciCancel">انصراف</button>`)
-  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  const ciStore = { doc: null }
+  wireToday($('#modalBody')); wireMoney($('#modalBody')); wireDocPicker('ciDoc', ciStore)
   $('#ciCancel').onclick = closeModal
   // مبلغ پرداختی تا وقتی کاربر دستی نزده، با مبلغِ فاکتور هم‌گام می‌ماند (پیش‌فرض: پرداخت کامل)
   const store = { paidEdited: true }
@@ -3309,7 +3317,9 @@ async function cInvoiceForm(projectId, ci = null, after) {
     const dt = readDate('cid')
     const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, note: $('#ciNote').value.trim() }
     if (paidAmount != null) payload.paidAmount = paidAmount
-    if (ci) await post('/api/contractor-invoices/' + ci.id, payload, 'PUT'); else await post('/api/contractor-invoices', payload)
+    const r = ci ? await post('/api/contractor-invoices/' + ci.id, payload, 'PUT') : await post('/api/contractor-invoices', payload)
+    const cid = ci ? ci.id : r.id
+    if (ciStore.doc && cid) await post(`/api/attachments/cinvoice/${cid}`, { doc: ciStore.doc })
     closeModal(); toast('ذخیره شد'); after ? after() : render()
   })
 }
