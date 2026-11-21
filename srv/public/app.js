@@ -21,6 +21,7 @@ const curFa = () => MONEY_UNIT === 'toman' ? 'تومان' : 'ریال'
 const moneyU = r => money(r) + ' ' + curFa()
 // واژه‌نامهٔ مرکزی (مورد ۲۲ ممیزی)
 const TERMS = { debt: 'بدهی', credit: 'پیش‌پرداخت', residentCredit: 'پیش‌پرداخت ساکنین', useCredit: 'استفاده از پیش‌پرداخت', managerClaim: 'طلب مدیر از صندوق', fundReceivable: 'بدهی ساکنین' }
+const normFa = t => String(t ?? '').toLowerCase().replace(/ي/g, 'ی').replace(/ك/g, 'ک').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g, d => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/\u200c/g, ' ').replace(/\s+/g, ' ').trim()
 const signed = r => (r < 0 ? '−' : '') + money(Math.abs(r))
 
 // ---------- واتساپ ----------
@@ -646,18 +647,21 @@ function wireCommon() {
 // ==================== فاکتورها ====================
 let invFilter = { status: '', category_id: '', q: '' }
 VIEWS.invoices = async () => {
-  const rows = await api('/api/invoices?' + new URLSearchParams(Object.fromEntries(Object.entries(invFilter).filter(([, v]) => v))))
-  const totals = rows.reduce((a, i) => ({ amount: a.amount + i.amount, collected: a.collected + (i.payable ? i.fundPaid : i.collected), remaining: a.remaining + (i.payable ? i.fundUnpaid : i.remaining) }), { amount: 0, collected: 0, remaining: 0 })
-  $('#view').innerHTML = head('فاکتورها و هزینه‌ها', 'هر فاکتور بین واحدهای مشمول تسهیم می‌شود',
+  const rows = await api('/api/invoices?' + new URLSearchParams(Object.fromEntries(Object.entries(invFilter).filter(([k, v]) => v && k !== 'q'))))
+  const invQ = i => normFa([i.id, faDigit(i.id), i.title, i.vendor, i.categoryName, i.note].join(' '))
+  const sumOf = list => list.reduce((a, i) => ({ amount: a.amount + i.amount, collected: a.collected + (i.payable ? i.fundPaid : i.collected), remaining: a.remaining + (i.payable ? i.fundUnpaid : i.remaining) }), { amount: 0, collected: 0, remaining: 0 })
+  const qn = normFa(invFilter.q), shown = qn ? rows.filter(i => invQ(i).includes(qn)) : rows
+  const totals = sumOf(shown)
+  $('#view').innerHTML = head('فاکتورها و هزینه‌ها', 'هر فاکتور بین واحدهای مشمول تقسیم می‌شود',
     adminOnly(`<button class="btn primary" id="newInv">＋ ثبت فاکتور</button>`) + `<a class="btn" href="/api/export/invoices">⬇️ CSV</a>`) +
     `<div class="filters printhide">
-      <input class="inp" id="fq" placeholder="جستجو در عنوان…" value="${esc(invFilter.q)}">
+      <input class="inp" id="fq" placeholder="جستجو در عنوان، فروشنده یا شماره سند…" value="${esc(invFilter.q)}">
       <select class="inp" id="fcat"><option value="">همه‌ی دسته‌ها</option>${META.categories.map(c => `<option value="${c.id}" ${invFilter.category_id == c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>
       <div class="chips">${[['', 'همه'], ['open', 'باز'], ['settled', 'تسویه']].map(([v, t]) => `<button class="chip ${invFilter.status === v ? 'on' : ''}" data-st="${v}">${t}</button>`).join('')}</div>
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تسهیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
-      <tbody>${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}">
+      <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
+      <tbody id="invBody">${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}" data-q="${esc(invQ(i))}" ${qn && !invQ(i).includes(qn) ? 'hidden' : ''}>
         <td class="num"><b>${faDigit(i.id)}</b></td>
         <td><b>${esc(i.title)}</b>${i.is_charge ? ' <span class="badge b-charge">شارژ</span>' : ''}${i.from_fund ? ' <span class="badge b-charge">جاری — از صندوق</span>' : ''}${i.paid_by_manager ? ' <span class="badge b-mgr">جیب مدیر</span>' : ''}${(i.payable && i.fundUnpaid > 0) ? ' <span class="badge b-open">از صندوق پرداخت‌نشده</span>' : (i.payable && i.fundPaid > 0 ? ' <span class="badge b-settled">از صندوق پرداخت‌شده</span>' : '')}${i.vendor ? `<br><span class="dim" style="font-size:11px;color:var(--faint)">${esc(i.vendor)}</span>` : ''}</td>
         <td><span class="catpill">${esc(i.categoryName)}</span></td>
@@ -669,11 +673,17 @@ VIEWS.invoices = async () => {
         <td>${statusBadge(i.status)}</td>
         ${adminOnly(`<td class="rowact"><button class="btn tiny" data-editinv="${i.id}" title="ویرایش">✏️</button> <button class="del" data-delinv="${i.id}" title="حذف">🗑</button></td>`)}</tr>`).join('')
       : emptyRow(isAdmin() ? 10 : 9, 'هنوز فاکتوری ثبت نشده است')}</tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="4">جمع (${faDigit(rows.length)} فاکتور)</td><td></td><td class="num">${money(totals.amount)}</td>
-        <td class="num">${money(totals.collected)}</td><td class="num">${money(totals.remaining)}</td><td colspan="${isAdmin() ? 2 : 1}"></td></tr></tfoot>` : ''}
+      ${rows.length ? `<tfoot id="invFoot"></tfoot>` : ''}
     </table></div></div>`
+  const drawFoot = (list, t) => { if ($('#invFoot')) $('#invFoot').innerHTML = `<tr><td colspan="4">جمع (${faDigit(list.length)} فاکتور${list.length !== rows.length ? ' از ' + faDigit(rows.length) : ''})</td><td></td><td class="num">${money(t.amount)}</td>
+        <td class="num">${money(t.collected)}</td><td class="num">${money(t.remaining)}</td><td colspan="${isAdmin() ? 2 : 1}"></td></tr>` }
+  drawFoot(shown, totals)
   wireCommon()
-  $('#fq').oninput = debounce(() => { invFilter.q = $('#fq').value.trim(); render() }, 350)
+  $('#fq').oninput = () => {
+    invFilter.q = $('#fq').value.trim(); const q = normFa(invFilter.q)
+    $('#invBody').querySelectorAll('tr[data-q]').forEach(tr => { tr.hidden = !!q && !tr.dataset.q.includes(q) })
+    const list = q ? rows.filter(i => invQ(i).includes(q)) : rows; drawFoot(list, sumOf(list))
+  }
   $('#fcat').onchange = () => { invFilter.category_id = $('#fcat').value; render() }
   document.querySelectorAll('[data-st]').forEach(b => b.onclick = () => { invFilter.status = b.dataset.st; render() })
   document.querySelectorAll('[data-editinv]').forEach(b => b.onclick = e => {
