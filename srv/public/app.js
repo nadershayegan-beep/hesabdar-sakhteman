@@ -423,7 +423,7 @@ function showRecoveryCode(code, opts = {}) {
       <p class="sub">${opts.isNew ? 'کد بازیابیِ جدید — کدِ قبلی دیگر کار نمی‌کند:' : 'این کد را در جای امنی نگه دارید:'}</p>
       <div style="font-family:'SF Mono',ui-monospace,Menlo,Consolas,monospace;font-size:25px;font-weight:800;letter-spacing:2px;
         background:var(--panel-2);border:2px dashed var(--accent);border-radius:12px;padding:18px 10px;margin:12px 0;user-select:all;direction:ltr">${esc(code)}</div>
-      <div class="notice" style="text-align:right;margin:0">⚠️ این کد فقط <b>همین یک‌بار</b> نمایش داده می‌شود. اگر رمزتان را فراموش کنید، تنها راهِ ورود همین کد است. اگر گمش کنید، فقط از روی همین کامپیوتر می‌توانید ریست کنید.</div>
+      <div class="notice warn" style="text-align:right;margin:0">این کد فقط <b>همین یک‌بار</b> نمایش داده می‌شود. اگر رمزتان را فراموش کنید، تنها راهِ ورود همین کد است. اگر گمش کنید، فقط از روی همین کامپیوتر می‌توانید ریست کنید.</div>
       <div class="fbtns" style="justify-content:center;margin-top:12px">
         <button class="btn" id="rcCopy">📋 کپی</button><button class="btn" id="rcPrint">🖨 چاپ</button><button class="btn" id="rcSave">⬇️ ذخیره فایل</button>
       </div>
@@ -461,7 +461,7 @@ function forgotForm() {
 }
 function localResetForm() {
   openModal('🖥 ریست رمز از این کامپیوتر', `<div class="form">
-    <div class="notice" style="margin:0">این ریست فقط از روی همین کامپیوتر مجاز است. رمز جدیدِ مدیر را بگذارید.</div>
+    <div class="notice warn" style="margin:0">این ریست فقط از روی همین کامپیوتر مجاز است. رمز جدیدِ مدیر را بگذارید.</div>
     <label class="f">نام کاربریِ مدیر<input class="inp" id="lrUser"></label>
     <div class="frow"><label class="f">رمز جدید<input class="inp" id="lrPass" type="password"></label>
       <label class="f">تکرار رمز<input class="inp" id="lrPass2" type="password"></label></div>
@@ -546,7 +546,7 @@ VIEWS.dashboard = async () => {
   const d = await api('/api/report/dashboard')
   const missing = d.missingCharges || []
   const rcBanner = (NEEDS_RC && isAdmin())
-    ? `<div class="notice printhide" style="border-color:var(--out);background:var(--out-soft)"><span>برای حساب شما <b>کد بازیابی</b> تنظیم نشده. اگر رمزتان را فراموش کنید، دسترسی به دفاتر مالی از دست می‌رود.</span>
+    ? `<div class="notice danger printhide"><span>برای حساب شما <b>کد بازیابی</b> تنظیم نشده. اگر رمزتان را فراموش کنید، دسترسی به دفاتر مالی از دست می‌رود.</span>
        <button class="btn small primary" id="getRc">دریافت کد بازیابی</button></div>` : ''
   const bal = v => v < 0 ? `<span class="amt-out">(${money(-v)})</span>` : money(v)
   // ---- نیازمند توجه ----
@@ -556,7 +556,8 @@ VIEWS.dashboard = async () => {
         : (a.kind === 'overdue' || a.kind === 'promise') ? `<button class="link" data-go="reports:debtors">بدهکاران</button>`
           : a.kind === 'backup' ? (isAdmin() ? `<button class="link" data-go="settings:backup">پشتیبان‌گیری</button>` : '')
           : a.kind === 'health' ? `<button class="link" data-go="reports:balance">مشاهدهٔ ایرادها</button>`
-          : a.kind === 'exp' ? (isAdmin() ? `<button class="link" id="dPayExp">پرداخت</button>` : '') : ''
+          : a.kind === 'exp' ? (isAdmin() ? `<button class="link" id="dPayExp">پرداخت</button>` : '')
+          : a.kind === 'latefee' ? (isAdmin() ? `<button class="link" data-go="settings:charge">بررسی و اعمال</button>` : '') : ''
   const alertsHtml = (d.alerts || []).length ? `<div class="panel dalerts"><div class="phead"><b>نیازمند توجه</b><span class="hint">${faDigit(d.alerts.length)} مورد</span></div>
     ${d.alerts.map(a => `<div class="darow"><span class="ddot ${a.level === 'red' ? 'r' : 'a'}"></span>
       <span class="dtx">${a.kind === 'fund' ? esc(a.text.split(':')[0]) + ': <b class="num amt-out">' + money(a.amount) + '</b>' : esc(a.text)}${a.kind !== 'fund' && a.amount ? ' — <b class="num">' + money(a.amount) + '</b>' : ''}${a.kind === 'charge' ? ' (' + missing.map(m => escFa(m.fa)).join('، ') + ')' : ''}</span>
@@ -605,8 +606,8 @@ VIEWS.dashboard = async () => {
       ${kpi('خالصِ ماه', signed(d.monthIn - (d.monthExpense ?? d.monthOut)), 'دریافتی منهای هزینه')}
       ${kpi('شارژِ صادرشدهٔ ماه', money(d.monthCharge ?? 0), 'تعهد ساکنین')}
     </div>
-    ${d.managerDebt > 0 ? `<div class="notice printhide">طلبِ مدیر از صندوق (پرداخت از جیب): <b class="num">${money(d.managerDebt)}</b> ${curFa()} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
-    ${(d.interFund && d.interFund.length) ? `<div class="notice printhide">بدهی بین صندوق‌ها: ${d.interFund.map(x => `${escFa(x.fromName)} به ${escFa(x.toName)} ${money(x.amount)} ${curFa()}`).join('، ')} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
+    ${d.managerDebt > 0 ? `<div class="notice warn printhide">طلبِ مدیر از صندوق (پرداخت از جیب): <b class="num">${money(d.managerDebt)}</b> ${curFa()} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
+    ${(d.interFund && d.interFund.length) ? `<div class="notice warn printhide">بدهی بین صندوق‌ها: ${d.interFund.map(x => `${escFa(x.fromName)} به ${escFa(x.toName)} ${money(x.amount)} ${curFa()}`).join('، ')} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
     <div class="grid2">
       <div>
         <div class="panel"><div class="phead"><b>بدهکاران اصلی</b><button class="link" data-go="reports:debtors">گزارش بدهکاران</button></div>
@@ -751,7 +752,7 @@ function invoiceForm(inv) {
         <label class="f">توضیح<input class="inp" id="ivNote" value="${esc(inv ? inv.note : '')}"></label>
       </div>
       ${docPickerHtml('ivDoc')}
-      <div class="notice" id="ivFundNote" style="margin:0;display:none">💡 این هزینه <b>از صندوق کسر</b> می‌شود و بین واحدها تقسیم نمی‌شود؛ چون ساکنین قبلاً بابتش «شارژ ماهانه» پرداخت کرده‌اند.</div>
+      <div class="notice info" id="ivFundNote" style="margin:0;display:none">این هزینه <b>از صندوق کسر</b> می‌شود و بین واحدها تقسیم نمی‌شود؛ چون ساکنین قبلاً بابتش «شارژ ماهانه» پرداخت کرده‌اند.</div>
       <label class="f" id="ivPaidNowWrap" style="display:none">${inv ? 'پرداخت‌شده از صندوق (قابل تنظیم)' : 'چقدر از این هزینه الان از صندوق پرداخت شد؟'} (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric" value="${inv && inv.fundPaid ? sep(Math.round(r2d(inv.fundPaid))) : ''}"><span class="hint" id="ivPaidNowHint">کامل = تسویه · کمتر = بقیه بدهیِ صندوق به فاکتور می‌ماند · خالی/صفر = پرداخت‌نشده</span></label>
       <div class="panel" id="ivSplitPanel" style="margin:0;background:var(--panel-2)">
         <div class="phead"><b>پیش‌نمایش تسهیم</b><span class="hint strong" id="ivSum"></span></div>
@@ -887,7 +888,7 @@ const showInvoice = guard(async id => {
         ? kpi('پرداخت‌شده از صندوق', money(i.fundPaid), '', 'good') + kpi('بدهی صندوق به فاکتور', money(i.fundUnpaid), '', i.fundUnpaid > 0 ? 'bad' : '')
         : kpi('وصول‌شده', money(i.collected), '', 'good') + kpi('مانده', money(i.remaining), '', i.remaining > 0 ? 'bad' : '')}
     </div>
-    ${i.from_fund ? `<div class="notice" style="margin:0 0 12px">💡 هزینهٔ جاری: از صندوق «${esc(i.fundName)}» پرداخت می‌شود و بین واحدها تقسیم نمی‌شود (از محل شارژِ ماهانه).</div>` : ''}
+    ${i.from_fund ? `<div class="notice info" style="margin:0 0 12px">هزینهٔ جاری: از صندوق «${esc(i.fundName)}» پرداخت می‌شود و بین واحدها تقسیم نمی‌شود (از محل شارژِ ماهانه).</div>` : ''}
     <div class="pline"><span>شمارهٔ سند (سیستمی)</span><b class="num">${faDigit(i.id)}</b></div>
     <div class="pline"><span>دسته</span><b>${esc(i.categoryName)}</b></div>
     <div class="pline"><span>تاریخ</span><b class="num">${faDigit(i.j_date)}</b></div>
@@ -934,7 +935,7 @@ const showInvoice = guard(async id => {
 function payExpenseForm(inv, funds) {
   const responsible = (funds.find(f => f.id === inv.fund_id) || {}).name || '—'
   const body = openModal(`پرداخت هزینه: ${inv.title}`, `<div class="form">
-    <div class="notice" style="margin:0">مانده‌ی پرداخت‌نشده‌ی این هزینه: <b>${moneyU(inv.fundUnpaid)}</b></div>
+    <div class="notice info" style="margin:0">مانده‌ی پرداخت‌نشده‌ی این هزینه: <b>${moneyU(inv.fundUnpaid)}</b></div>
     <div class="frow">
       <label class="f">از کدام صندوق پرداخت شود<select class="inp" id="exFund">${funds.map(f => `<option value="${f.id}" ${f.id === inv.fund_id ? 'selected' : ''}>${esc(f.name)} (موجودی ${money(f.balance)})</option>`).join('')}</select></label>
       <label class="f">مبلغ (${curFa()})<input class="inp num" id="exAmount" data-money="exHint" inputmode="numeric" value="${sep(Math.round(r2d(inv.fundUnpaid)))}"><span class="hint" id="exHint"></span></label>
@@ -1501,7 +1502,7 @@ function transferForm(funds, preset) {
 }
 function settleForm(funds, debt) {
   const body = openModal('تسویه با مدیر', `<div class="form">
-    <div class="notice" style="margin:0">طلب فعلی مدیر از صندوق: <b>${moneyU(debt)}</b></div>
+    <div class="notice info" style="margin:0">طلب فعلی مدیر از صندوق: <b>${moneyU(debt)}</b></div>
     <label class="f">مبلغ تسویه (${curFa()})<input class="inp num" id="stAmount" data-money="stHint" inputmode="numeric" value="${sep(Math.round(r2d(debt)))}"><span class="hint" id="stHint"></span></label>
     <label class="f">از کدام صندوق<select class="inp" id="stFund">${funds.map(f => `<option value="${f.id}">${esc(f.name)} (${money(f.balance)})</option>`).join('')}</select></label>
     <label class="f">تاریخ${dateBoxHtml('st')}</label>
@@ -1570,7 +1571,7 @@ REPORTS.expenses = async () => {
       ${r.contractor ? kpi('پرداخت به پیمانکار', money(r.contractor.paid)) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', money(r.contractor.outstanding), '', r.contractor.outstanding > 0 ? 'warn' : 'good') : ''}
     </div>
-    ${r.project ? `<div class="notice printhide" style="border-color:var(--accent)">مسیر مالی پروژه: برآورد اولیه <b>${money(r.project.budget)}</b> ← مبلغ نهایی <b>${money(r.project.finalAmount)}</b>${r.project.deviation ? ` · انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${signed(r.project.deviation)}</b>` : ''} ${curFa()}</div>` : ''}
+    ${r.project ? `<div class="notice info printhide">مسیر مالی پروژه: برآورد اولیه <b>${money(r.project.budget)}</b> ← مبلغ نهایی <b>${money(r.project.finalAmount)}</b>${r.project.deviation ? ` · انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${signed(r.project.deviation)}</b>` : ''} ${curFa()}</div>` : ''}
     <div class="panel"><div class="phead"><b>ریز فاکتورها — بابت چه چیزی</b></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ کل</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
       ${r.invoices.length ? r.invoices.map(i => `<tr class="clickable" data-inv="${i.id}"><td><b>${esc(i.title)}</b></td><td>${esc(i.category)}</td>
@@ -2237,7 +2238,7 @@ REPORTS.unit = async () => {
 REPORTS.balance = async () => {
   const h = await api('/api/report/balance')
   $('#repBody').innerHTML = `
-    <div class="notice ${h.ok ? '' : 'danger'}" style="${h.ok ? '' : 'border-color:var(--out);background:var(--out-soft)'}">
+    <div class="notice ${h.ok ? '' : 'danger'}" >
       <span>${h.ok ? 'همهٔ آزمون‌های سلامت دفاتر درست است؛ هیچ ریالی گم یا دوبار شمرده نشده.' : 'یک یا چند آزمون ایراد دارد. ردیف‌های مشکل‌دار در زیر آمده‌اند.'}</span></div>
     <div class="panel"><div class="phead"><b>آزمون‌ها</b><span class="hint">${faDigit(h.checks.filter(c => c.ok).length)} از ${faDigit(h.checks.length)} سالم</span></div>
       ${h.checks.map(c => `<div class="hrow"><span class="hmark ${c.ok ? 'ok' : 'bad'}">${c.ok ? '✓' : '✗'}</span>
@@ -2583,7 +2584,7 @@ function fundAdjustForm(f) {
 SETTINGS.openings = async () => {
   const d = await api('/api/openings')
   $('#setBody').innerHTML = `
-    <div class="notice">مانده‌ی اولیه یعنی وضعیت مالی «قبل از شروع کار با نرم‌افزار». بدهی اولیه مثل قدیمی‌ترین بدهی رفتار می‌کند و اول از همه تسویه می‌شود.</div>
+    <div class="notice info">مانده‌ی اولیه یعنی وضعیت مالی «قبل از شروع کار با نرم‌افزار». بدهی اولیه مثل قدیمی‌ترین بدهی رفتار می‌کند و اول از همه تسویه می‌شود.</div>
     <div class="panel"><div class="phead"><b>بدهی/پیش‌پرداخت اولیه‌ی واحدها</b><span class="hint">مثبت = بدهی · منفی = پیش‌پرداخت</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>مبلغ (${curFa()})</th><th>توضیح</th></tr></thead><tbody>
       ${d.units.map(u => `<tr><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
@@ -3053,7 +3054,7 @@ const showProject = guard(async id => {
         ${kpi('مخارج کلی پروژه', money(d.box.expenses.total), 'پرداخت به پیمانکار: ' + money(d.box.expenses.paid) + ' · مانده طلب: ' + money(d.box.expenses.outstanding), 'bad')}
         ${d.reconciled ? kpi('مبلغ نهایی مخارج', money(d.box.final.total), 'انحراف از برآورد: ' + signed(d.box.final.deviation) + ' · سهم نهایی هر واحد: ' + money(d.box.final.perUnit), d.box.final.deviation > 0 ? 'warn' : 'good') : ''}
       </div>
-      ${d.reconciled ? `<div class="notice printhide" style="border-color:${d.box.fund.balance >= 0 ? 'var(--accent)' : 'var(--out)'}">جمع‌بندی صندوقِ پروژه: وصول ${money(d.box.fund.collected)} − مخارج نهایی ${money(d.box.fund.finalCost)} = ${d.box.fund.balance >= 0 ? `<b class="amt-in">صندوق بستانکار (مازاد) ${money(d.box.fund.balance)}</b>` : `<b class="amt-out">صندوق بدهکار (کسری) ${money(-d.box.fund.balance)}</b>`} ${curFa()}</div>` : ''}
+      ${d.reconciled ? `<div class="notice ${d.box.fund.balance >= 0 ? 'info' : 'danger'} printhide">جمع‌بندی صندوقِ پروژه: وصول ${money(d.box.fund.collected)} − مخارج نهایی ${money(d.box.fund.finalCost)} = ${d.box.fund.balance >= 0 ? `<b class="amt-in">صندوق بستانکار (مازاد) ${money(d.box.fund.balance)}</b>` : `<b class="amt-out">صندوق بدهکار (کسری) ${money(-d.box.fund.balance)}</b>`} ${curFa()}</div>` : ''}
       <div class="tablewrap"><table class="tx"><thead><tr><th>ردیف</th><th>واحد</th><th>ساکن</th><th>سهم مصوبه</th>${d.reconciled ? '<th>سهم نهایی (مخارج)</th>' : ''}<th>پرداختی</th><th>بدهی/طلب طبق مصوبه</th>${d.reconciled ? '<th>بدهی/طلب طبق مخارج</th>' : ''}${adminOnly('<th></th>')}</tr></thead><tbody>
       ${d.chargeShares.map(s => { const badge = v => v > 0 ? `<span class="badge b-no">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="badge b-done">پیش‌پرداخت ${money(-v)}</span>` : `<span class="badge b-ok">تسویه</span>`; return `<tr>
         <td class="num">${faDigit(s.row)}</td><td><b>واحد ${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>
@@ -3224,7 +3225,7 @@ async function cInvoiceForm(projectId, ci = null, after) {
       <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
     </div>
     <label class="f">نوع<select class="inp" id="ciKind"><option value="purchase" ${!ci || ci.kind !== 'sale' ? 'selected' : ''}>خرید / هزینه (به هزینه اضافه می‌شود)</option><option value="sale" ${ci && ci.kind === 'sale' ? 'selected' : ''}>فروش / درآمد (از هزینه کم می‌شود)</option></select></label>
-    ${ci ? `<div class="notice" style="margin:0">پرداخت‌شده تا امروز: <b class="num">${moneyU(ci.paid_amount || 0)}</b> — پرداخت‌ها (با تاریخ هر قسط) از دکمهٔ «💸 پرداخت‌ها» ثبت یا اصلاح می‌شوند.</div>
+    ${ci ? `<div class="notice info" style="margin:0">پرداخت‌شده تا امروز: <b class="num">${moneyU(ci.paid_amount || 0)}</b> — پرداخت‌ها (با تاریخ هر قسط) از دکمهٔ «💸 پرداخت‌ها» ثبت یا اصلاح می‌شوند.</div>
       <input type="hidden" id="ciPaidAmount" value="">`
     : `<div class="frow" style="align-items:end">
       <label class="f">پرداخت/دریافت همین الان (${curFa()})<input class="inp num" id="ciPaidAmount" data-money="ciPaidHint" inputmode="numeric"><span class="hint" id="ciPaidHint">خالی = هنوز پرداخت نشده؛ قسط‌های بعدی از دکمهٔ «پرداخت‌ها»</span></label>

@@ -563,9 +563,10 @@ function computeShares(units, method, amount, opts = {}) {
     raw = units.map(u => ({ unit_id: u.id, v: Math.round(+map[u.id] || 0) }))
   } else throw new Error('روش تسهیم نامعتبر است')
 
-  const out = raw.map(r => ({ unit_id: r.unit_id, share_amount: Math.round(r.v) }))
   // per_unit_charge و custom مبلغشان از خودِ سهم‌ها می‌آید و نیازی به اصلاح گرد کردن ندارند
-  if (method === 'per_unit_charge' || method === 'custom') return out
+  if (method === 'per_unit_charge' || method === 'custom') return raw.map(r => ({ unit_id: r.unit_id, share_amount: Math.round(r.v) }))
+  // بقیه: گرد به مضرب ۱۰ ریال تا در نمایش تومانی عددِ اعشاری (مثل ۱۶۶٬۶۶۶٫۶) پیدا نشود
+  const out = raw.map(r => ({ unit_id: r.unit_id, share_amount: Math.round(r.v / 10) * 10 }))
   const sum = out.reduce((s, r) => s + r.share_amount, 0)
   const diff = amount - sum
   if (diff !== 0) {
@@ -850,7 +851,7 @@ function payExpense(invoiceId, fundId, amount, dates, note, by) {
   amount = Math.round(+amount)
   if (!(amount > 0)) throw new Error('مبلغ پرداخت را وارد کنید')
   const unpaid = inv.amount - invoiceFundPaid(invoiceId)
-  if (amount > unpaid) throw new Error(`مانده‌ی پرداخت‌نشده‌ی این هزینه ${unpaid} ریال است؛ مبلغ بیشتر مجاز نیست`)
+  if (amount > unpaid) throw new Error(`مانده‌ی پرداخت‌نشده‌ی این هزینه ${pMoney(unpaid)} ${pUnitFa()} است؛ مبلغ بیشتر مجاز نیست`)
   const payId = Number(db.prepare(`INSERT INTO expense_payments(invoice_id,fund_id,amount,g_date,j_date,note,created_by,created_at) VALUES(?,?,?,?,?,?,?,?)`)
     .run(invoiceId, fundId, amount, dates.g_date, dates.j_date, note || '', by || null, nowISO()).lastInsertRowid)
   addFundTxn(fundId, 'out', amount, { ...dates, invId: invoiceId, epId: payId, note: `پرداخت هزینه: ${inv.title}`, by })
@@ -1643,6 +1644,12 @@ function dashboard() {
   if (overdue.count) alerts.push({ level: 'amber', kind: 'overdue', text: `${overdue.count} بدهکارِ بالای ۹۰ روز`, amount: overdue.total })
   const duePromises = debtors.map(u => promiseStatus(u.id)).filter(p => p && p.due)
   if (duePromises.length) alerts.push({ level: 'amber', kind: 'promise', text: `${duePromises.length} قولِ پرداختِ سررسیدشده که هنوز پرداخت نشده` })
+  try {
+    if ((+getSetting('lateFeePercent', '0') || 0) > 0) {
+      const lp = curPeriod(), pv = lateFeePreview(lp)
+      if (!pv.already && pv.total > 0) alerts.push({ level: 'amber', kind: 'latefee', text: `جریمهٔ دیرکردِ ${periodFa(lp)} هنوز اعمال نشده`, amount: pv.total })
+    }
+  } catch { }
   const unpaidExp = unpaidExpensesTotal()
   if (unpaidExp > 0) alerts.push({ level: 'amber', kind: 'exp', text: 'هزینه‌های پرداخت‌نشده از صندوق', amount: unpaidExp })
   const lb = getSetting('lastBackupAt', '')
@@ -2387,8 +2394,8 @@ thead th{background:#1d5fa8;color:#fff;font-weight:700;font-size:11.5px;border-c
 tbody tr:nth-child(even){background:#f4f7fb}
 tbody tr:nth-child(odd){background:#fff}
 tbody tr:hover{background:#eaf1fa}
-.num{font-variant-numeric:tabular-nums;text-align:left;direction:ltr;white-space:nowrap}
-th.num{text-align:left}
+.num{font-variant-numeric:tabular-nums;text-align:right;direction:ltr;unicode-bidi:plaintext;white-space:nowrap}
+th.num{text-align:right}
 tr.tot td,tr.tot th{font-weight:800;background:#e8eef7;border-top:2px solid #1d5fa8;color:#0f2847}
 .amt-out{color:#c0392b}.amt-in{color:#0f8a56}
 .foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#7a828f;font-size:10.5px;text-align:center}
@@ -3339,7 +3346,7 @@ async function handle(req, res) {
       if (!(amount > 0)) return sendJSON(res, 400, { error: 'مبلغ تسویه را وارد کنید' })
       if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(fundId)) return sendJSON(res, 400, { error: 'صندوق نامعتبر است' })
       const debt = managerDebt()
-      if (amount > debt) return sendJSON(res, 400, { error: `طلب مدیر ${debt} ریال است؛ مبلغ بیشتر قابل تسویه نیست` })
+      if (amount > debt) return sendJSON(res, 400, { error: `طلب مدیر ${pMoney(debt)} ${pUnitFa()} است؛ مبلغ بیشتر قابل تسویه نیست` })
       addFundTxn(fundId, 'manager_settle', amount, { ...jDates(b), note: b.note || 'تسویه با مدیر', by: user.id })
       return sendJSON(res, 200, { ok: true, managerDebt: managerDebt() })
     }
@@ -3697,7 +3704,7 @@ async function handle(req, res) {
       if (amt > 0) {
         if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(+b.fundId)) return sendJSON(res, 400, { error: 'صندوق تسویه را انتخاب کنید' })
         const debt = managerDebt()
-        if (amt > debt) return sendJSON(res, 400, { error: `طلب مدیر ${debt} ریال است؛ بیشتر قابل تسویه نیست` })
+        if (amt > debt) return sendJSON(res, 400, { error: `طلب مدیر ${pMoney(debt)} ${pUnitFa()} است؛ بیشتر قابل تسویه نیست` })
         addFundTxn(+b.fundId, 'manager_settle', amt, { ...d, note: `تسویه‌ی مدیر هنگام تحویل به ${b.incomingName.trim()}`, by: user.id })
         settled = amt
       }
@@ -3750,48 +3757,50 @@ async function handle(req, res) {
     if (path.startsWith('/api/export/') && M === 'GET') {
       const kind = path.slice('/api/export/'.length)
       let name = 'export.csv', body = ''
+      // مبالغ در همان واحدی که صفحه نشان می‌دهد (تومان/ریال)
+      const U = `(${pUnitFa()})`, c$ = r => r == null || r === '' ? '' : (isTomanDisp() ? Math.round(r / 10) : r)
       if (kind === 'invoices') {
         name = 'faktorha.csv'
-        body = csv(['ردیف', 'عنوان', 'دسته', 'تاریخ', 'مبلغ (ریال)', 'روش تسهیم', 'نوع هزینه', 'صندوق', 'وصول‌شده', 'مانده', 'وضعیت'],
-          listInvoices(Q).map(i => [i.id, i.title, i.categoryName, i.j_date, i.amount, i.methodFa, i.kindFa, i.fundName, i.collected, i.remaining, i.status === 'settled' ? 'تسویه' : 'باز']))
+        body = csv(['ردیف', 'عنوان', 'دسته', 'تاریخ', 'مبلغ ' + U, 'روش تقسیم', 'نوع هزینه', 'صندوق', 'وصول‌شده', 'مانده', 'وضعیت'],
+          listInvoices(Q).map(i => [i.id, i.title, i.categoryName, i.j_date, c$(i.amount), i.methodFa, i.kindFa, i.fundName, c$(i.collected), c$(i.remaining), i.status === 'settled' ? 'تسویه' : 'باز']))
       } else if (kind === 'payments') {
         name = 'daryafti-ha.csv'
         const rows = db.prepare(`SELECT p.*, u.number, u.resident_name, f.name fund_name FROM payments p
           JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id WHERE p.is_opening=0 ORDER BY p.g_date DESC, p.id DESC`).all()
-        body = csv(['ردیف', 'واحد', 'ساکن', 'تاریخ', 'مبلغ (ریال)', 'صندوق', 'روش', 'توضیح'],
-          rows.map(p => [p.id, p.number, p.resident_name, p.j_date, p.amount, p.fund_name, p.method, p.note]))
+        body = csv(['ردیف', 'واحد', 'ساکن', 'تاریخ', 'مبلغ ' + U, 'صندوق', 'روش', 'توضیح'],
+          rows.map(p => [p.id, p.number, p.resident_name, p.j_date, c$(p.amount), p.fund_name, p.method, p.note]))
       } else if (kind === 'debtors') {
         name = 'bedehkaran.csv'
-        body = csv(['واحد', 'ساکن', 'تلفن', 'بدهی (ریال)', 'قدمت (روز)', 'باکت'],
-          debtorsReport().rows.map(r => [r.number, r.resident_name, r.phone, r.debt, r.aging ? r.aging.days : '', r.aging ? r.aging.bucket : '']))
+        body = csv(['واحد', 'ساکن', 'تلفن', 'بدهی ' + U, 'قدمت (روز)', 'باکت'],
+          debtorsReport().rows.map(r => [r.number, r.resident_name, r.phone, c$(r.debt), r.aging ? r.aging.days : '', r.aging ? r.aging.bucket : '']))
       } else if (kind === 'units') {
         name = 'vahedha.csv'
-        body = csv(['شماره', 'طبقه', 'متراژ', 'نفرات', 'ساکن', 'تلفن', 'وضعیت', 'شارژ ماهانه', 'بدهی (ریال)'],
-          unitsWithBalance().map(u => [u.number, u.floor, u.area, u.occupants, u.resident_name, u.phone, u.occupied ? 'پر' : 'خالی', unitChargeAt(u, curPeriod()), u.debt]))
+        body = csv(['شماره', 'طبقه', 'متراژ', 'نفرات', 'ساکن', 'تلفن', 'وضعیت', 'شارژ ماهانه', 'بدهی ' + U],
+          unitsWithBalance().map(u => [u.number, u.floor, u.area, u.occupants, u.resident_name, u.phone, u.occupied ? 'پر' : 'خالی', c$(unitChargeAt(u, curPeriod())), c$(u.debt)]))
       } else if (kind === 'unit') {
         const c = unitCard(+Q.id); if (!c) return sendJSON(res, 404, { error: 'واحد یافت نشد' })
         name = `vahed-${c.unit.number}.csv`
-        body = csv(['نوع', 'تاریخ', 'شرح', 'مبلغ (ریال)', 'پرداخت‌شده', 'مانده'],
-          [...c.shares.map(s => ['سهم', s.j_date, s.title, s.share_amount, s.paid, s.remaining]),
-          ...c.payments.map(p => ['دریافتی', p.j_date, p.note || p.fund_name || '', p.amount, '', ''])])
+        body = csv(['نوع', 'تاریخ', 'شرح', 'مبلغ ' + U, 'پرداخت‌شده', 'مانده'],
+          [...c.shares.map(s => ['سهم', s.j_date, s.title, c$(s.share_amount), c$(s.paid), c$(s.remaining)]),
+          ...c.payments.map(p => ['دریافتی', p.j_date, p.note || p.fund_name || '', c$(p.amount), '', ''])])
       } else if (kind === 'manager') {
         const r = managerReport(Q.from, Q.to)
         name = 'gozaresh-modir.csv'
-        body = csv(['بخش', 'شرح', 'مبلغ (ریال)', 'جزئیات'], [
-          ...r.payments.byFund.map(f => ['دریافتی', f.name, f.amount, `${f.count} فقره`]),
-          ['دریافتی', 'جمع کل', r.payments.total, ''],
-          ...r.expenses.byCategory.map(c => ['هزینه', c.name, c.total, `ثابت ${c.fixed} · متغیر ${c.variable} · پیش‌بینی‌نشده ${c.unexpected}`]),
-          ['هزینه', 'جمع کل', r.expenses.total, ''],
-          ...r.fundFlow.map(f => ['صندوق', f.name, f.close, `اول ${f.open} · ورودی ${f.in} · خروجی ${f.out} · انتقال ${f.transfer}`]),
-          ['مدیر', 'طلب مدیر از صندوق', r.managerDebt, '']
+        body = csv(['بخش', 'شرح', 'مبلغ ' + U, 'جزئیات'], [
+          ...r.payments.byFund.map(f => ['دریافتی', f.name, c$(f.amount), `${f.count} فقره`]),
+          ['دریافتی', 'جمع کل', c$(r.payments.total), ''],
+          ...r.expenses.byCategory.map(c => ['هزینه', c.name, c$(c.total), `ثابت ${c$(c.fixed)} · متغیر ${c$(c.variable)} · پیش‌بینی‌نشده ${c$(c.unexpected)}`]),
+          ['هزینه', 'جمع کل', c$(r.expenses.total), ''],
+          ...r.fundFlow.map(f => ['صندوق', f.name, c$(f.close), `اول ${c$(f.open)} · ورودی ${c$(f.in)} · خروجی ${c$(f.out)} · انتقال ${c$(f.transfer)}`]),
+          ['مدیر', 'طلب مدیر از صندوق', c$(r.managerDebt), '']
         ])
       } else if (kind === 'invoice') {
         const inv = db.prepare(`SELECT * FROM invoices WHERE id=?`).get(+Q.id)
         if (!inv) return sendJSON(res, 404, { error: 'فاکتور یافت نشد' })
         const shares = db.prepare(`SELECT s.*, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=?`).all(inv.id)
         name = `faktor-${inv.id}.csv`
-        body = csv(['واحد', 'ساکن', 'سهم (ریال)', 'پرداخت‌شده', 'مانده'],
-          shares.map(s => { const p = shareAllocated(s.id); return [s.number, s.resident_name, s.share_amount, p, s.share_amount - p] }))
+        body = csv(['واحد', 'ساکن', 'سهم ' + U, 'پرداخت‌شده', 'مانده'],
+          shares.map(s => { const p = shareAllocated(s.id); return [s.number, s.resident_name, c$(s.share_amount), c$(p), c$(s.share_amount - p)] }))
       } else return sendJSON(res, 404, { error: 'خروجی یافت نشد' })
       res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${name}"` })
       return res.end(body)
@@ -3894,7 +3903,7 @@ async function handle(req, res) {
     }
     if (path === '/api/backups' && M === 'GET') {
       if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
-      return sendJSON(res, 200, await listBackups(Q.path || getSetting('backupPath')))
+      return sendJSON(res, 200, await listBackups(getSetting('backupPath')))
     }
     if ((path === '/api/backup/restore' || path === '/api/backup/inspect') && M === 'POST') {
       const b = await jbody(req)

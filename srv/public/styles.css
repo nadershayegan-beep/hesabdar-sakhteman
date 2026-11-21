@@ -188,6 +188,10 @@ tr.qsel{background:rgba(29,95,168,.07)}
 .editbanner .link{color:var(--warn)}
 .notice{background:var(--accent-soft);border:1px solid var(--accent);color:var(--accent);border-radius:10px;
   padding:11px 14px;font-size:13px;font-weight:600;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:14px}
+/* مورد ۵۱: سه سطح هشدار */
+.notice.info{background:var(--panel-2);border-color:var(--line);color:var(--ink);font-weight:500}
+.notice.warn{background:var(--warn-soft);border-color:var(--warn);color:var(--warn)}
+.notice.danger{background:var(--out-soft,rgba(220,38,38,.08));border-color:var(--out);color:var(--out)}
 
 /* filters */
 .filters{display:flex;gap:9px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
@@ -353,15 +357,14 @@ tr.qsel{background:rgba(29,95,168,.07)}
 .actcell{display:flex;gap:5px;justify-content:flex-end;white-space:nowrap}
 
 /* ---------- تبلیغ توی دید ---------- */
-.adbox{display:block;text-decoration:none;padding:15px;border-radius:12px;
-  background:linear-gradient(135deg,var(--accent),#0a3f6d);color:#fff;box-shadow:var(--shadow);transition:.15s}
-.adbox:hover{transform:translateY(-2px);filter:brightness(1.06)}
-.adtitle{font-size:15.5px;font-weight:800;letter-spacing:.2px}
-.adtext{font-size:12px;margin-top:5px;line-height:1.7;opacity:.95}
-.adsite{font-size:12px;font-weight:700;margin-top:9px;background:#ffffff26;display:inline-block;padding:3px 10px;border-radius:7px}
+/* مورد ۵۲: یک خط متنیِ کم‌رنگ به‌جای کادر گرادیانی */
+.adbox{display:flex;gap:6px;align-items:baseline;flex-wrap:wrap;text-decoration:none;padding:8px 4px;color:var(--faint);font-size:11.5px;border-top:1px solid var(--line)}
+.adbox:hover{color:var(--muted)}
+.adtitle{font-weight:700}
+.adtext{display:none}
+.adsite{font-size:11px}
 .authform + .adbox{margin-top:18px}
-.side .adbox{margin-top:6px;padding:13px}
-.side .adbox .adtext{font-size:11.5px}
+.side .adbox{margin-top:6px}
 @media (max-width:900px){ .side .adbox{display:none} }
 
 /* ---------- بازیابی رمز ---------- */
