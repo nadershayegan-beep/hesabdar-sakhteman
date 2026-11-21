@@ -2584,12 +2584,12 @@ function printSummaryHtml(period, showNames) {
     <h1>${hEsc(mr.buildingName || 'ساختمان')}</h1>
     <div class="sub">خلاصه‌ی ماهانه برای هیئت‌مدیره · دوره‌ی ${faNum(periodFa(p))} · تاریخ صدور: ${faNum((() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })())}${mr.managerName ? ' · مدیر: ' + hEsc(mr.managerName) : ''}</div>
     <div class="kpis">
-      ${kpi('موجودی کل صندوق‌ها', pMoney(fundTotal) + ' ' + U, '', fundTotal >= 0 ? 'ok' : 'warn')}
+      ${kpi('موجودی کل صندوق‌ها', pMoney(fundTotal) + ' ' + U, '', fundTotal < 0 ? 'warn' : '')}
       ${kpi('دریافتی این ماه', pMoney(mr.cash.income) + ' ' + U, 'نقدی')}
       ${kpi('هزینهٔ پرداخت‌شدهٔ این ماه', pMoney(mr.cash.expense) + ' ' + U, 'نقدی')}
       ${kpi('خالص نقدی ماه', (mr.cash.net < 0 ? '−' : '') + pMoney(Math.abs(mr.cash.net)) + ' ' + U, 'دریافتی منهای هزینهٔ پرداخت‌شده', mr.cash.net < 0 ? 'warn' : '')}
-      ${kpi('بدهی کل ساکنین', pMoney(dr.total) + ' ' + U, faNum(dr.rows.length) + ' واحد بدهکار', dr.total > 0 ? 'warn' : 'ok')}
-      ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', mr.managerDebt > 0 ? 'warn' : 'ok')}
+      ${kpi('بدهی کل ساکنین', pMoney(dr.total) + ' ' + U, faNum(dr.rows.length) + ' واحد بدهکار', '')}
+      ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', '')}
     </div>
     <div class="sech">گردش صندوق‌ها</div>
     <table><thead><tr><th>صندوق</th><th>مانده‌ی ابتدای دوره</th><th>ورودی</th><th>خروجی</th><th>انتقال (±)</th><th>مانده‌ی پایان دوره</th></tr></thead><tbody>
@@ -2740,9 +2740,9 @@ function printInvoicesReportHtml(fundId, status, jFrom, jTo) {
     <div class="sub">گزارش فاکتوری — ریزِ سهم و بدهیِ واحدها · تاریخ گزارش‌گیری: ${faNum(today)}${(nf || nt) ? ' · بازه: ' + faNum(nf || '…') + ' تا ' + faNum(nt || '…') : ''}${fund ? ' · صندوق: ' + hEsc(fund.name) : ' · همهٔ صندوق‌ها'} · وضعیت: ${statusFa}</div>
     <div class="kpis">
       ${kpi('جمع فاکتورها', pMoney(amountSum) + ' ' + U, faNum(invs.length) + ' فاکتور')}
-      ${kpi('پرداخت‌شده از صندوق', pMoney(fundPaidSum) + ' ' + U, '', 'ok')}
-      ${kpi('بدهی به فروشنده', pMoney(fundUnpaidSum) + ' ' + U, '', fundUnpaidSum > 0 ? 'warn' : 'ok')}
-      ${kpi('بدهی ساکنین', pMoney(resDue) + ' ' + U, 'قبوض/پروژهٔ وصول‌نشده', resDue > 0 ? 'warn' : 'ok')}
+      ${kpi('پرداخت‌شده از صندوق', pMoney(fundPaidSum) + ' ' + U)}
+      ${kpi('بدهی به فروشنده', pMoney(fundUnpaidSum) + ' ' + U, '', '')}
+      ${kpi('بدهی ساکنین', pMoney(resDue) + ' ' + U, 'قبوض/پروژهٔ وصول‌نشده', '')}
     </div>
     <div class="sech">۱) فهرست فاکتورها</div>
     ${invListTable}
@@ -2762,11 +2762,11 @@ function printExpensesHtml(r) {
     <div class="sub">گزارش هزینه‌کرد و شفاف‌سازی · ${hEsc(r.scopeLabel)} · تاریخ صدور: ${faNum(r.today)}</div>
     <div class="kpis">
       ${kpi('جمع هزینه‌ها', pMoney(r.totals.amount) + ' ' + U)}
-      ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U, 'ok')}
+      ${kpi('وصول از ساکنین', pMoney(r.residentCollected != null ? r.residentCollected : r.totals.collected) + ' ' + U)}
       ${kpi(r.isProject ? 'مانده بدهی ساکنین (طبق مصوبه)' : 'مانده بدهی ساکنین', pMoney(r.unitDebt) + ' ' + U, r.unitDebt > 0 ? 'warn' : 'ok')}
       ${r.unitCredit ? kpi(r.isProject ? 'مازاد نسبت به هزینهٔ واقعی' : 'پیش‌پرداخت ساکنین', pMoney(r.unitCredit) + ' ' + U, 'ok') : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', pMoney(r.contractor.paid) + ' ' + U) : ''}
-      ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, r.contractor.outstanding > 0 ? 'warn' : 'ok') : ''}
+      ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', pMoney(r.contractor.outstanding) + ' ' + U, '') : ''}
     </div>
     ${r.project ? `<div class="big" style="font-size:13px">مسیر مالی پروژه: برآورد اولیه <b>${pMoney(r.project.budget)}</b> ← مبلغ نهایی <b>${pMoney(r.project.finalAmount)}</b> ${r.project.deviation ? `· انحراف <b class="${r.project.deviation > 0 ? 'amt-out' : 'amt-in'}">${r.project.deviation > 0 ? '+' : '−'}${pMoney(Math.abs(r.project.deviation))}</b>` : ''} ${U}</div>` : ''}
     <div class="sech">ریز فاکتورها — بابت چه چیزی</div>
