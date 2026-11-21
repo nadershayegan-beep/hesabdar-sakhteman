@@ -1683,13 +1683,13 @@ REPORTS.debtors = async () => {
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th><th>قدمت</th><th class="printhide">اقدام</th></tr></thead><tbody>
+      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th>${Object.keys(r.buckets).map(b => `<th>${b} روز</th>`).join('')}<th class="printhide">اقدام</th></tr></thead><tbody>
       ${r.rows.length ? r.rows.map((u, i) => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num">${faDigit(u.phone || '—')}</td><td class="num amt-out">${money(u.debt)}</td>
-        <td>${u.aging ? `<span class="badge b-open">${u.aging.bucket}</span> <span class="hint">${u.aging.days > 9000 ? 'انتقالی' : faDigit(u.aging.days) + ' روز'}</span>` : '—'}</td>
+        ${Object.keys(r.buckets).map(b => `<td class="num ${b === '+۹۰' && u.ages && u.ages[b] ? 'amt-out' : ''}">${u.ages && u.ages[b] ? money(u.ages[b]) : '—'}</td>`).join('')}
         <td class="printhide rowact"><button class="btn tiny" data-wa="${i}" title="پیام واتساپ">💬</button><button class="btn tiny" data-pdf="${i}" title="صورت‌حساب PDF">📄</button></td></tr>`).join('')
-      : emptyRow(6, 'هیچ واحدی بدهکار نیست 🎉')}
-      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td><td colspan="2"></td></tr></tfoot></table></div>
+      : emptyRow(9, 'هیچ واحدی بدهکار نیست')}
+      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td>${Object.values(r.buckets).map(v => `<td class="num">${money(v)}</td>`).join('')}<td class="printhide"></td></tr></tfoot></table></div>
       <div class="hint printhide" style="margin-top:8px">💡 واتساپ فقط متن پیام را آماده می‌کند؛ فایل PDF به‌صورت خودکار پیوست نمی‌شود. اگر می‌خواهید صورت‌حساب را بفرستید، اول با «📄» فایل را بسازید و در واتساپ دستی پیوست کنید.</div>
     </div>`
   wireCommon()

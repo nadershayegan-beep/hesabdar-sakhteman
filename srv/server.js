@@ -1012,6 +1012,24 @@ function agingBucket(unitId) {
   const days = g === OPENING_G ? 9999 : daysBetween(g, todayG())
   return { days, bucket: days <= 30 ? '۰-۳۰' : days <= 60 ? '۳۱-۶۰' : days <= 90 ? '۶۱-۹۰' : '+۹۰' }
 }
+// ماتریسِ سنیِ بدهیِ یک واحد: ماندهٔ هر سهمِ باز در ستونِ سنِ خودش (نه کلِ بدهی در ستونِ قدیمی‌ترین قلم)
+const AGE_KEYS = ['۰-۳۰', '۳۱-۶۰', '۶۱-۹۰', '+۹۰']
+function unitAges(unitId, debt) {
+  const ages = { '۰-۳۰': 0, '۳۱-۶۰': 0, '۶۱-۹۰': 0, '+۹۰': 0 }
+  if (!(debt > 0)) return ages
+  const open = db.prepare(`SELECT i.g_date g, s.share_amount - (SELECT COALESCE(SUM(amount),0) FROM payment_allocations WHERE share_id=s.id) rem
+    FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id WHERE s.unit_id=? ORDER BY i.g_date, i.id`).all(unitId).filter(r => r.rem > 0)
+  // پرداختِ تخصیص‌نیافته (اگر باشد) اول از قدیمی‌ترین‌ها کم می‌شود تا جمعِ ستون‌ها = بدهیِ واقعی
+  let extra = open.reduce((a, r) => a + r.rem, 0) - debt
+  const today = todayG()
+  for (const r of open) {
+    let rem = r.rem; if (extra > 0) { const k = Math.min(extra, rem); rem -= k; extra -= k }
+    if (rem <= 0) continue
+    const days = r.g === OPENING_G ? 9999 : daysBetween(r.g, today)
+    ages[days <= 30 ? '۰-۳۰' : days <= 60 ? '۳۱-۶۰' : days <= 90 ? '۶۱-۹۰' : '+۹۰'] += rem
+  }
+  return ages
+}
 function unitsWithBalance() {
   return listUnits().map(u => {
     const debt = unitDebt(u.id)
@@ -1548,8 +1566,8 @@ function dashboard() {
     charge = { units: sh.length, paidUnits: paid, committed: chInv.amount, collected, gap: chInv.amount - collected }
   }
   // بدهیِ معوق (+۹۰ روز)
-  const overdueRows = debtors.filter(u => u.aging && u.aging.days > 90)
-  const overdue = { count: overdueRows.length, total: overdueRows.reduce((a, u) => a + u.debt, 0) }
+  const overdueRows = debtors.filter(u => u.aging && u.aging.days > 90).map(u => ({ ...u, over: unitAges(u.id, u.debt)['+۹۰'] })).filter(u => u.over > 0)
+  const overdue = { count: overdueRows.length, total: overdueRows.reduce((a, u) => a + u.over, 0) }
   // فاکتورهای پیمانکارِ پرداخت‌نشده (خرید)
   const ciOpen = db.prepare(`SELECT * FROM contractor_invoices WHERE kind<>'sale'`).all()
     .map(c => ({ ...c, rem: c.amount - (c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0)) })).filter(c => c.rem > 0)
@@ -1597,7 +1615,7 @@ function debtorsReport() {
   const rows = unitsWithBalance().filter(u => u.debt > 0)
     .sort((a, b) => (b.aging ? b.aging.days : 0) - (a.aging ? a.aging.days : 0) || b.debt - a.debt)
   const buckets = { '۰-۳۰': 0, '۳۱-۶۰': 0, '۶۱-۹۰': 0, '+۹۰': 0 }
-  for (const r of rows) if (r.aging) buckets[r.aging.bucket] += r.debt
+  for (const r of rows) { r.ages = unitAges(r.id, r.debt); for (const k of AGE_KEYS) buckets[k] += r.ages[k] }
   return { rows, total: rows.reduce((s, r) => s + r.debt, 0), buckets }
 }
 function managerReport(from, to) {
