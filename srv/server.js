@@ -209,7 +209,8 @@ function migrate() {
   addCol('payments', 'project_id', 'INTEGER DEFAULT 0')   // پرداختِ علامت‌خوردهٔ پروژه (دفترِ مجزا؛ مازاد = طلبِ پروژه)
   addCol('invoices', 'from_fund', 'INTEGER DEFAULT 0')    // 1 = هزینهٔ جاری از صندوق (بدون تقسیم/بدهکار کردن واحدها)
   addCol('contractor_invoices', 'paid_amount', 'INTEGER DEFAULT 0')
-  addCol('fund_txns', 'ref_exppay_id', 'INTEGER')          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
+  addCol('fund_txns', 'ref_exppay_id', 'INTEGER')
+  addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -252,6 +253,11 @@ const METHOD_FA = {
 const EXPENSE_KINDS = ['fixed', 'variable', 'unexpected']
 const EXPENSE_KIND_FA = { fixed: 'ثابت', variable: 'متغیر', unexpected: 'پیش‌بینی‌نشده' }
 const FUND_KINDS = ['current', 'reserve', 'custom']
+const FUND_BUCKETS = ['charge', 'omrani', 'project']
+const FUND_BUCKET_FA = { charge: 'شارژ و هزینه‌های جاری', omrani: 'قبوض و متفرقه (تقسیم بین واحدها)', project: 'عمرانی و پروژه‌ها' }
+// نقشِ صندوق از ستونِ bucket؛ فقط برای داده‌ای که هنوز مهاجرت نشده، از نام حدس زده می‌شود
+const bucketOfFund = f => (f && FUND_BUCKETS.includes(f.bucket)) ? f.bucket
+  : (f && /شارژ|جاری/.test(f.name || '')) ? 'charge' : (f && /قبوض|متفرقه/.test(f.name || '')) ? 'omrani' : 'project'
 const FUND_KIND_FA = { current: 'جاری', reserve: 'ذخیره/تعمیرات', custom: 'دلخواه' }
 const ROLES = ['admin', 'board', 'inspector']
 const ROLE_FA = { admin: 'مدیر ساختمان', board: 'رئیس هیئت مدیره', inspector: 'بازرس' }
@@ -348,6 +354,11 @@ function migrateExpPayLinks() {
   setSetting('mig_exppay_link', '1')
 }
 migrateExpPayLinks()
+function migrateFundBuckets() {
+  for (const f of db.prepare(`SELECT * FROM funds WHERE COALESCE(bucket,'')=''`).all())
+    db.prepare(`UPDATE funds SET bucket=? WHERE id=?`).run(bucketOfFund({ name: f.name }), f.id)
+}
+migrateFundBuckets()
 
 // ---------- احراز هویت ----------
 const sessions = new Map()
@@ -522,9 +533,8 @@ function openSharesOfUnit(unitId, onlyIds = null) {
 
 // دستهٔ سبدِ یک صندوق بر اساس نامش: charge (شارژ/جاری) | omrani (قبوض/متفرقه) | project (عمرانی)
 function fundBucket(fundId) {
-  const f = fundId ? db.prepare(`SELECT name FROM funds WHERE id=?`).get(fundId) : null
-  const n = f ? f.name : ''
-  return /شارژ|جاری/.test(n) ? 'charge' : /قبوض|متفرقه/.test(n) ? 'omrani' : 'project'
+  const f = fundId ? db.prepare(`SELECT * FROM funds WHERE id=?`).get(fundId) : null
+  return bucketOfFund(f)
 }
 // آیا سهم s در سبدِ دستهٔ cat است؟ (chg=شارژ، opn=انتقالی، bill&proj=پروژه، باقی=قبوض/توزیعی)
 const shareInBucket = (s, cat) => cat === 'charge' ? (s.chg || s.opn || (s.bill && !s.proj_id))
@@ -657,9 +667,9 @@ function writeShares(invId, shares) {
 }
 
 // ---------- صندوق ----------
-const FUND_IN = `('in','transfer_in')`
-const FUND_OUT = `('out','transfer_out','manager_settle')`
-const TXN_LABEL = { in: 'واریز ساکن', out: 'پرداخت فاکتور', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر' }
+const FUND_IN = `('in','transfer_in','adjust_in')`
+const FUND_OUT = `('out','transfer_out','manager_settle','adjust_out')`
+const TXN_LABEL = { in: 'واریز ساکن', out: 'پرداخت فاکتور', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر', adjust_in: 'سند تعدیل (افزایش)', adjust_out: 'سند تعدیل (کاهش)' }
 function fundBalance(id) {
   const f = db.prepare(`SELECT opening_balance FROM funds WHERE id=?`).get(id); if (!f) return 0
   const i = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(id).s
@@ -678,7 +688,7 @@ function addFundTxn(fundId, type, amount, extra = {}) {
 // صندوق اصلی (اولین صندوق)
 const mainFundId = () => { const f = db.prepare(`SELECT id FROM funds ORDER BY id LIMIT 1`).get(); return f ? f.id : null }
 // صندوق عمرانی — مقصد پیش‌فرضِ خرید/فروشِ پیمانکارِ پروژه (اگر نبود، صندوق اصلی)
-const omraniFundId = () => { const f = db.prepare(`SELECT id FROM funds WHERE name LIKE '%عمران%' ORDER BY id LIMIT 1`).get(); return f ? f.id : mainFundId() }
+const omraniFundId = () => { const f = db.prepare(`SELECT id FROM funds WHERE bucket='project' ORDER BY id LIMIT 1`).get() || db.prepare(`SELECT id FROM funds WHERE name LIKE '%عمران%' ORDER BY id LIMIT 1`).get(); return f ? f.id : mainFundId() }
 // هم‌گام‌سازی اثر یک فاکتور پیمانکار روی صندوق: خریدِ پرداخت‌شده = خروج، فروشِ دریافت‌شده = ورود، پرداخت‌نشده = بدون تراکنش
 // idempotent: تراکنش قبلیِ همین فاکتور حذف و در صورت لزوم دوباره ساخته می‌شود
 function syncContractorFundTxn(ci, by) {
@@ -1139,7 +1149,7 @@ function fundReport(fundId) {
   const received = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(fundId).s
   const spent = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT}`).get(fundId).s
   // دستهٔ بدهیِ این صندوق بر اساس نامش: شارژ | قبوض/متفرقه | عمرانی(پروژه‌ها)
-  const cat = /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project'
+  const cat = bucketOfFund(f)
   const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
   const unitDebts = unitLedgerReport().rows
     .map(r => ({ id: r.id, number: r.number, resident_name: r.resident_name, debt: r[cat] }))
@@ -1289,7 +1299,7 @@ function generalLedger(type, id, from, to) {
     const f = db.prepare(`SELECT * FROM funds WHERE id=?`).get(+id); if (!f) return null
     name = f.name; opening = f.opening_balance || 0
     for (const t of db.prepare(`SELECT t.*, i.title inv_title, u.number unit_number FROM fund_txns t LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN payments p ON p.id=t.ref_payment_id LEFT JOIN units u ON u.id=p.unit_id WHERE t.fund_id=?`).all(+id)) {
-      const isin = t.type === 'in' || t.type === 'transfer_in'
+      const isin = ['in', 'transfer_in', 'adjust_in'].includes(t.type)
       const no = t.ref_payment_id ? 'رسید ' + t.ref_payment_id : t.ref_invoice_id ? 'سند ' + t.ref_invoice_id : t.ref_cinvoice_id ? 'ci-' + t.ref_cinvoice_id : /transfer/.test(t.type) ? 'انتقال' : '—'
       ent.push({ g: t.g_date, j: t.j_date, no, dtype: t.ref_payment_id ? 'payment' : t.ref_invoice_id ? 'invoice' : t.ref_cinvoice_id ? 'contractor' : '', refid: t.ref_payment_id || t.ref_invoice_id || t.ref_cinvoice_id, title: t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : (TXN_LABEL[t.type] || t.type)), cat: TXN_LABEL[t.type] || t.type, debit: isin ? t.amount : 0, credit: isin ? 0 : t.amount })
     }
@@ -1331,7 +1341,7 @@ function fundsOverview() {
   const ledger = unitLedgerReport().rows
   const debtField = { charge: 'charge', omrani: 'omrani', project: 'projectDue' }
   const funds = fundStats().map(f => {
-    const cat = /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project'
+    const cat = bucketOfFund(f)
     const unitDebt = ledger.reduce((a, r) => a + Math.max(0, r[debtField[cat]] || 0), 0)
     return { id: f.id, name: f.name, kindFa: f.kindFa, cat, opening: f.opening, received: f.received, spent: f.spent, balance: f.balance, unitDebt }
   })
@@ -1426,7 +1436,7 @@ function dashboard() {
     LEFT JOIN funds f ON f.id=t.fund_id LEFT JOIN invoices i ON i.id=t.ref_invoice_id
     LEFT JOIN payments pp ON pp.id=t.ref_payment_id LEFT JOIN units u ON u.id=pp.unit_id
     ORDER BY t.g_date DESC, t.id DESC LIMIT 6`).all()
-    .map(t => ({ j: t.j_date, fund: t.fund_name, isIn: t.type === 'in' || t.type === 'transfer_in', amount: t.amount,
+    .map(t => ({ j: t.j_date, fund: t.fund_name, isIn: ['in', 'transfer_in', 'adjust_in'].includes(t.type), amount: t.amount,
       title: t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : (TXN_LABEL[t.type] || t.type)),
       dtype: t.ref_payment_id ? 'payment' : t.ref_invoice_id ? 'invoice' : t.ref_cinvoice_id ? 'contractor' : '', refid: t.ref_payment_id || t.ref_invoice_id || t.ref_cinvoice_id }))
   // آخرین اسنادِ دفتر روزنامه
@@ -1599,7 +1609,8 @@ async function rotateAutoBackups(destRaw) {
   for (const b of list.slice(14)) { const ym = b.stamp.slice(0, 6); if (!months.has(ym) && months.size < 12) { months.add(ym); keep.add(b.name) } }
   for (const b of list) if (!keep.has(b.name)) await rm(join(bkDir(destRaw), b.name), { force: true })
 }
-async function runAutoBackup(reason) {
+async function runAutoBackup(reason) { return withWriteLock(() => runAutoBackupNow(reason)) }
+async function runAutoBackupNow(reason) {
   try {
     const r = await backupToFolder(getSetting('backupPath'), 'a')
     await rotateAutoBackups(getSetting('backupPath'))
@@ -1804,7 +1815,7 @@ function projectSummary(p) {
 // آمارِ هر صندوق: موجودی، جمعِ ورودی، جمعِ خروجی
 function fundStats() {
   return listFunds().map(f => ({
-    id: f.id, name: f.name, kindFa: f.kindFa, balance: f.balance, opening: f.opening_balance || 0,
+    id: f.id, name: f.name, bucket: f.bucket, kindFa: f.kindFa, balance: f.balance, opening: f.opening_balance || 0,
     received: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(f.id).s,
     spent: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT}`).get(f.id).s
   }))
@@ -2340,7 +2351,23 @@ function printMeetingHtml(id) {
 
 const PUBLIC_PATHS = new Set(['/api/auth/status', '/api/auth/login', '/api/auth/setup',
   '/api/auth/recover', '/api/auth/local-reset', '/api/auth/local-reset/available'])
-const server = createServer(async (req, res) => {
+// ---- قفلِ نوشتن + تراکنش: هر درخواستِ نوشتنی یا کامل ثبت می‌شود یا اصلاً ثبت نمی‌شود ----
+// اگر پاسخِ درخواست خطا (کد ۴۰۰ به بالا) باشد، همهٔ تغییراتِ همان درخواست برگردانده می‌شود
+let writeChain = Promise.resolve()
+const withWriteLock = fn => { const p = writeChain.then(fn, fn); writeChain = p.catch(() => { }); return p }
+const NO_TX = new Set(['/api/backup', '/api/backup/restore', '/api/backup/inspect', '/api/update'])
+const server = createServer((req, res) => {
+  let p = ''; try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname) } catch { }
+  if (req.method === 'GET' || !p.startsWith('/api/')) return handle(req, res)
+  return withWriteLock(async () => {
+    if (NO_TX.has(p)) return handle(req, res)
+    db.exec('BEGIN IMMEDIATE')
+    let ok = false
+    try { await handle(req, res); ok = res.statusCode < 400 }
+    finally { try { db.exec(ok ? 'COMMIT' : 'ROLLBACK') } catch (e) { console.error('تراکنش:', e.message) } }
+  })
+})
+async function handle(req, res) {
   try {
     const url = new URL(req.url, `http://${req.headers.host}`)
     const path = decodeURIComponent(url.pathname)
@@ -2670,7 +2697,7 @@ const server = createServer(async (req, res) => {
         categories: db.prepare(`SELECT * FROM expense_categories WHERE active=1 ORDER BY sort, id`).all(),
         methods: METHODS.map(m => ({ value: m, fa: METHOD_FA[m] })),
         expenseKinds: EXPENSE_KINDS.map(k => ({ value: k, fa: EXPENSE_KIND_FA[k] })),
-        fundKinds: FUND_KINDS.map(k => ({ value: k, fa: FUND_KIND_FA[k] })),
+        fundKinds: FUND_KINDS.map(k => ({ value: k, fa: FUND_KIND_FA[k] })), fundBuckets: FUND_BUCKETS.map(k => ({ value: k, fa: FUND_BUCKET_FA[k] })),
         payMethods: PAY_METHODS, roles: ROLES.map(r => ({ value: r, fa: ROLE_FA[r] })),
         periodKinds: PERIOD_KINDS.map(k => ({ value: k, fa: PERIOD_KIND_FA[k] })),
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
@@ -2764,8 +2791,8 @@ const server = createServer(async (req, res) => {
     if (path === '/api/funds' && M === 'POST') {
       const b = await jbody(req)
       if (!(b.name || '').trim()) return sendJSON(res, 400, { error: 'نام صندوق لازم است' })
-      const id = Number(db.prepare(`INSERT INTO funds(name,kind,opening_balance,created_at) VALUES(?,?,?,?)`)
-        .run(b.name.trim(), FUND_KINDS.includes(b.kind) ? b.kind : 'custom', Math.round(+b.openingBalance) || 0, nowISO()).lastInsertRowid)
+      const id = Number(db.prepare(`INSERT INTO funds(name,kind,bucket,opening_balance,created_at) VALUES(?,?,?,?,?)`)
+        .run(b.name.trim(), FUND_KINDS.includes(b.kind) ? b.kind : 'custom', FUND_BUCKETS.includes(b.bucket) ? b.bucket : 'charge', Math.round(+b.openingBalance) || 0, nowISO()).lastInsertRowid)
       return sendJSON(res, 200, { ok: true, id })
     }
     const fundM = /^\/api\/funds\/(\d+)$/.exec(path)
@@ -2773,9 +2800,24 @@ const server = createServer(async (req, res) => {
       const id = +fundM[1], b = await jbody(req)
       const cur = db.prepare(`SELECT * FROM funds WHERE id=?`).get(id)
       if (!cur) return sendJSON(res, 404, { error: 'صندوق یافت نشد' })
-      db.prepare(`UPDATE funds SET name=?,kind=?,opening_balance=? WHERE id=?`)
-        .run((b.name ?? cur.name).trim(), FUND_KINDS.includes(b.kind) ? b.kind : cur.kind,
-          b.openingBalance != null ? Math.round(+b.openingBalance) : cur.opening_balance, id)
+      const hasTxn = db.prepare(`SELECT COUNT(*) c FROM fund_txns WHERE fund_id=?`).get(id).c > 0
+      const newOpen = b.openingBalance != null ? Math.round(+b.openingBalance) : cur.opening_balance
+      const newBucket = FUND_BUCKETS.includes(b.bucket) ? b.bucket : cur.bucket
+      if (hasTxn && newOpen !== cur.opening_balance) return sendJSON(res, 400, { error: 'موجودی اولیه پس از ثبت اولین گردشِ صندوق قفل است. برای اصلاح، «سند تعدیل» ثبت کنید.' })
+      if (hasTxn && newBucket !== cur.bucket) return sendJSON(res, 400, { error: 'نقشِ صندوقی که گردش دارد قابل تغییر نیست؛ تغییرش پرداخت‌ها و بدهی‌ها را جابه‌جا می‌کند.' })
+      db.prepare(`UPDATE funds SET name=?,kind=?,bucket=?,opening_balance=? WHERE id=?`)
+        .run((b.name ?? cur.name).trim(), FUND_KINDS.includes(b.kind) ? b.kind : cur.kind, newBucket, newOpen, id)
+      return sendJSON(res, 200, { ok: true })
+    }
+    // سند تعدیلِ صندوق: تنها راهِ اصلاحِ موجودی پس از شروعِ کار (با سابقه و شرح)
+    const fundAdjM = /^\/api\/funds\/(\d+)\/adjust$/.exec(path)
+    if (fundAdjM && M === 'POST') {
+      const id = +fundAdjM[1], b = await jbody(req)
+      if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(id)) return sendJSON(res, 404, { error: 'صندوق یافت نشد' })
+      const amt = Math.round(+b.amount); if (!amt) return sendJSON(res, 400, { error: 'مبلغ تعدیل لازم است (مثبت = افزایش، منفی = کاهش)' })
+      if (!(b.note || '').trim()) return sendJSON(res, 400, { error: 'علتِ تعدیل را بنویسید' })
+      const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
+      addFundTxn(id, amt > 0 ? 'adjust_in' : 'adjust_out', Math.abs(amt), { ...d, note: 'سند تعدیل: ' + b.note.trim(), by: user.id })
       return sendJSON(res, 200, { ok: true })
     }
     if (fundM && M === 'DELETE') {
@@ -3124,7 +3166,13 @@ const server = createServer(async (req, res) => {
       for (const r of (Array.isArray(b.units) ? b.units : []))
         setOpeningBalance(+r.unitId, r.amount, r.note, user.id)
       for (const f of (Array.isArray(b.funds) ? b.funds : []))
-        db.prepare(`UPDATE funds SET opening_balance=? WHERE id=?`).run(Math.round(+f.amount) || 0, +f.fundId)
+      {
+        const cur = db.prepare(`SELECT * FROM funds WHERE id=?`).get(+f.fundId); if (!cur) continue
+        const nv = Math.round(+f.amount) || 0
+        if (nv !== cur.opening_balance && db.prepare(`SELECT COUNT(*) c FROM fund_txns WHERE fund_id=?`).get(cur.id).c > 0)
+          return sendJSON(res, 400, { error: `موجودی اولیهٔ «${cur.name}» پس از ثبت اولین گردش قفل است. برای اصلاح از «سند تعدیل» در صفحهٔ صندوق‌ها استفاده کنید.` })
+        db.prepare(`UPDATE funds SET opening_balance=? WHERE id=?`).run(nv, cur.id)
+      }
       if (b.managerOpening != null) setSetting('managerOpening', Math.round(+b.managerOpening) || 0)
       return sendJSON(res, 200, { ok: true })
     }
@@ -3408,9 +3456,9 @@ const server = createServer(async (req, res) => {
     }
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('صفحه یافت نشد')
   } catch (err) {
-    console.error('خطا:', err); sendJSON(res, 500, { error: err.message || 'خطای سرور' })
+    console.error('خطا:', err); if (!res.headersSent) sendJSON(res, 500, { error: err.message || 'خطای سرور' })
   }
-})
+}
 
 // تاریخ ورودی فرم → {g_date, j_date}
 function jDates(b) {

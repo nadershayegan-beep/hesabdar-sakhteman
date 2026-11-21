@@ -626,9 +626,10 @@ function invoiceForm(inv) {
   // صندوقِ پیش‌فرض بر اساس نحوهٔ تأمین: «از محل شارژ» → صندوق شارژ/جاری · «تقسیم بین واحدها» → صندوق عمرانی/تعمیرات
   const by = re => (funds.find(x => re.test(x.name)) || {}).id
   const pickFund = () => { const v = $('#ivFromFund').value
-    return v === 'charge' ? (by(/شارژ|جاری/) || (funds[0] || {}).id)
-      : v === 'omrani' ? (by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id)
-      : (by(/قبوض|متفرقه/) || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id) }
+    const byB = b => (funds.find(f => f.bucket === b) || {}).id
+    return v === 'charge' ? (byB('charge') || by(/شارژ|جاری/) || (funds[0] || {}).id)
+      : v === 'omrani' ? (byB('project') || by(/عمران|تعمیر/) || (funds[1] || funds[0] || {}).id)
+      : (byB('omrani') || by(/قبوض|متفرقه/) || (funds[1] || funds[0] || {}).id) }
   const applyDefaultFund = () => { const id = pickFund(); if (id && $('#ivFund')) $('#ivFund').value = id }
   store.paidNowEdited = !!inv // در ویرایش، مقدارِ فعلیِ پرداختِ صندوق حفظ شود و با تغییرِ مبلغ بازنویسی نشود
   const paidVisible = () => { if (inv && !inv.payable) return false; const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
@@ -836,7 +837,7 @@ function bulkPaymentForm() {
       <td><b>${escFa(num)}</b>${resident ? ` <span class="hint">${esc(resident)}</span>` : ''}</td>
       <td class="num ${ref > 0 ? 'amt-out' : ''}">${ref > 0 ? money(ref) : '—'}</td>
       <td><input class="inp num bpAmt" data-money="" inputmode="numeric" value="${prefill > 0 ? sep(Math.round(r2d(prefill))) : ''}"></td></tr>`
-  const fundCat = fid => { const f = META.funds.find(x => x.id === fid) || {}; return /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project' }
+  const fundCat = fid => { const f = META.funds.find(x => x.id === fid) || {}; return f.bucket || (/شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project') }
   const catField = { charge: 'charge', omrani: 'omrani', project: 'projectDue' }
   let ledger = {} // unitId -> {charge, omrani, projectDue}
   const body = openModal('👥 دریافت گروهی', `<div class="form">
@@ -1266,8 +1267,8 @@ VIEWS.funds = async () => {
     transferForm(funds, { from: x.from, to: x.to, amount: x.amount })
   })
 }
-const TXN_FA = { in: 'واریز ساکن', out: 'پرداخت فاکتور', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر' }
-const isIn = t => t === 'in' || t === 'transfer_in'
+const TXN_FA = { in: 'واریز ساکن', out: 'پرداخت فاکتور', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر', adjust_in: 'سند تعدیل (افزایش)', adjust_out: 'سند تعدیل (کاهش)' }
+const isIn = t => t === 'in' || t === 'transfer_in' || t === 'adjust_in'
 const showFund = guard(async id => {
   const d = await api(`/api/funds/${id}/txns`)
   // دفتر معین صندوق: ورودی=بدهکار · خروجی=بستانکار · ماندهٔ دونده (موجودی)
@@ -1949,7 +1950,7 @@ REPORTS.invoices = async () => {
     }).join('')
     zone.innerHTML = unitList + `<h3 style="margin:14px 0 6px">۳) ریزِ فاکتور‌به‌فاکتور</h3>` + (blocks || '<div class="empty">فاکتورِ تسهیمی‌ای نیست</div>')
   }
-  const defFund = (META.funds.find(f => /قبوض|متفرقه/.test(f.name)) || {}).id || 0
+  const defFund = (META.funds.find(f => f.bucket === 'omrani') || META.funds.find(f => /قبوض|متفرقه/.test(f.name)) || {}).id || 0
   draw(defFund, '', false, '', '')
 }
 REPORTS.fundpay = async () => {
@@ -2252,28 +2253,47 @@ function catForm(c) {
 SETTINGS.funds = async () => {
   const funds = await api('/api/funds')
   $('#setBody').innerHTML = `<div class="panel"><div class="phead"><b>صندوق‌ها</b><button class="btn small primary" id="newFund">＋ صندوق جدید</button></div>
-    <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>نوع</th><th>موجودی اولیه</th><th>موجودی فعلی</th><th></th></tr></thead><tbody>
-    ${funds.map(f => `<tr><td><b>${esc(f.name)}</b></td><td><span class="catpill">${esc(f.kindFa)}</span></td>
+    <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>نقش</th><th>موجودی اولیه</th><th>موجودی فعلی</th><th></th></tr></thead><tbody>
+    ${funds.map(f => `<tr><td><b>${esc(f.name)}</b></td><td><span class="catpill">${esc((META.fundBuckets.find(b => b.value === f.bucket) || {}).fa || '—')}</span></td>
       <td class="num">${money(f.opening_balance)}</td><td class="num"><b>${money(f.balance)}</b></td>
-      <td><button class="mini-btn" data-editfund="${f.id}">ویرایش</button><button class="del" data-delfund="${f.id}">🗑</button></td></tr>`).join('')}
+      <td class="rowact"><button class="mini-btn" data-editfund="${f.id}">ویرایش</button><button class="mini-btn" data-adjfund="${f.id}">سند تعدیل</button><button class="del" data-delfund="${f.id}">🗑</button></td></tr>`).join('')}
     </tbody></table></div></div>`
   $('#newFund').onclick = () => fundForm()
   document.querySelectorAll('[data-editfund]').forEach(b => b.onclick = () => fundForm(funds.find(f => f.id === +b.dataset.editfund)))
+  document.querySelectorAll('[data-adjfund]').forEach(b => b.onclick = () => fundAdjustForm(funds.find(f => f.id === +b.dataset.adjfund)))
   document.querySelectorAll('[data-delfund]').forEach(b => b.onclick = () => confirmBox('این صندوق حذف شود؟',
     async () => { await api(`/api/funds/${b.dataset.delfund}`, { method: 'DELETE' }); toast('صندوق حذف شد'); refresh() }))
 }
 function fundForm(f) {
   const body = openModal(f ? 'ویرایش صندوق' : 'صندوق جدید', `<div class="form">
     <label class="f">نام صندوق<input class="inp" id="fnName" value="${esc(f ? f.name : '')}" placeholder="مثلاً: صندوق آسانسور"></label>
-    <label class="f">نوع<select class="inp" id="fnKind">${META.fundKinds.map(k => `<option value="${k.value}" ${f && f.kind === k.value ? 'selected' : ''}>${esc(k.fa)}</option>`).join('')}</select></label>
+    <label class="f">نقشِ صندوق<select class="inp" id="fnBucket">${META.fundBuckets.map(k => `<option value="${k.value}" ${f && f.bucket === k.value ? 'selected' : ''}>${esc(k.fa)}</option>`).join('')}</select>
+      <span class="hint">مشخص می‌کند دریافتی و هزینهٔ کدام دسته به این صندوق برود. پس از اولین گردش قفل می‌شود.</span></label>
+    <input type="hidden" id="fnKind" value="${f ? f.kind : 'custom'}">
     <label class="f">موجودی اولیه (${curFa()})<input class="inp num" id="fnOpen" data-money="fnHint" inputmode="numeric" value="${f ? sep(Math.round(r2d(f.opening_balance))) : ''}"><span class="hint" id="fnHint"></span></label></div>`,
     `<button class="btn primary" id="fnSave">ذخیره</button><button class="btn" id="fnCancel">انصراف</button>`)
   wireMoney(body); $('#fnCancel').onclick = closeModal
   $('#fnSave').onclick = guard(async () => {
-    const p = { name: $('#fnName').value.trim(), kind: $('#fnKind').value, openingBalance: readMoney($('#fnOpen')) }
+    const p = { name: $('#fnName').value.trim(), kind: $('#fnKind').value, bucket: $('#fnBucket').value, openingBalance: readMoney($('#fnOpen')) }
     if (!p.name) throw new Error('نام صندوق را وارد کنید')
     if (f) await post(`/api/funds/${f.id}`, p, 'PATCH'); else await post('/api/funds', p)
     closeModal(); toast('ذخیره شد'); refresh()
+  })
+}
+// سند تعدیلِ صندوق: اصلاحِ موجودی با علت و تاریخ (به‌جای دستکاریِ موجودیِ اولیه)
+function fundAdjustForm(f) {
+  const body = openModal('سند تعدیل — ' + f.name, `<div class="form">
+    <p class="hint">برای اصلاحِ اختلافِ موجودیِ صندوق با پولِ واقعی (مثلاً شمارش نقدی یا صورت‌حساب بانک). این سند در گردشِ صندوق و دفتر روزنامه دیده می‌شود.</p>
+    <div class="frow"><label class="f">نوع<select class="inp" id="adDir"><option value="1">افزایشِ موجودی</option><option value="-1">کاهشِ موجودی</option></select></label>
+      <label class="f">مبلغ (${curFa()})<input class="inp num" id="adAmt" data-money="adHint" inputmode="numeric"><span class="hint" id="adHint"></span></label></div>
+    <label class="f">علتِ تعدیل<input class="inp" id="adNote" placeholder="مثلاً: اختلاف شمارش صندوق با دفتر"></label>
+    <label class="f">تاریخ${dateBoxHtml('ad')}</label></div>`,
+    `<button class="btn primary" id="adSave">ثبت سند تعدیل</button><button class="btn" id="adCancel">انصراف</button>`)
+  wireMoney(body); wireToday(body); $('#adCancel').onclick = closeModal
+  $('#adSave').onclick = guard(async () => {
+    const amt = readMoney($('#adAmt')); if (!(amt > 0)) throw new Error('مبلغ را وارد کنید')
+    await post(`/api/funds/${f.id}/adjust`, { amount: amt * +$('#adDir').value, note: $('#adNote').value.trim(), ...readDate('ad') })
+    closeModal(); toast('سند تعدیل ثبت شد'); refresh()
   })
 }
 SETTINGS.openings = async () => {
