@@ -39,9 +39,18 @@ function debtorWaText(u) {
     + `صورت‌حساب واحد ${faDigit(u.number)} — ${b}\n`
     + `بدهی فعلی شما: ${moneyU(u.debt)}\n`
     + (u.aging && u.aging.days > 0 && u.aging.days < 9000 ? `قدمت بدهی: ${faDigit(u.aging.days)} روز\n` : '')
-    + `لطفاً در اولین فرصت نسبت به تسویه اقدام بفرمایید. سپاس فراوان 🙏`
+    + payInfoText()
+    + `لطفاً در اولین فرصت نسبت به تسویه اقدام بفرمایید. سپاس فراوان`
+}
+// خطِ «کجا واریز کنم» برای پیام‌ها (اگر در تنظیمات واردشده)
+function payInfoText() {
+  const m = (typeof META !== 'undefined' && META) || {}
+  if (!m.payCard && !m.payIban) return ''
+  const card = m.payCard ? String(m.payCard).replace(/[^\d۰-۹]/g, '').replace(/(.{4})(?=.)/g, '$1-') : ''
+  return (card ? `کارت: ${card}\n` : '') + (m.payIban ? `شبا: ${m.payIban}\n` : '') + (m.payHolder ? `به نام: ${m.payHolder}\n` : '') + (m.payDueDay ? `مهلت پرداخت شارژ: تا ${faDigit(m.payDueDay)}ام هر ماه\n` : '')
 }
 function openWhatsApp(u) {
+  if (!u.phone) return toast('برای این واحد شماره تلفن ثبت نشده است', true)
   const ph = waPhone(u.phone)
   const url = `https://wa.me/${ph}?text=${encodeURIComponent(debtorWaText(u))}`
   window.open(url, '_blank', 'noopener')
@@ -2208,13 +2217,23 @@ SETTINGS.general = async () => {
       <button type="button" class="t ${s.displayUnit === 'toman' ? 'on' : ''}" data-unit="toman">تومان</button>
       <button type="button" class="t ${s.displayUnit === 'rial' ? 'on' : ''}" data-unit="rial">ریال</button></div>
       <span class="hint">مبالغ همیشه به ریال ذخیره می‌شوند؛ این فقط نحوه‌ی نمایش و ورود است.</span></label>
+    <div class="phead" style="margin-top:10px;padding:0"><b>اطلاعات واریز</b><span class="hint">در پیام واتساپ و صورت‌حساب بدهکاران می‌آید</span></div>
+    <label class="f">شماره کارت<input class="inp num" id="sgCard" dir="ltr" inputmode="numeric" placeholder="۶۰۳۷-....-....-...." value="${esc(s.payCard || '')}"></label>
+    <label class="f">شماره شبا<input class="inp num" id="sgIban" dir="ltr" placeholder="IR.." value="${esc(s.payIban || '')}"></label>
+    <label class="f">صاحب حساب<input class="inp" id="sgHolder" value="${esc(s.payHolder || '')}"></label>
+    <label class="f">مهلت پرداخت شارژ (روزِ ماه)<input class="inp num" id="sgDue" inputmode="numeric" placeholder="مثلاً ۱۰" value="${s.payDueDay ? faDigit(s.payDueDay) : ''}"><span class="hint">خالی = بدون مهلت مشخص</span></label>
     <div class="fbtns"><button class="btn primary" id="sgSave">ذخیره</button></div></div></div>`
   let unit = s.displayUnit
   document.querySelectorAll('[data-unit]').forEach(b => b.onclick = () => {
     unit = b.dataset.unit; document.querySelectorAll('[data-unit]').forEach(x => x.classList.toggle('on', x === b))
   })
   $('#sgSave').onclick = guard(async () => {
-    await post('/api/settings', { buildingName: $('#sgName').value.trim(), displayUnit: unit, totalUnits: +enDigit($('#sgTotal').value) || 0 })
+    const iban = enDigit($('#sgIban').value).replace(/\s/g, '').toUpperCase()
+    if (iban && !/^IR\d{24}$/.test(iban)) throw new Error('شماره شبا باید با IR شروع شود و ۲۴ رقم داشته باشد')
+    const card = enDigit($('#sgCard').value).replace(/\D/g, '')
+    if (card && card.length !== 16) throw new Error('شماره کارت باید ۱۶ رقم باشد')
+    await post('/api/settings', { buildingName: $('#sgName').value.trim(), displayUnit: unit, totalUnits: +enDigit($('#sgTotal').value) || 0,
+      payCard: card, payIban: iban, payHolder: $('#sgHolder').value.trim(), payDueDay: +enDigit($('#sgDue').value) || 0 })
     toast('تنظیمات ذخیره شد'); refresh()
   })
 }

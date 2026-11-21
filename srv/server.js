@@ -2262,6 +2262,7 @@ body{font-family:Tahoma,'IRANSans','Vazirmatn',system-ui,sans-serif;color:#1a223
 h1{font-size:19px;margin:0 0 2px;color:#0f2847}
 .sub{color:#5b6472;font-size:11.5px;margin:0 0 10px}
 .big{font-size:17px;font-weight:800;border:1.5px solid #1d5fa8;border-radius:10px;padding:11px 14px;margin:10px 0;background:#eef4fc}
+.payinfo{font-size:12.5px;border:1px dashed #9db3cc;border-radius:8px;padding:8px 12px;margin:0 0 10px;background:#fbfcfe}
 h3{font-size:13.5px;margin:14px 0 4px}
 /* جدول‌ها: استاندارد حسابداری — سرستونِ پررنگ، ردیف‌های یک‌درمیان، ترازِ عددی، جمعِ متمایز */
 table{width:100%;border-collapse:collapse;margin:8px 0;border:1px solid #c3cedd;border-radius:8px;overflow:hidden}
@@ -2331,6 +2332,13 @@ function printPaymentHtml(id) {
     <div class="foot">صادرشده از «حسابدار ساختمان»</div>`
   return printLayout(`رسید ${p.id} — واحد ${p.number}`, inner)
 }
+// اطلاعاتِ واریز (کارت/شبا/صاحب حساب/مهلت) برای پیام‌ها و صورت‌حساب‌ها
+function payInfo() { return { payCard: getSetting('payCard', ''), payIban: getSetting('payIban', ''), payHolder: getSetting('payHolder', ''), payDueDay: +getSetting('payDueDay', '0') || 0 } }
+function payInfoHtml() {
+  const p = payInfo(); if (!p.payCard && !p.payIban) return ''
+  const card = p.payCard ? faNum(String(p.payCard).replace(/[^\d۰-۹]/g, '').replace(/(.{4})(?=.)/g, '$1-')) : ''
+  return `<div class="payinfo"><b>واریز به:</b> ${card ? 'کارت <span class="num" dir="ltr">' + card + '</span>' : ''}${p.payIban ? ` · شبا <span class="num" dir="ltr">${hEsc(p.payIban)}</span>` : ''}${p.payHolder ? ' · به نام ' + hEsc(p.payHolder) : ''}${p.payDueDay ? ` · مهلت پرداخت شارژ: تا ${faNum(p.payDueDay)}ام هر ماه` : ''}</div>`
+}
 function printUnitHtml(c) {
   const u = c.unit, open = c.shares.filter(s => s.remaining > 0)
   const debtLine = c.debt > 0
@@ -2340,6 +2348,7 @@ function printUnitHtml(c) {
     <h1>${hEsc(c.buildingName || 'ساختمان')}</h1>
     <div class="sub">صورت‌حساب واحد ${faNum(u.number)}${u.resident_name ? ' — ' + hEsc(u.resident_name) : ''} · تاریخ صدور: ${faNum(c.today)}</div>
     <div class="big">${debtLine}</div>
+    ${c.debt > 0 ? payInfoHtml() : ''}
     <h3>ریز بدهکاری‌ها</h3>
     <table><thead><tr><th>شماره سند</th><th>شرح</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
     ${open.length ? open.map(s => `<tr><td class="num">${faNum(s.invoice_id)}</td><td>${hEsc(s.title)}</td><td>${hEsc(s.category || '—')}</td><td class="num">${s.is_opening ? 'انتقالی' : faNum(s.j_date)}</td>
@@ -3040,7 +3049,7 @@ async function handle(req, res) {
         expenseKinds: EXPENSE_KINDS.map(k => ({ value: k, fa: EXPENSE_KIND_FA[k] })),
         fundKinds: FUND_KINDS.map(k => ({ value: k, fa: FUND_KIND_FA[k] })), fundBuckets: FUND_BUCKETS.map(k => ({ value: k, fa: FUND_BUCKET_FA[k] })),
         payMethods: PAY_METHODS, roles: ROLES.map(r => ({ value: r, fa: ROLE_FA[r] })),
-        periodKinds: PERIOD_KINDS.map(k => ({ value: k, fa: PERIOD_KIND_FA[k] })),
+        periodKinds: PERIOD_KINDS.map(k => ({ value: k, fa: PERIOD_KIND_FA[k] })), ...payInfo(),
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
         totalUnits: +getSetting('totalUnits', '0') || 0,
         chargeAmount: chargeAmountAt(curPeriod()), curPeriod: curPeriod(), curPeriodFa: periodFa(curPeriod()),
@@ -3690,7 +3699,7 @@ async function handle(req, res) {
     if (path === '/api/settings' && M === 'GET')
       return sendJSON(res, 200, {
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
-        totalUnits: +getSetting('totalUnits', '0') || 0,
+        totalUnits: +getSetting('totalUnits', '0') || 0, ...payInfo(),
         lateFeePercent: +getSetting('lateFeePercent', '0') || 0, lateFeeGraceDays: +getSetting('lateFeeGraceDays', '30') || 30,
         ...(isAdmin ? { lanAccess: getSetting('lanAccess', '1') === '1', backupPath: getSetting('backupPath'), defaultBackupDir: DEFAULT_BK_DIR, autoBackup: getSetting('autoBackup') === '1', lastBackupAt: getSetting('lastBackupAt', '') } : {})
       })
@@ -3699,6 +3708,10 @@ async function handle(req, res) {
       if (b.buildingName != null) setSetting('buildingName', b.buildingName.trim())
       if (b.displayUnit != null) setSetting('displayUnit', b.displayUnit === 'rial' ? 'rial' : 'toman')
       if (b.totalUnits != null) setSetting('totalUnits', Math.max(0, Math.round(+b.totalUnits) || 0))
+      if (b.payCard != null) setSetting('payCard', String(b.payCard).replace(/[^\d۰-۹-]/g, '').trim())
+      if (b.payIban != null) setSetting('payIban', String(b.payIban).replace(/\s/g, '').toUpperCase())
+      if (b.payHolder != null) setSetting('payHolder', String(b.payHolder).trim())
+      if (b.payDueDay != null) setSetting('payDueDay', Math.min(29, Math.max(0, Math.round(+b.payDueDay) || 0)))
       if (b.lateFeePercent != null) setSetting('lateFeePercent', Math.max(0, +b.lateFeePercent || 0))
       if (b.lateFeeGraceDays != null) setSetting('lateFeeGraceDays', Math.max(0, Math.round(+b.lateFeeGraceDays) || 0))
       if (b.backupPath != null) setSetting('backupPath', b.backupPath.trim())
