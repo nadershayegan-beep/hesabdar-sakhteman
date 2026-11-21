@@ -427,3 +427,13 @@ tr.qsel{background:rgba(29,95,168,.07)}
 table.tx tr.grp td{background:var(--panel-2);font-size:13.5px;padding-top:10px}
 table.tx tr.sub td{color:var(--muted);font-size:12.5px;padding-top:8px;border-bottom:none}
 table.tx tr.tot td{font-weight:700;border-top:1px solid var(--line)}
+
+/* مورد ۳۶: کارت‌های نوعِ فاکتور و «تنظیمات بیشتر» */
+.ivtypes{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:4px}
+.ivt{display:flex;flex-direction:column;gap:3px;text-align:right;padding:10px 12px;border:1.5px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);cursor:pointer;font:inherit}
+.ivt small{color:var(--muted);font-size:11.5px;line-height:1.5}
+.ivt.on{border-color:var(--accent);background:var(--accent-soft)}
+.ivmore{border:1px solid var(--line);border-radius:10px;padding:6px 12px}
+.ivmore summary{cursor:pointer;color:var(--muted);font-size:13px;padding:4px 0}
+.ivmore[open] summary{margin-bottom:8px}
+@media (max-width:600px){ .ivtypes{grid-template-columns:1fr} }

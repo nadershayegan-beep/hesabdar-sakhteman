@@ -733,7 +733,12 @@ function invoiceForm(inv) {
   const body = openModal(inv ? 'ویرایش فاکتور' : 'ثبت فاکتور جدید', `
     <div class="form">
       <label class="f">عنوان فاکتور<input class="inp" id="ivTitle" placeholder="مثلاً: تعمیر مشعل موتورخانه" value="${esc(inv ? inv.title : '')}"></label>
-      <label class="f">نحوهٔ تأمین هزینه<select class="inp" id="ivFromFund">
+      <div class="f"><span>این هزینه چیست؟</span><div class="ivtypes">
+        <button type="button" class="ivt" data-ivt="charge"><b>خرجِ جاری</b><small>از صندوق شارژ؛ بین واحدها تقسیم نمی‌شود</small></button>
+        <button type="button" class="ivt" data-ivt="bills"><b>قبض / هزینهٔ تقسیمی</b><small>بین واحدها تقسیم می‌شود (صندوق قبوض)</small></button>
+        <button type="button" class="ivt" data-ivt="omrani"><b>عمرانی</b><small>بین واحدها تقسیم می‌شود (صندوق عمرانی)</small></button>
+      </div><span class="hint" id="ivFundLbl"></span></div>
+      <label class="f" hidden>نحوهٔ تأمین هزینه<select class="inp" id="ivFromFund">
         <option value="charge" ${initMode === 'charge' ? 'selected' : ''}>از محل شارژ (صندوق شارژ) — بدون تقسیم بین واحدها</option>
         <option value="bills" ${initMode === 'bills' ? 'selected' : ''}>قبوض و متفرقه — تقسیم بین واحدها (صندوق قبوض)</option>
         <option value="omrani" ${initMode === 'omrani' ? 'selected' : ''}>عمرانی — تقسیم بین واحدها (صندوق عمرانی)</option>
@@ -743,24 +748,30 @@ function invoiceForm(inv) {
         <label class="f">مبلغ کل (${curFa()})<input class="inp num" id="ivAmount" data-money="ivAmountHint" inputmode="numeric" value="${inv ? sep(Math.round(r2d(inv.amount))) : ''}"><span class="hint" id="ivAmountHint"></span></label>
       </div>
       <div class="frow">
-        <label class="f" id="ivMethodWrap">روش تسهیم<select class="inp" id="ivMethod">${META.methods.map(m => `<option value="${m.value}" ${(inv ? inv.method : c0 && c0.default_method) === m.value ? 'selected' : ''}>${esc(m.fa)}</option>`).join('')}</select></label>
-        <label class="f">صندوق پرداخت‌کننده<select class="inp" id="ivFund">${funds.map(f => `<option value="${f.id}" ${(inv ? inv.fund_id : c0 && c0.default_fund_id) === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
-      </div>
-      <div class="frow">
+        <label class="f" id="ivMethodWrap">روش تقسیم بین واحدها<select class="inp" id="ivMethod">${META.methods.map(m => `<option value="${m.value}" ${(inv ? inv.method : c0 && c0.default_method) === m.value ? 'selected' : ''}>${esc(m.fa)}</option>`).join('')}</select></label>
         <label class="f">تاریخ${dateBoxHtml('iv', j)}</label>
+      </div>
+      <div class="f"><span>پرداخت شد؟</span><div class="seg" id="ivPayQ">
+        <button type="button" class="t" data-pq="fund">بله، از صندوق</button>
+        <button type="button" class="t" data-pq="mgr" id="ivPqMgr">از جیبِ خودم (مدیر)</button>
+        <button type="button" class="t" data-pq="later">هنوز نه</button></div></div>
+      <details class="ivmore"><summary>تنظیمات بیشتر (صندوق، نوع هزینه، واحدهای خالی)</summary>
+      <div class="frow">
+        <label class="f">صندوق پرداخت‌کننده<select class="inp" id="ivFund">${funds.map(f => `<option value="${f.id}" ${(inv ? inv.fund_id : c0 && c0.default_fund_id) === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
         <label class="f">نوع هزینه<select class="inp" id="ivKind">${META.expenseKinds.map(k => `<option value="${k.value}" ${(inv ? inv.expense_kind : 'variable') === k.value ? 'selected' : ''}>${esc(k.fa)}</option>`).join('')}</select></label>
       </div>
       <label class="check" id="ivVacantWrap"><input type="checkbox" id="ivVacant" ${(inv ? inv.include_vacant : c0 && c0.include_vacant) ? 'checked' : ''}> واحدهای خالی هم سهم بدهند</label>
-      <label class="check" id="ivMgrWrap"><input type="checkbox" id="ivMgr" ${inv && inv.paid_by_manager ? 'checked' : ''}> مدیر از جیب خودش پرداخت کرده (طلب مدیر)</label>
+      </details>
+      <label class="check" id="ivMgrWrap" hidden><input type="checkbox" id="ivMgr" ${inv && inv.paid_by_manager ? 'checked' : ''}> مدیر از جیب خودش پرداخت کرده (طلب مدیر)</label>
       <div class="frow">
         <label class="f">پیمانکار / فروشنده<input class="inp" id="ivVendor" value="${esc(inv ? inv.vendor : '')}"></label>
         <label class="f">توضیح<input class="inp" id="ivNote" value="${esc(inv ? inv.note : '')}"></label>
       </div>
       ${docPickerHtml('ivDoc')}
       <div class="notice info" id="ivFundNote" style="margin:0;display:none">این هزینه <b>از صندوق کسر</b> می‌شود و بین واحدها تقسیم نمی‌شود؛ چون ساکنین قبلاً بابتش «شارژ ماهانه» پرداخت کرده‌اند.</div>
-      <label class="f" id="ivPaidNowWrap" style="display:none">${inv ? 'پرداخت‌شده از صندوق (قابل تنظیم)' : 'چقدر از این هزینه الان از صندوق پرداخت شد؟'} (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric" value="${inv && inv.fundPaid ? sep(Math.round(r2d(inv.fundPaid))) : ''}"><span class="hint" id="ivPaidNowHint">کامل = تسویه · کمتر = بقیه بدهیِ صندوق به فاکتور می‌ماند · خالی/صفر = پرداخت‌نشده</span></label>
+      <label class="f" id="ivPaidNowWrap" style="display:none">${inv ? 'پرداخت‌شده از صندوق (قابل تنظیم)' : 'مبلغ پرداخت‌شده از صندوق'} (${curFa()})<input class="inp num" id="ivPaidNow" data-money="ivPaidNowHint" inputmode="numeric" value="${inv && inv.fundPaid ? sep(Math.round(r2d(inv.fundPaid))) : ''}"><span class="hint" id="ivPaidNowHint">کامل = تسویه · کمتر = بقیه بعداً پرداخت می‌شود</span></label>
       <div class="panel" id="ivSplitPanel" style="margin:0;background:var(--panel-2)">
-        <div class="phead"><b>پیش‌نمایش تسهیم</b><span class="hint strong" id="ivSum"></span></div>
+        <div class="phead"><b>پیش‌نمایش تقسیم بین واحدها</b><span class="hint strong" id="ivSum"></span></div>
         <div class="tablewrap" id="ivPreview"><div class="empty">در حال محاسبه…</div></div>
       </div>
     </div>`,
@@ -787,13 +798,32 @@ function invoiceForm(inv) {
   const applyDefaultFund = () => { const id = pickFund(); if (id && $('#ivFund')) $('#ivFund').value = id }
   store.paidNowEdited = !!inv // در ویرایش، مقدارِ فعلیِ پرداختِ صندوق حفظ شود و با تغییرِ مبلغ بازنویسی نشود
   const paidVisible = () => { if (inv && !inv.payable) return false; const mgr = !fromFund() && $('#ivMgr') && $('#ivMgr').checked; return !!$('#ivPaidNowWrap') && !mgr }
-  const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
+  const mirrorPaid = () => { if (paidVisible() && !store.paidNowEdited && store.pq !== 'later') $('#ivPaidNow').value = $('#ivAmount').value }
+  // پرسشِ «پرداخت شد؟»: fund = از صندوق (پیش‌فرض کامل) · mgr = جیب مدیر · later = هنوز نه
+  store.pq = inv ? (inv.paid_by_manager ? 'mgr' : (inv.fundPaid > 0 || !inv.payable ? 'fund' : 'later')) : 'fund'
+  const syncPay = () => {
+    const ff = fromFund(); if (ff && store.pq === 'mgr') store.pq = 'fund'
+    if ($('#ivPqMgr')) $('#ivPqMgr').hidden = ff
+    $('#ivMgr').checked = store.pq === 'mgr'
+    document.querySelectorAll('[data-pq]').forEach(b => b.classList.toggle('on', b.dataset.pq === store.pq))
+    const pw = $('#ivPaidNowWrap'); if (pw) pw.style.display = paidVisible() && store.pq === 'fund' ? '' : 'none'
+    if (store.pq === 'later' && $('#ivPaidNow')) { $('#ivPaidNow').value = ''; store.paidNowEdited = true }
+    const f = META.funds.find(x => x.id === +$('#ivFund').value)
+    if ($('#ivFundLbl')) $('#ivFundLbl').textContent = f ? 'صندوق: ' + f.name + (store.pq === 'mgr' ? ' — بعداً با «تسویه با مدیر» از صندوق پس داده می‌شود' : '') : ''
+    document.querySelectorAll('[data-ivt]').forEach(b => b.classList.toggle('on', b.dataset.ivt === $('#ivFromFund').value))
+  }
+  document.querySelectorAll('[data-pq]').forEach(b => b.onclick = () => {
+    store.pq = b.dataset.pq
+    if (store.pq === 'fund' && $('#ivPaidNow')) { store.paidNowEdited = !!inv && inv.fundPaid > 0; if (!store.paidNowEdited) $('#ivPaidNow').value = $('#ivAmount').value }
+    syncMode()
+  })
+  document.querySelectorAll('[data-ivt]').forEach(b => b.onclick = () => { $('#ivFromFund').value = b.dataset.ivt; $('#ivFromFund').onchange() })
+  $('#ivFund').addEventListener('change', () => syncPay())
   const syncMode = () => {
     const ff = fromFund()
     for (const id of ['ivMethodWrap', 'ivVacantWrap', 'ivMgrWrap', 'ivSplitPanel']) { const el = $('#' + id); if (el) el.style.display = ff ? 'none' : '' }
     const note = $('#ivFundNote'); if (note) note.style.display = ff ? '' : 'none'
-    const pw = $('#ivPaidNowWrap'); if (pw) pw.style.display = paidVisible() ? '' : 'none'
-    mirrorPaid()
+    mirrorPaid(); syncPay()
   }
   if ($('#ivPaidNow')) $('#ivPaidNow').addEventListener('input', () => { store.paidNowEdited = true })
   if ($('#ivMgr')) $('#ivMgr').addEventListener('change', syncMode)
@@ -839,7 +869,7 @@ function invoiceForm(inv) {
       : await post('/api/invoices', f)
     closeModal()
     const paidPart = r.fundPaidNow > 0 ? ` · ${moneyU(r.fundPaidNow)} از صندوق پرداخت شد` : ''
-    toast(r.fromFund ? `هزینهٔ جاری ${moneyU(r.amount)} ثبت شد${paidPart}` : `فاکتور ${moneyU(r.amount)} بین ${faDigit(r.shareCount)} واحد تسهیم شد${paidPart}`)
+    toast(r.fromFund ? `هزینهٔ جاری ${moneyU(r.amount)} ثبت شد${paidPart}` : `فاکتور ${moneyU(r.amount)} بین ${faDigit(r.shareCount)} واحد تقسیم شد${paidPart}`)
     refresh()
   })
 }
@@ -897,7 +927,7 @@ const showInvoice = guard(async id => {
     <div class="pline"><span>شمارهٔ سند (سیستمی)</span><b class="num">${faDigit(i.id)}</b></div>
     <div class="pline"><span>دسته</span><b>${esc(i.categoryName)}</b></div>
     <div class="pline"><span>تاریخ</span><b class="num">${faDigit(i.j_date)}</b></div>
-    ${i.from_fund ? '' : `<div class="pline"><span>روش تسهیم</span><b>${esc(i.methodFa)}</b></div>`}
+    ${i.from_fund ? '' : `<div class="pline"><span>روش تقسیم</span><b>${esc(i.methodFa)}</b></div>`}
     <div class="pline"><span>نوع هزینه</span><b>${esc(i.kindFa)}</b></div>
     <div class="pline"><span>صندوق</span><b>${esc(i.fundName)}</b></div>
     ${i.from_fund ? '' : `<div class="pline"><span>واحد خالی سهم دارد؟</span><b>${i.include_vacant ? 'بله' : 'خیر'}</b></div>`}
