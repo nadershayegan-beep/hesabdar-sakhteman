@@ -481,3 +481,22 @@ tr.clickable:focus-visible{outline-offset:-2px}
 .u-m0{margin:0!important}.u-w520{max-width:520px}.u-soft{background:var(--panel-2)}
 .u-chk{width:16px;height:16px;accent-color:var(--accent)}.u-pad-hint{padding:2px 4px 6px}
 label.f.u-inline,.u-inline{flex-direction:row;align-items:center;gap:6px}
+
+/* تقویمِ شمسیِ انتخابی */
+.jdbox{display:flex;align-items:center;gap:6px}
+.jdshow{cursor:pointer;text-align:center;min-width:120px;background:var(--panel);color:var(--ink)}
+.jdshow::after{content:"";display:inline-block;width:14px;height:14px;margin-inline-start:8px;vertical-align:-2px;opacity:.6;
+  background:currentColor;-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M4 6h16v15H4zM4 10h16M8 3v4M16 3v4'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2'%3E%3Cpath d='M4 6h16v15H4zM4 10h16M8 3v4M16 3v4'/%3E%3C/svg%3E") center/contain no-repeat}
+input.jdtext{cursor:pointer;background:var(--panel)}
+.jdp{position:fixed;z-index:1200;width:260px;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:var(--r-md);box-shadow:0 12px 32px rgba(10,20,35,.22);padding:10px;direction:rtl}
+.jdh{display:flex;align-items:center;gap:6px;margin-bottom:8px}
+.jdh .jsel{flex:1;font:inherit;font-size:var(--fs-sm);padding:4px 6px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel);color:var(--ink)}
+.jnav{width:28px;height:28px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel-2);color:var(--ink);cursor:pointer;font-size:16px;line-height:1}
+.jwk,.jgrid{display:grid;grid-template-columns:repeat(7,1fr);gap:2px;text-align:center}
+.jwk span{font-size:var(--fs-xs);color:var(--muted);padding:2px 0}
+.jd{border:none;background:none;color:var(--ink);font:inherit;font-size:var(--fs-sm);height:30px;border-radius:var(--r-sm);cursor:pointer}
+.jd:hover{background:var(--panel-2)}
+.jd.tdy{outline:1px solid var(--accent);outline-offset:-1px}
+.jd.on{background:var(--accent);color:#fff}
+.jft{display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}

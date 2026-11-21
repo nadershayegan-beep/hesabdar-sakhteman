@@ -56,7 +56,7 @@ function followupForm(unitId, after) {
   openModal('ثبت پیگیری', `<div class="form">
     <label class="f">روش<select class="inp" id="fuCh"><option value="call">تماس</option><option value="whatsapp">واتساپ</option><option value="sms">پیامک</option><option value="visit">حضوری</option><option value="note">یادداشت</option></select></label>
     <label class="f">نتیجه / توضیح<input class="inp" id="fuNote" placeholder="مثلاً قول داد آخر ماه بپردازد"></label>
-    <label class="f">قولِ پرداخت تا تاریخ (اختیاری) ${dateBoxHtml('fup')}</label>
+    <label class="f">قولِ پرداخت تا تاریخ (اختیاری) ${dateBoxHtml('fup', null, true)}</label>
     <label class="f">مبلغِ قول (${curFa()}، اختیاری)<input class="inp num" id="fuAmt" data-money="fuHint" inputmode="numeric"><span class="hint" id="fuHint"></span></label></div>`,
     `<button class="btn primary" id="fuSave">ثبت</button><button class="btn" id="fuCancel">انصراف</button>`)
   wireToday($('#modalBody')); wireMoney($('#modalBody'))
@@ -265,20 +265,90 @@ window.printAs = function (name) {
   window.addEventListener('afterprint', restore)
   setTimeout(() => { window.print() }, 40)
 }
-function dateBoxHtml(pre, j) {
-  const t = j || todayJ()
-  return `<div class="datebox">
-    <input class="inp y num" id="${pre}y" value="${faDigit(t.jy)}" inputmode="numeric"><span>/</span>
-    <input class="inp m num" id="${pre}m" value="${faDigit(String(t.jm).padStart(2, '0'))}" inputmode="numeric"><span>/</span>
-    <input class="inp d num" id="${pre}d" value="${faDigit(String(t.jd).padStart(2, '0'))}" inputmode="numeric">
+const p2 = n => String(n).padStart(2, '0')
+const jFmt = t => t && t.jy ? faDigit(`${t.jy}/${p2(t.jm)}/${p2(t.jd)}`) : ''
+// empty: جعبهٔ خالی (برای تاریخ‌های اختیاری مثل «قول پرداخت»)
+function dateBoxHtml(pre, j, empty = false) {
+  const t = empty ? {} : (j || todayJ())
+  return `<div class="datebox jdbox">
+    <input type="hidden" id="${pre}y" value="${t.jy ? faDigit(t.jy) : ''}"><input type="hidden" id="${pre}m" value="${t.jm ? faDigit(p2(t.jm)) : ''}"><input type="hidden" id="${pre}d" value="${t.jd ? faDigit(p2(t.jd)) : ''}">
+    <button type="button" class="inp jdshow num" data-jdp="${pre}" id="${pre}Show" aria-label="انتخاب تاریخ از تقویم">${t.jy ? jFmt(t) : 'انتخاب تاریخ'}</button>
     <button type="button" class="today" data-today="${pre}">امروز</button></div>`
 }
+// نوشتنِ یک تاریخ در جعبهٔ تاریخ (فیلدهای پنهان + نمایش) و خبر دادن به فرم
+function setDateBox(pre, t) {
+  const y = $('#' + pre + 'y'); if (!y) return
+  y.value = faDigit(t.jy); $('#' + pre + 'm').value = faDigit(p2(t.jm)); $('#' + pre + 'd').value = faDigit(p2(t.jd))
+  const sh = $('#' + pre + 'Show'); if (sh) sh.textContent = jFmt(t)
+  y.dispatchEvent(new Event('change', { bubbles: true }))
+}
+// ---- تقویمِ شمسی ----
+const J_MONTHS_FA = ['فروردین', 'اردیبهشت', 'خرداد', 'تیر', 'مرداد', 'شهریور', 'مهر', 'آبان', 'آذر', 'دی', 'بهمن', 'اسفند']
+const jMonthLen = (jy, jm) => jm <= 6 ? 31 : jm <= 11 ? 30 : (() => { const g = toGregorian(jy, 12, 30), back = toJalaali(g.gy, g.gm, g.gd); return back.jm === 12 ? 30 : 29 })()
+const jWeekday = (jy, jm, jd) => { const g = toGregorian(jy, jm, jd); return (new Date(g.gy, g.gm - 1, g.gd).getDay() + 1) % 7 } // ۰ = شنبه
+const parseJText = v => { const p = String(v || '').split('/').map(x => +enDigit(x)); return p.length === 3 && p[0] > 1300 && p[1] >= 1 && p[1] <= 12 && p[2] >= 1 ? { jy: p[0], jm: p[1], jd: p[2] } : null }
+let JDP = null
+function closeJdp() { if (JDP) { JDP.el.remove(); JDP = null } }
+// target: { pre } برای جعبهٔ تاریخ، یا { input } برای فیلدِ متنیِ فیلتر
+function openJdp(anchor, target) {
+  closeJdp()
+  const cur = target.pre ? readDate(target.pre) : parseJText(target.input.value)
+  const sel = cur && cur.jy ? cur : null, today = todayJ()
+  const view = { jy: (sel || today).jy, jm: (sel || today).jm }
+  const el = document.createElement('div'); el.className = 'jdp'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'تقویم')
+  document.body.appendChild(el); JDP = { el, at: Date.now() }
+  el.addEventListener('click', e => e.stopPropagation())   // کلیک داخلِ تقویم (حتی بعد از بازسازی) آن را نبندد
+  const pick = t => {
+    if (target.pre) setDateBox(target.pre, t)
+    else { target.input.value = jFmt(t); target.input.dispatchEvent(new Event('change', { bubbles: true })) }
+    closeJdp(); anchor.focus()
+  }
+  const draw = () => {
+    const n = jMonthLen(view.jy, view.jm), first = jWeekday(view.jy, view.jm, 1)
+    let cells = ''
+    for (let i = 0; i < first; i++) cells += '<span></span>'
+    for (let d = 1; d <= n; d++) {
+      const isSel = sel && sel.jy === view.jy && sel.jm === view.jm && sel.jd === d, isT = today.jy === view.jy && today.jm === view.jm && today.jd === d
+      cells += `<button type="button" class="jd ${isSel ? 'on' : ''} ${isT ? 'tdy' : ''}" data-d="${d}">${faDigit(d)}</button>`
+    }
+    const years = []; for (let y = today.jy + 1; y >= today.jy - 6; y--) years.push(y)
+    el.innerHTML = `<div class="jdh"><button type="button" class="jnav" data-nav="-1" aria-label="ماه قبل">›</button>
+      <select class="jsel" data-f="m">${J_MONTHS_FA.map((m, i) => `<option value="${i + 1}" ${i + 1 === view.jm ? 'selected' : ''}>${m}</option>`).join('')}</select>
+      <select class="jsel" data-f="y">${years.map(y => `<option value="${y}" ${y === view.jy ? 'selected' : ''}>${faDigit(y)}</option>`).join('')}</select>
+      <button type="button" class="jnav" data-nav="1" aria-label="ماه بعد">‹</button></div>
+      <div class="jwk">${['ش', 'ی', 'د', 'س', 'چ', 'پ', 'ج'].map(w => `<span>${w}</span>`).join('')}</div>
+      <div class="jgrid">${cells}</div>
+      <div class="jft"><button type="button" class="link" data-act="today">امروز</button>${target.input ? '<button type="button" class="link" data-act="clear">پاک کردن</button>' : ''}</div>`
+    el.querySelectorAll('[data-d]').forEach(b => b.onclick = () => pick({ jy: view.jy, jm: view.jm, jd: +b.dataset.d }))
+    el.querySelectorAll('[data-nav]').forEach(b => b.onclick = () => { view.jm += +b.dataset.nav; if (view.jm < 1) { view.jm = 12; view.jy-- } if (view.jm > 12) { view.jm = 1; view.jy++ } draw() })
+    el.querySelector('[data-f=m]').onchange = e => { view.jm = +e.target.value; draw() }
+    el.querySelector('[data-f=y]').onchange = e => { view.jy = +e.target.value; draw() }
+    el.querySelector('[data-act=today]').onclick = () => pick(today)
+    const cl = el.querySelector('[data-act=clear]'); if (cl) cl.onclick = () => { target.input.value = ''; target.input.dispatchEvent(new Event('change', { bubbles: true })); closeJdp() }
+    const on = el.querySelector('.jd.on') || el.querySelector('.jd.tdy'); if (on) setTimeout(() => on.focus({ preventScroll: true }), 0)
+  }
+  draw()
+  // جای قرار گرفتن: زیرِ فیلد، داخلِ صفحه
+  const r = anchor.getBoundingClientRect(), w = 260
+  let left = Math.min(Math.max(8, r.right - w), innerWidth - w - 8), top = r.bottom + 6
+  if (top + 300 > innerHeight) top = Math.max(8, r.top - 306)
+  el.style.left = left + 'px'; el.style.top = top + 'px'
+}
+// شنوندهٔ سراسری: کلیک روی جعبهٔ تاریخ یا فیلدِ تاریخِ فیلتر = بازشدنِ تقویم
+document.addEventListener('click', e => {
+  if (JDP && !JDP.el.contains(e.target) && !e.target.closest('[data-jdp],input.jdtext')) closeJdp()
+  const b = e.target.closest('[data-jdp]'); if (b) { e.preventDefault(); return openJdp(b, { pre: b.dataset.jdp }) }
+  const ti = e.target.closest('input.jdtext'); if (ti) return openJdp(ti, { input: ti })
+})
+document.addEventListener('keydown', e => {
+  if (!JDP) return
+  if (e.key === 'Escape') { e.stopPropagation(); closeJdp() }
+}, true)
+window.addEventListener('resize', () => closeJdp())
+document.addEventListener('scroll', e => { if (JDP && Date.now() - JDP.at > 400 && !JDP.el.contains(e.target)) closeJdp() }, true)
 const readDate = pre => ({ jy: +enDigit($('#' + pre + 'y').value), jm: +enDigit($('#' + pre + 'm').value), jd: +enDigit($('#' + pre + 'd').value) })
 function wireToday(root = document) {
-  root.querySelectorAll('[data-today]').forEach(b => b.onclick = () => {
-    const p = b.dataset.today, t = todayJ()
-    $('#' + p + 'y').value = faDigit(t.jy); $('#' + p + 'm').value = faDigit(String(t.jm).padStart(2, '0')); $('#' + p + 'd').value = faDigit(String(t.jd).padStart(2, '0'))
-  })
+  root.querySelectorAll('[data-today]').forEach(b => b.onclick = () => setDateBox(b.dataset.today, todayJ()))
 }
 
 // ---------- مبلغ ----------
@@ -2103,8 +2173,8 @@ REPORTS.gl = async () => {
     <div class="filters printhide">
       <label class="f" style="max-width:170px">نوع حساب<select class="inp" id="glType">${Object.keys(TYPE_FA).map(t => `<option value="${t}">${TYPE_FA[t]}</option>`).join('')}</select></label>
       <label class="f" style="max-width:260px">حساب<select class="inp" id="glAcc"><option value="">— انتخاب —</option>${accOpts('unit')}</select></label>
-      <label class="f" style="max-width:140px">از تاریخ<input class="inp" id="glFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
-      <label class="f" style="max-width:140px">تا تاریخ<input class="inp" id="glTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
+      <label class="f" style="max-width:140px">از تاریخ<input class="inp jdtext num" readonly id="glFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
+      <label class="f" style="max-width:140px">تا تاریخ<input class="inp jdtext num" readonly id="glTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
       <button class="btn small" id="glPrint">🖨 چاپ رسمی</button><button class="btn small" id="glXls">⬇️ اکسل</button>
     </div>
     <div id="glBox"><div class="panel"><div class="empty">یک حساب را انتخاب کنید</div></div></div>`
@@ -2141,8 +2211,8 @@ REPORTS.journal = async () => {
   const typeOpts = [['', 'همه'], ['charge', 'شارژ ماهانه'], ['bill', 'قبوض و متفرقه'], ['exp', 'هزینهٔ جاری'], ['proj', 'پروژه (عمرانی)'], ['pay', 'دریافتی'], ['ci', 'فاکتور پیمانکار'], ['ftxn', 'انتقال/تسویه/تعدیل صندوق']]
   $('#repBody').innerHTML = `
     <div class="filters printhide">
-      <label class="f" style="max-width:130px">از تاریخ<input class="inp" id="jnFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
-      <label class="f" style="max-width:130px">تا تاریخ<input class="inp" id="jnTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
+      <label class="f" style="max-width:130px">از تاریخ<input class="inp jdtext num" readonly id="jnFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
+      <label class="f" style="max-width:130px">تا تاریخ<input class="inp jdtext num" readonly id="jnTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
       <label class="f" style="max-width:170px">نوع سند<select class="inp" id="jnType">${typeOpts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>
       <label class="f" style="max-width:190px">صندوق<select class="inp" id="jnFund"><option value="">همه</option>${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
       <label class="f" style="max-width:190px">واحد<select class="inp" id="jnUnit"><option value="">همه</option>${META.units.filter(u => u.active).map(u => `<option value="${u.id}">واحد ${escFa(u.number)}</option>`).join('')}</select></label>
@@ -2159,7 +2229,7 @@ REPORTS.journal = async () => {
   $('#jnApply').onclick = run
   $('#jnXls').onclick = () => { location.href = '/api/export/journal?' + new URLSearchParams({ from: $('#jnFrom').value, to: $('#jnTo').value, type: $('#jnType').value, fundId: $('#jnFund').value, unitId: $('#jnUnit').value, q: $('#jnQ').value }) }
   $('#jnPrint').onclick = () => printOfficial('/print/report/journal?' + new URLSearchParams({ from: $('#jnFrom').value, to: $('#jnTo').value, type: $('#jnType').value, fundId: $('#jnFund').value, unitId: $('#jnUnit').value, q: $('#jnQ').value }), 'دفتر روزنامه')
-  ;['jnType', 'jnFund', 'jnUnit'].forEach(idd => $('#' + idd).onchange = run)
+  ;['jnType', 'jnFund', 'jnUnit', 'jnFrom', 'jnTo'].forEach(idd => $('#' + idd).onchange = run)
   $('#jnQ').addEventListener('keydown', e => { if (e.key === 'Enter') run() })
   run()
 }
@@ -2202,8 +2272,8 @@ REPORTS.invoices = async () => {
         <label class="f" style="max-width:240px">تفکیک بر اساس صندوق<select class="inp" id="invFund">${fundOpts}</select></label>
         <label class="f" style="max-width:200px">وضعیت<select class="inp" id="invStatus">
           <option value="">همه</option><option value="settled">تسویه‌شده</option><option value="open">تسویه‌نشده</option></select></label>
-        <label class="f" style="max-width:150px">از تاریخ<input class="inp" id="invFrom" placeholder="۱۴۰۵/۰۱/۰۱" value="${from ? faDigit(from) : ''}"></label>
-        <label class="f" style="max-width:150px">تا تاریخ<input class="inp" id="invTo" placeholder="۱۴۰۵/۱۲/۲۹" value="${to ? faDigit(to) : ''}"></label>
+        <label class="f" style="max-width:150px">از تاریخ<input class="inp jdtext num" readonly id="invFrom" placeholder="۱۴۰۵/۰۱/۰۱" value="${from ? faDigit(from) : ''}"></label>
+        <label class="f" style="max-width:150px">تا تاریخ<input class="inp jdtext num" readonly id="invTo" placeholder="۱۴۰۵/۱۲/۲۹" value="${to ? faDigit(to) : ''}"></label>
         <label class="check" style="margin:0 6px"><input type="checkbox" id="invDetail" ${detail ? 'checked' : ''}> نمایش ریز بدهیِ واحدها</label>
         <a class="btn small" href="/api/export/invoices">⬇️ اکسل</a>
         <button class="btn small" id="invPrint">🖨 چاپ / PDF (با فیلترها)</button></div>
