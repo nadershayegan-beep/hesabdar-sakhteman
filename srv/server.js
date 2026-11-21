@@ -1464,10 +1464,12 @@ function dashboard() {
   const totalDebt = debtors.reduce((s, u) => s + u.debt, 0)
   const totalCredit = units.reduce((s, u) => s + u.credit, 0)
   const p = curPeriod(), from = periodFirstG(p), to = periodFirstG(shiftPeriod(p, 1))
-  const monthIn = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE is_opening=0 AND g_date>=? AND g_date<?`).get(from, to).s
+  // دریافتی و هزینهٔ ماه = تعریفِ واحدِ صورتِ درآمد و هزینه (نقدی)
+  const cashM = incomeStatement(from, periodLastG(p))
+  const monthIn = cashM.income
   // شارژ ماهانه (تعهد ساکنین) از هزینه‌های واقعی ساختمان جدا حساب می‌شود
   const monthCharge = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM invoices WHERE is_opening=0 AND is_charge=1 AND g_date>=? AND g_date<?`).get(from, to).s
-  const monthExpense = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM invoices WHERE is_opening=0 AND is_charge=0 AND is_billing=0 AND g_date>=? AND g_date<?`).get(from, to).s
+  const monthExpense = cashM.expense
   // وصولِ شارژِ این ماه: چند واحد کامل پرداخته‌اند و چقدر وصول شده
   const chInv = db.prepare(`SELECT * FROM invoices WHERE is_charge=1 AND charge_period=?`).get(p)
   let charge = null
@@ -1561,8 +1563,70 @@ function managerReport(from, to) {
     from, to,
     payments: { total: pays.reduce((s, p) => s + p.amount, 0), count: pays.length, byFund: Object.values(byFund) },
     expenses: { total: invs.reduce((s, i) => s + i.amount, 0), count: invs.length, byCategory: Object.values(byCat).sort((a, b) => b.total - a.total) },
-    invoices: invRows, fundFlow, managerDebt: managerDebt(),
+    invoices: invRows, fundFlow, managerDebt: managerDebt(), cash: incomeStatement(from, to),
     buildingName: getSetting('buildingName'), managerName: getSetting('managerName', '')
+  }
+}
+// ---------- صورتِ درآمد و هزینه (مبنای نقدی، ماه‌به‌ماه) — تعریفِ واحدِ «دریافتی / هزینه / خالص» در کلِ برنامه ----------
+// درآمد = پولی که واقعاً به صندوق‌ها آمد (دریافت از ساکنین به تفکیک سبد، جریمه، فروش)؛ هزینه = پولی که واقعاً از صندوق رفت
+// (پرداخت هزینه به تفکیک دسته، پرداخت به پیمانکار، تسویه با مدیر). انتقال بین صندوق‌ها و سند تعدیل جزو درآمد/هزینه نیستند.
+function incomeStatement(from, to) {
+  from = from || periodFirstG(curPeriod()); to = to || todayG()
+  const lf = (db.prepare(`SELECT id FROM expense_categories WHERE name='جریمه‌ی تأخیر'`).get() || {}).id || 0
+  const txns = db.prepare(`SELECT t.*, f.name fund_name, f.bucket fbucket, f.kind fkind, p.is_opening p_open,
+      i.title inv_title, c.name cat_name, ci.title ci_title, ci.project_id ci_pid, pr.title pr_title, ci.vendor_name
+    FROM fund_txns t LEFT JOIN funds f ON f.id=t.fund_id LEFT JOIN payments p ON p.id=t.ref_payment_id
+    LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN expense_categories c ON c.id=i.category_id
+    LEFT JOIN contractor_invoices ci ON ci.id=t.ref_cinvoice_id LEFT JOIN projects pr ON pr.id=ci.project_id
+    WHERE t.g_date>=? AND t.g_date<=? ORDER BY t.g_date, t.id`).all(from, to)
+  const periods = []
+  { const first = txns.length ? txns[0].g_date : todayG(), lastG = to > todayG() ? todayG() : to
+    let p = periodOf(toJalaali(...(from < first ? first : from).split('-').map(Number))), last = periodOf(toJalaali(...(lastG < from ? from : lastG).split('-').map(Number))), n = 0
+    while (n++ < 240) { periods.push(p); if (p === last) break; p = shiftPeriod(p, 1) } }
+  const lines = {}   // key → { side, group, label, total, byMonth{} }
+  const add = (side, group, label, amount, period) => {
+    const k = side + '|' + group + '|' + label
+    const l = lines[k] ||= { side, group, label, total: 0, byMonth: {} }
+    l.total += amount; l.byMonth[period] = (l.byMonth[period] || 0) + amount
+  }
+  const nonOp = { transferIn: 0, transferOut: 0, adjustIn: 0, adjustOut: 0 }
+  for (const t of txns) {
+    const per = periodOf(toJalaali(...t.g_date.split('-').map(Number)))
+    const b = bucketOfFund({ bucket: t.fbucket, kind: t.fkind, name: t.fund_name })
+    if (t.type === 'in') {
+      if (t.ref_payment_id) {
+        if (t.p_open) continue
+        // سهمِ جریمهٔ دیرکرد از این دریافتی (از روی تخصیص‌ها)
+        const late = lf ? db.prepare(`SELECT COALESCE(SUM(a.amount),0) s FROM payment_allocations a JOIN invoice_shares s ON s.id=a.share_id
+          JOIN invoices i ON i.id=s.invoice_id WHERE a.payment_id=? AND i.category_id=?`).get(t.ref_payment_id, lf).s : 0
+        if (late > 0) add('in', 'دریافت از ساکنین', 'جریمهٔ دیرکرد', Math.min(late, t.amount), per)
+        if (t.amount - late > 0) add('in', 'دریافت از ساکنین', b === 'charge' ? 'شارژ ماهانه' : b === 'project' ? 'پروژه‌های عمرانی' : 'قبوض و متفرقه', t.amount - late, per)
+      } else if (t.ref_cinvoice_id) add('in', 'سایر درآمدها', 'فروش / داغی' + (t.pr_title ? ' — ' + t.pr_title : ''), t.amount, per)
+      else add('in', 'سایر درآمدها', t.note || 'سایر واریزها', t.amount, per)
+    } else if (t.type === 'out') {
+      if (t.ref_cinvoice_id) add('out', 'پروژه‌های عمرانی', t.pr_title || t.vendor_name || 'پیمانکار', t.amount, per)
+      else if (t.ref_invoice_id) add('out', 'هزینه‌های ساختمان', t.cat_name || 'بدون دسته', t.amount, per)
+      else add('out', 'سایر پرداخت‌ها', t.note || 'پرداخت', t.amount, per)
+    } else if (t.type === 'manager_settle') add('out', 'تسویه با مدیر', 'بازپرداختِ هزینه‌هایی که مدیر پرداخته بود', t.amount, per)
+    else if (t.type === 'transfer_in') nonOp.transferIn += t.amount
+    else if (t.type === 'transfer_out') nonOp.transferOut += t.amount
+    else if (t.type === 'adjust_in') nonOp.adjustIn += t.amount
+    else if (t.type === 'adjust_out') nonOp.adjustOut += t.amount
+  }
+  const all = Object.values(lines).sort((a, b) => b.total - a.total)
+  const sum = side => all.filter(l => l.side === side).reduce((s, l) => s + l.total, 0)
+  const sumM = (side, p) => all.filter(l => l.side === side).reduce((s, l) => s + (l.byMonth[p] || 0), 0)
+  const income = sum('in'), expense = sum('out')
+  const cashAt = g => listFunds().reduce((s, f) => s + f.opening_balance + db.prepare(`SELECT COALESCE(SUM(CASE WHEN type IN ${FUND_IN} THEN amount ELSE -amount END),0) s FROM fund_txns WHERE fund_id=? AND g_date<?`).get(f.id, g).s, 0)
+  const nextDay = g => { const d = new Date(Date.parse(g + 'T00:00:00Z') + 86400000); return d.toISOString().slice(0, 10) }
+  const openCash = cashAt(from), closeCash = cashAt(nextDay(to))
+  // هزینه‌هایی که مدیر از جیب داده و هنوز صندوق به او پس نداده — جزو هزینهٔ نقدیِ صندوق نیست؛ جدا یادداشت می‌شود
+  return {
+    from, to, fromJ: gToJStr(from), toJ: gToJStr(to), basis: 'نقدی (پولی که واقعاً وارد یا خارج شده)',
+    periods: periods.map(p => ({ key: p, fa: periodFa(p), income: sumM('in', p), expense: sumM('out', p), net: sumM('in', p) - sumM('out', p) })),
+    lines: all, income, expense, net: income - expense, nonOp,
+    openCash, closeCash, check: openCash + income - expense + nonOp.transferIn - nonOp.transferOut + nonOp.adjustIn - nonOp.adjustOut - closeCash,
+    managerDebt: managerDebt(), buildingName: getSetting('buildingName')
   }
 }
 // کنترلِ سلامتِ دفاتر: چند آزمونِ واقعی که اگر یکی خطا بدهد، جایی از دفاتر به هم ریخته است
@@ -2206,7 +2270,7 @@ function printSummaryHtml(period, showNames) {
   const from = periodFirstG(p), to = periodLastG(p)
   const mr = managerReport(from, to)
   const dr = debtorsReport()
-  const bc = balanceCheck()
+  const bc = ledgerHealth()
   const fundTotal = mr.fundFlow.reduce((s, f) => s + f.close, 0)
   const U = pUnitFa()
   const kpi = (k, v, s, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`
@@ -2215,8 +2279,9 @@ function printSummaryHtml(period, showNames) {
     <div class="sub">خلاصه‌ی ماهانه برای هیئت‌مدیره · دوره‌ی ${faNum(periodFa(p))} · تاریخ صدور: ${faNum((() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })())}${mr.managerName ? ' · مدیر: ' + hEsc(mr.managerName) : ''}</div>
     <div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', pMoney(fundTotal) + ' ' + U, '', fundTotal >= 0 ? 'ok' : 'warn')}
-      ${kpi('دریافتی این ماه', pMoney(mr.payments.total) + ' ' + U, faNum(mr.payments.count) + ' فقره', 'ok')}
-      ${kpi('هزینه‌ی این ماه', pMoney(mr.expenses.total) + ' ' + U, faNum(mr.expenses.count) + ' فاکتور', 'warn')}
+      ${kpi('دریافتی این ماه', pMoney(mr.cash.income) + ' ' + U, 'نقدی')}
+      ${kpi('هزینهٔ پرداخت‌شدهٔ این ماه', pMoney(mr.cash.expense) + ' ' + U, 'نقدی')}
+      ${kpi('خالص نقدی ماه', (mr.cash.net < 0 ? '−' : '') + pMoney(Math.abs(mr.cash.net)) + ' ' + U, 'دریافتی منهای هزینهٔ پرداخت‌شده', mr.cash.net < 0 ? 'warn' : '')}
       ${kpi('بدهی کل ساکنین', pMoney(dr.total) + ' ' + U, faNum(dr.rows.length) + ' واحد بدهکار', dr.total > 0 ? 'warn' : 'ok')}
       ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', mr.managerDebt > 0 ? 'warn' : 'ok')}
     </div>
@@ -2228,10 +2293,11 @@ function printSummaryHtml(period, showNames) {
       <td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.in, 0))}</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.out, 0))}</td>
       <td class="num">${pMoney(fundTotal)}</td></tr>
     </tbody></table>
-    <div class="sech">هزینه‌ها بر اساس دسته</div>
-    <table><thead><tr><th>دسته</th><th>تعداد</th><th>مبلغ</th></tr></thead><tbody>
-    ${mr.expenses.byCategory.length ? mr.expenses.byCategory.map(c => `<tr><td>${hEsc(c.name)}</td><td class="num">${faNum(c.count)}</td><td class="num">${pMoney(c.total)} ${U}</td></tr>`).join('')
-    : '<tr><td colspan="3" style="text-align:center;color:#888">هزینه‌ای در این دوره ثبت نشده</td></tr>'}
+    <div class="sech">درآمد و هزینه (نقدی)</div>
+    <table><thead><tr><th>گروه</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>
+    ${mr.cash.lines.length ? ['in', 'out'].map(sd => mr.cash.lines.filter(l => l.side === sd).map(l => `<tr><td>${sd === 'in' ? 'درآمد' : 'هزینه'} · ${hEsc(l.group)}</td><td>${hEsc(l.label)}</td><td class="num">${pMoney(l.total)} ${U}</td></tr>`).join('')
+      + `<tr class="tot"><td colspan="2">جمع ${sd === 'in' ? 'درآمد' : 'هزینه'}</td><td class="num">${pMoney(sd === 'in' ? mr.cash.income : mr.cash.expense)} ${U}</td></tr>`).join('')
+    : '<tr><td colspan="3" style="text-align:center;color:#888">گردشی در این دوره نبوده</td></tr>'}
     </tbody></table>
     <div class="sech">وضعیت بدهکاران (بر اساس قدمت)</div>
     <table><thead><tr><th>۰-۳۰ روز</th><th>۳۱-۶۰ روز</th><th>۶۱-۹۰ روز</th><th>بیش از ۹۰ روز</th><th>جمع کل</th></tr></thead><tbody>
@@ -2245,9 +2311,9 @@ function printSummaryHtml(period, showNames) {
       </tbody></table>`
     : dr.rows.length ? `<div class="s" style="color:#777;margin-top:4px">نام بدهکاران برای حفظ حریم خصوصی در این گزارش نمایش داده نشده است.</div>` : ''}
     <div class="sech">صحت دفاتر</div>
-    <div class="big" style="font-size:14px">${bc.balanced
-      ? '✅ تراز کل برقرار است: جمع بدهی واحدها با «جمع سهم‌ها منهای دریافتی‌ها» برابر است.'
-      : '⚠️ تراز کل برقرار نیست — لطفاً گزارش «تراز کل» را در نرم‌افزار بررسی کنید.'}</div>
+    <div class="big" style="font-size:14px">${bc.ok
+      ? 'کنترل سلامت دفاتر: همهٔ آزمون‌ها سالم است.'
+      : 'کنترل سلامت دفاتر ایراد پیدا کرده — گزارش «کنترل سلامت دفاتر» را در نرم‌افزار بررسی کنید.'}</div>
     <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
 }
@@ -3386,6 +3452,7 @@ async function handle(req, res) {
     if (path === '/api/report/unit-ledger' && M === 'GET') return sendJSON(res, 200, unitLedgerReport())
     if (path === '/api/report/unit-statement' && M === 'GET') { const r = unitStatement(+Q.unitId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'واحد یافت نشد' }) }
     if (path === '/api/report/fund' && M === 'GET') { const r = fundReport(+Q.fundId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'صندوق یافت نشد' }) }
+    if (path === '/api/report/income' && M === 'GET') return sendJSON(res, 200, incomeStatement(Q.from, Q.to))
     if (path === '/api/report/funds-overview' && M === 'GET') return sendJSON(res, 200, fundsOverview())
     if (path === '/api/report/journal' && M === 'GET') return sendJSON(res, 200, journalReport(Q))
     if (path === '/api/audit' && M === 'GET') {

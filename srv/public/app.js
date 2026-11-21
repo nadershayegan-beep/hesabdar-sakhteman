@@ -502,8 +502,8 @@ VIEWS.dashboard = async () => {
     </div>
     <div class="dsec">جریانِ ${escFa(d.monthFa)}</div>
     <div class="kpis">
-      ${kpi('دریافتیِ ماه', money(d.monthIn), '', 'good')}
-      ${kpi('هزینهٔ ماه', money(d.monthExpense ?? d.monthOut), 'بدون شارژ ماهانه', 'bad')}
+      ${kpi('دریافتیِ ماه', money(d.monthIn), 'واردشده به صندوق‌ها')}
+      ${kpi('هزینهٔ ماه', money(d.monthExpense ?? d.monthOut), 'پرداخت‌شده از صندوق‌ها')}
       ${kpi('خالصِ ماه', signed(d.monthIn - (d.monthExpense ?? d.monthOut)), 'دریافتی منهای هزینه')}
       ${kpi('شارژِ صادرشدهٔ ماه', money(d.monthCharge ?? 0), 'تعهد ساکنین')}
     </div>
@@ -1408,7 +1408,7 @@ let repTab = 'manager', repRange = null
 // گزارش‌ها در سه گروه: برای ساکنین · برای هیئت‌مدیره · دفاتر حسابداری (پیشرفته، پیش‌فرض بسته)
 const REP_GROUPS = [
   ['برای ساکنین', [['debtors', 'بدهکاران'], ['unit', 'صورت‌حساب واحد'], ['ledger', 'بدهی تفکیکی واحدها']]],
-  ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
+  ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['income', 'درآمد و هزینه'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
   ['دفاتر حسابداری', [['journal', 'دفتر روزنامه'], ['gl', 'دفتر کل'], ['fundpay', 'پرداخت‌های صندوق'], ['balance', 'کنترل سلامت دفاتر'], ['audit', 'سابقهٔ تغییرات']], true]
 ]
 VIEWS.reports = async () => {
@@ -1493,38 +1493,103 @@ async function pickInvoicesForReport() {
   $('#exCancelP').onclick = closeModal
   $('#exApply').onclick = () => { expIds = [...document.querySelectorAll('.exChk:checked')].map(c => +c.value); closeModal(); render() }
 }
-REPORTS.manager = async () => {
-  const periods = await api('/api/report/periods')
-  if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
-  const r = await api(`/api/report/manager?from=${repRange.from}&to=${repRange.to}`)
-  $('#repBody').innerHTML = `
-    <div class="filters printhide">
-      <select class="inp" id="repPeriod">${periods.map(p => `<option value="${p.from}|${p.to}|${p.fa}" ${p.from === repRange.from && !repRange.custom ? 'selected' : ''}>${escFa(p.fa)}</option>`).join('')}
+// انتخاب‌گرِ مشترکِ دوره برای گزارش‌ها: ماه‌ها + سال جاری + از ابتدا + بازهٔ دلخواه (همه روی repRange)
+function rangePickerHtml(periods, extra = '') {
+  return `<div class="filters printhide">
+      <select class="inp" id="repPeriod">${periods.map(p => `<option value="${p.from}|${p.to}|${p.fa}" ${p.from === repRange.from && p.to === repRange.to && !repRange.custom ? 'selected' : ''}>${escFa(p.fa)}</option>`).join('')}
         <option value="all" ${repRange.label === 'از ابتدا تا امروز' ? 'selected' : ''}>از ابتدا تا امروز</option>
         <option value="custom" ${repRange.custom ? 'selected' : ''}>بازه‌ی دلخواه…</option></select>
-      <a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ CSV</a>
-      <button class="btn small" onclick="printAs('گزارش عملکرد مدیر مالی')">🖨 چاپ</button>
-      <button class="btn small" id="repSummary">📄 خلاصه‌ی هیئت‌مدیره${IS_DESKTOP ? ' (PDF)' : ''}</button>
-      <label class="chkline"><input type="checkbox" id="repNames"> نمایش نام بدهکاران</label>
+      ${extra}
     </div>
     <div class="filters printhide" id="repCustom" ${repRange.custom ? '' : 'hidden'}>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">از تاریخ ${dateBoxHtml('rf', repRange.jf)}</label>
       <label class="f" style="flex-direction:row;align-items:center;gap:6px">تا تاریخ ${dateBoxHtml('rt', repRange.jt)}</label>
       <button class="btn small primary" id="repApply">اعمال بازه</button>
+    </div>`
+}
+function wireRangePicker() {
+  if ($('#repPeriod')) $('#repPeriod').onchange = () => {
+    const v = $('#repPeriod').value
+    if (v === 'custom') { $('#repCustom').hidden = false; return }
+    if (v === 'all') repRange = { from: '1900-01-01', to: '2100-01-01', label: 'از ابتدا تا امروز' }
+    else { const [from, to, label] = v.split('|'); repRange = { from, to, label } }
+    render()
+  }
+  if ($('#repApply')) $('#repApply').onclick = guard(async () => {
+    const f = readDate('rf'), t = readDate('rt')
+    if (!f.jy || !f.jm || !f.jd || !t.jy || !t.jm || !t.jd) throw new Error('هر دو تاریخ را کامل وارد کنید')
+    const from = gStr(f.jy, f.jm, f.jd), to = gStr(t.jy, t.jm, t.jd)
+    if (from > to) throw new Error('تاریخ شروع نباید بعد از تاریخ پایان باشد')
+    repRange = { from, to, label: `${faDigit(f.jy)}/${faDigit(f.jm)}/${faDigit(f.jd)} تا ${faDigit(t.jy)}/${faDigit(t.jm)}/${faDigit(t.jd)}`, custom: true, jf: f, jt: t }
+    render()
+  })
+}
+// صورتِ درآمد و هزینه (نقدی، ماه‌به‌ماه)
+REPORTS.income = async () => {
+  const periods = await api('/api/report/periods')
+  if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
+  const r = await api(`/api/report/income?from=${repRange.from}&to=${repRange.to}`)
+  const months = r.periods.filter(p => p.income || p.expense)
+  const showM = months.length > 1 && months.length <= 12
+  const cols = showM ? months : []
+  const block = side => {
+    const ls = r.lines.filter(l => l.side === side)
+    const groups = [...new Set(ls.map(l => l.group))]
+    const tot = side === 'in' ? r.income : r.expense
+    return `<tr class="grp"><td colspan="${cols.length + 2}"><b>${side === 'in' ? 'درآمدها (پول واردشده)' : 'هزینه‌ها (پول پرداخت‌شده)'}</b></td></tr>
+      ${ls.length ? groups.map(g => `<tr class="sub"><td colspan="${cols.length + 2}">${esc(g)}</td></tr>` + ls.filter(l => l.group === g).map(l =>
+        `<tr><td style="padding-inline-start:22px">${esc(l.label)}</td>${cols.map(p => `<td class="num">${l.byMonth[p.key] ? money(l.byMonth[p.key]) : '—'}</td>`).join('')}<td class="num">${money(l.total)}</td></tr>`).join('')).join('')
+        : `<tr><td colspan="${cols.length + 2}" class="dim">موردی نبوده</td></tr>`}
+      <tr class="tot"><td>جمع ${side === 'in' ? 'درآمدها' : 'هزینه‌ها'}</td>${cols.map(p => `<td class="num">${money(side === 'in' ? p.income : p.expense)}</td>`).join('')}<td class="num">${money(tot)}</td></tr>`
+  }
+  $('#repBody').innerHTML = rangePickerHtml(periods, `<button class="btn small" onclick="printAs('صورت درآمد و هزینه')">🖨 چاپ</button>`) + `
+    <div class="panel"><h3 style="margin-bottom:4px">${esc(r.buildingName)} — صورت درآمد و هزینه</h3>
+      <p class="sub">دوره: ${escFa(repRange.label)} · مبنا: ${esc(r.basis)}</p></div>
+    <div class="kpis">
+      ${kpi('درآمد دوره', money(r.income), 'پول واردشده به صندوق‌ها')}
+      ${kpi('هزینهٔ دوره', money(r.expense), 'پول پرداخت‌شده از صندوق‌ها')}
+      ${kpi('خالص دوره', signed(r.net), r.net < 0 ? 'کسری: بیش از درآمد خرج شده' : 'مازاد', r.net < 0 ? 'bad' : '')}
+      ${kpi('موجودی صندوق‌ها', money(r.closeCash), 'اول دوره: ' + money(r.openCash))}
     </div>
+    <div class="panel"><div class="tablewrap"><table class="tx">
+      <thead><tr><th>شرح</th>${cols.map(p => `<th>${escFa(p.fa)}</th>`).join('')}<th>جمع دوره</th></tr></thead><tbody>
+      ${block('in')}${block('out')}
+      <tr class="tot"><td>خالص (درآمد منهای هزینه)</td>${cols.map(p => `<td class="num ${p.net < 0 ? 'amt-out' : ''}">${signed(p.net)}</td>`).join('')}<td class="num ${r.net < 0 ? 'amt-out' : ''}"><b>${signed(r.net)}</b></td></tr>
+      </tbody></table></div></div>
+    <div class="panel"><div class="phead"><b>تطبیق با موجودی صندوق‌ها</b></div><div class="tablewrap"><table class="tx"><tbody>
+      <tr><td>موجودی اول دوره</td><td class="num">${money(r.openCash)}</td></tr>
+      <tr><td>+ خالص درآمد و هزینه</td><td class="num">${signed(r.net)}</td></tr>
+      ${r.nonOp.transferIn || r.nonOp.transferOut ? `<tr><td>انتقال بین صندوق‌ها (ورودی − خروجی؛ در جمع کل صفر است)</td><td class="num">${signed(r.nonOp.transferIn - r.nonOp.transferOut)}</td></tr>` : ''}
+      ${r.nonOp.adjustIn || r.nonOp.adjustOut ? `<tr><td>اسناد تعدیل صندوق</td><td class="num">${signed(r.nonOp.adjustIn - r.nonOp.adjustOut)}</td></tr>` : ''}
+      <tr class="tot"><td>موجودی آخر دوره</td><td class="num">${money(r.closeCash)}</td></tr>
+      </tbody></table></div>
+      <p class="hint" style="margin:8px 0 0">${r.check === 0 ? 'جمع‌ها با موجودی واقعی صندوق‌ها می‌خواند.' : '<b class="amt-out">اختلاف ' + money(Math.abs(r.check)) + ' با موجودی صندوق‌ها — «کنترل سلامت دفاتر» را ببینید.</b>'}
+      ${r.managerDebt > 0 ? ` · مدیر ${money(r.managerDebt)} از جیب خودش هزینه کرده که هنوز از صندوق پس نگرفته؛ این مبلغ وقتی تسویه شود در «تسویه با مدیر» می‌آید.` : ''}</p></div>
+    <p class="hint">شارژ صادرشده یا فاکتور ثبت‌شده تا وقتی پولش جابه‌جا نشده اینجا نمی‌آید؛ تعهدها را در «بدهی تفکیکی واحدها» و «فاکتورها» ببینید.</p>`
+  wireCommon(); wireToday($('#repBody')); wireRangePicker()
+}
+REPORTS.manager = async () => {
+  const periods = await api('/api/report/periods')
+  if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
+  const r = await api(`/api/report/manager?from=${repRange.from}&to=${repRange.to}`)
+  $('#repBody').innerHTML = `
+    ${rangePickerHtml(periods, `<a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ CSV</a>
+      <button class="btn small" onclick="printAs('گزارش عملکرد مدیر مالی')">🖨 چاپ</button>
+      <button class="btn small" id="repSummary">📄 خلاصه‌ی هیئت‌مدیره${IS_DESKTOP ? ' (PDF)' : ''}</button>
+      <label class="chkline"><input type="checkbox" id="repNames"> نمایش نام بدهکاران</label>`)}
     <div class="panel"><h3 style="margin-bottom:4px">${esc(r.buildingName)} — گزارش عملکرد مدیر مالی</h3>
       <p class="sub">دوره: ${escFa(repRange.label)}</p></div>
     <div class="kpis">
-      ${kpi('جمع دریافتی از ساکنین', money(r.payments.total), faDigit(r.payments.count) + ' فقره', 'good')}
-      ${kpi('جمع هزینه‌ها', money(r.expenses.total), faDigit(r.expenses.count) + ' فاکتور', 'bad')}
-      ${kpi('خالص دوره', signed(r.payments.total - r.expenses.total))}
+      ${kpi('درآمد دوره', money(r.cash.income), 'نقدی · ' + faDigit(r.payments.count) + ' دریافتی')}
+      ${kpi('هزینهٔ پرداخت‌شده', money(r.cash.expense), 'نقدی')}
+      ${kpi('خالص دوره', signed(r.cash.net), 'تعریف «صورت درآمد و هزینه»', r.cash.net < 0 ? 'bad' : '')}
       ${kpi('طلب مدیر از صندوق', money(r.managerDebt), '', r.managerDebt > 0 ? 'warn' : '')}
     </div>
     <div class="panel"><div class="phead"><b>دریافتی به تفکیک صندوق</b></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>صندوق</th><th>تعداد</th><th>مبلغ</th></tr></thead><tbody>
       ${r.payments.byFund.length ? r.payments.byFund.map(f => `<tr><td>${esc(f.name)}</td><td class="num">${faDigit(f.count)}</td><td class="num amt-in">${money(f.amount)}</td></tr>`).join('') : emptyRow(3, 'دریافتی در این دوره نبوده')}
       </tbody><tfoot><tr><td>جمع</td><td class="num">${faDigit(r.payments.count)}</td><td class="num">${money(r.payments.total)}</td></tr></tfoot></table></div></div>
-    <div class="panel"><div class="phead"><b>هزینه‌ها به تفکیک دسته و نوع</b></div><div class="tablewrap"><table class="tx">
+    <div class="panel"><div class="phead"><b>فاکتورهای هزینهٔ ثبت‌شده در دوره (تعهدی)</b><span class="hint">بر اساس تاریخ فاکتور، چه پرداخت شده باشد چه نه</span></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>دسته</th><th>ثابت</th><th>متغیر</th><th>پیش‌بینی‌نشده</th><th>جمع</th></tr></thead><tbody>
       ${r.expenses.byCategory.length ? r.expenses.byCategory.map(c => `<tr><td><b>${esc(c.name)}</b></td><td class="num">${money(c.fixed)}</td>
         <td class="num">${money(c.variable)}</td><td class="num">${money(c.unexpected)}</td><td class="num amt-out">${money(c.total)}</td></tr>`).join('') : emptyRow(5, 'هزینه‌ای در این دوره نبوده')}
@@ -1547,21 +1612,7 @@ REPORTS.manager = async () => {
   LAST_MANAGER = r
   $('#repSummary').onclick = () => openSummary($('#repNames') && $('#repNames').checked)
   renderBoardBook()
-  $('#repPeriod').onchange = () => {
-    const v = $('#repPeriod').value
-    if (v === 'custom') { $('#repCustom').hidden = false; return }
-    if (v === 'all') repRange = { from: '1900-01-01', to: '2100-01-01', label: 'از ابتدا تا امروز' }
-    else { const [from, to, label] = v.split('|'); repRange = { from, to, label } }
-    render()
-  }
-  if ($('#repApply')) $('#repApply').onclick = guard(async () => {
-    const f = readDate('rf'), t = readDate('rt')
-    if (!f.jy || !f.jm || !f.jd || !t.jy || !t.jm || !t.jd) throw new Error('هر دو تاریخ را کامل وارد کنید')
-    const from = gStr(f.jy, f.jm, f.jd), to = gStr(t.jy, t.jm, t.jd)
-    if (from > to) throw new Error('تاریخ شروع نباید بعد از تاریخ پایان باشد')
-    repRange = { from, to, label: `${faDigit(f.jy)}/${faDigit(f.jm)}/${faDigit(f.jd)} تا ${faDigit(t.jy)}/${faDigit(t.jm)}/${faDigit(t.jd)}`, custom: true, jf: f, jt: t }
-    render()
-  })
+  wireRangePicker()
 }
 
 // خلاصه‌ی ماهانه‌ی هیئت‌مدیره (ماه جاری): اپ نصبی → PDF، مرورگر → صفحه‌ی چاپی
@@ -1579,12 +1630,12 @@ const openSummary = guard(async showNames => {
 function boardWaText(c) {
   const r = LAST_MANAGER, b = (META && META.buildingName) || 'ساختمان'
   if (!r) return `سلام ${c.name || ''}`
-  const net = r.payments.total - r.expenses.total
+  const net = r.cash.net
   const fundTotal = r.fundFlow.reduce((s, f) => s + f.close, 0)
   return `📊 خلاصه‌ی مالی ${b}\n`
     + `دوره: ${repRange.label}\n`
-    + `— دریافتی: ${moneyU(r.payments.total)}\n`
-    + `— هزینه: ${moneyU(r.expenses.total)}\n`
+    + `— درآمد (پول واردشده): ${moneyU(r.cash.income)}\n`
+    + `— هزینه (پول پرداخت‌شده): ${moneyU(r.cash.expense)}\n`
     + `— خالص دوره: ${signed(net)} ${curFa()}\n`
     + `— موجودی صندوق‌ها: ${moneyU(fundTotal)}\n`
     + `— طلب مدیر از صندوق: ${moneyU(r.managerDebt)}\n`
