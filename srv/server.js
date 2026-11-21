@@ -254,6 +254,7 @@ function migrate() {
     INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'contractor', NEW.id, datetime('now')); END`)
   db.exec(`DROP TRIGGER IF EXISTS dno_ftxn; CREATE TRIGGER dno_ftxn AFTER INSERT ON fund_txns WHEN NEW.type IN ('transfer_out','manager_settle','adjust_in','adjust_out') BEGIN
     INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'ftxn', NEW.id, datetime('now')); END`)
+  addCol('expense_categories', 'budget_monthly', 'INTEGER DEFAULT 0')   // بودجهٔ ماهانهٔ دسته (ریال)
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -1876,6 +1877,26 @@ function fiscalYears() {
   }
   return out
 }
+// ---------- بودجه در برابر واقعی ----------
+// واقعی = هزینهٔ پرداخت‌شده (نقدی) در هر دسته؛ بودجه = بودجهٔ ماهانه × تعداد ماه‌های دوره
+function budgetReport(from, to) {
+  const inc = incomeStatement(from, to), months = Math.max(1, inc.periods.length)
+  const cats = db.prepare(`SELECT * FROM expense_categories WHERE is_charge_cat=0 AND name<>'جریمه‌ی تأخیر' ORDER BY sort, id`).all()
+  const actualOf = name => inc.lines.filter(l => l.side === 'out' && l.group === 'هزینه‌های ساختمان' && l.label === name).reduce((a, l) => a + l.total, 0)
+  const rows = cats.map(c => { const budget = (c.budget_monthly || 0) * months, actual = actualOf(c.name); return { id: c.id, name: c.name, monthly: c.budget_monthly || 0, budget, actual, diff: actual - budget, pct: budget ? Math.round(actual * 100 / budget) : null } })
+    .filter(r => r.budget || r.actual)
+  const other = inc.lines.filter(l => l.side === 'out' && l.group !== 'هزینه‌های ساختمان').reduce((a, l) => a + l.total, 0)
+  const tot = rows.reduce((a, r) => ({ budget: a.budget + r.budget, actual: a.actual + r.actual }), { budget: 0, actual: 0 })
+  return { from: inc.from, to: inc.to, fromJ: inc.fromJ, toJ: inc.toJ, months, rows, total: { ...tot, diff: tot.actual - tot.budget }, otherOutflow: other, suggested: suggestedCharge() }
+}
+// شارژ پیشنهادی = جمعِ بودجهٔ ماهانهٔ دسته‌هایی که از صندوقِ شارژ پرداخت می‌شوند ÷ تعداد واحدهای مشمولِ شارژ
+function suggestedCharge() {
+  const chargeFunds = new Set(listFunds().filter(f => bucketOfFund(f) === 'charge').map(f => f.id))
+  const monthly = db.prepare(`SELECT budget_monthly, default_fund_id FROM expense_categories WHERE active=1 AND is_charge_cat=0`).all()
+    .filter(c => !c.default_fund_id || chargeFunds.has(c.default_fund_id)).reduce((a, c) => a + (c.budget_monthly || 0), 0)
+  const cc = chargeCategory(), units = eligibleUnits(!!(cc && cc.include_vacant)).length
+  return { monthlyBudget: monthly, units, perUnit: units ? Math.ceil(monthly / units / 10000) * 10000 : 0, current: chargeAmountAt(curPeriod()) }
+}
 // کنترلِ سلامتِ دفاتر: چند آزمونِ واقعی که اگر یکی خطا بدهد، جایی از دفاتر به هم ریخته است
 function ledgerHealth() {
   const checks = []
@@ -3348,8 +3369,8 @@ async function handle(req, res) {
       if (!(b.name || '').trim()) return sendJSON(res, 400, { error: 'نام دسته لازم است' })
       if (!METHODS.includes(b.defaultMethod)) return sendJSON(res, 400, { error: 'روش تسهیم نامعتبر است' })
       const sort = (db.prepare(`SELECT COALESCE(MAX(sort),0) s FROM expense_categories`).get().s) + 1
-      const id = Number(db.prepare(`INSERT INTO expense_categories(name,default_method,include_vacant,default_fund_id,sort) VALUES(?,?,?,?,?)`)
-        .run(b.name.trim(), b.defaultMethod, b.includeVacant ? 1 : 0, +b.defaultFundId || null, sort).lastInsertRowid)
+      const id = Number(db.prepare(`INSERT INTO expense_categories(name,default_method,include_vacant,default_fund_id,sort,budget_monthly) VALUES(?,?,?,?,?,?)`)
+        .run(b.name.trim(), b.defaultMethod, b.includeVacant ? 1 : 0, +b.defaultFundId || null, sort, Math.max(0, Math.round(+b.budgetMonthly) || 0)).lastInsertRowid)
       return sendJSON(res, 200, { ok: true, id })
     }
     const catM = /^\/api\/categories\/(\d+)$/.exec(path)
@@ -3357,6 +3378,7 @@ async function handle(req, res) {
       const id = +catM[1], b = await jbody(req)
       const cur = db.prepare(`SELECT * FROM expense_categories WHERE id=?`).get(id)
       if (!cur) return sendJSON(res, 404, { error: 'دسته یافت نشد' })
+      if (b.budgetMonthly != null) db.prepare(`UPDATE expense_categories SET budget_monthly=? WHERE id=?`).run(Math.max(0, Math.round(+b.budgetMonthly) || 0), id)
       db.prepare(`UPDATE expense_categories SET name=?,default_method=?,include_vacant=?,default_fund_id=?,active=? WHERE id=?`)
         .run((b.name ?? cur.name).trim(), METHODS.includes(b.defaultMethod) ? b.defaultMethod : cur.default_method,
           b.includeVacant != null ? (b.includeVacant ? 1 : 0) : cur.include_vacant,
@@ -3844,6 +3866,7 @@ async function handle(req, res) {
     if (path === '/api/report/manager' && M === 'GET') return sendJSON(res, 200, managerReport(Q.from, Q.to))
     if (path === '/api/report/balance' && M === 'GET') return sendJSON(res, 200, balanceCheck())
     if (path === '/api/report/fundpay' && M === 'GET') return sendJSON(res, 200, fundPaymentsReport(Q.from, Q.to))
+    if (path === '/api/report/budget' && M === 'GET') return sendJSON(res, 200, budgetReport(Q.from, Q.to))
     if (path === '/api/report/fiscal-years' && M === 'GET') return sendJSON(res, 200, { startMonth: fiscalStartMonth(), years: fiscalYears() })
     if (path === '/api/period/closes' && M === 'GET')
       return sendJSON(res, 200, { lockDateG: lockDateG(), lockDateJ: lockDateG() ? gToJStr(lockDateG()) : '', closes: db.prepare(`SELECT pc.*, u.display_name by_name, r.display_name reopen_name FROM period_closes pc LEFT JOIN users u ON u.id=pc.created_by LEFT JOIN users r ON r.id=pc.reopened_by ORDER BY pc.id DESC`).all().map(c => ({ ...c, snapshot: JSON.parse(c.snapshot || '{}') })) })

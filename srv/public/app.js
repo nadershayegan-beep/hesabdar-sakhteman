@@ -1508,7 +1508,7 @@ let repTab = 'manager', repRange = null
 // گزارش‌ها در سه گروه: برای ساکنین · برای هیئت‌مدیره · دفاتر حسابداری (پیشرفته، پیش‌فرض بسته)
 const REP_GROUPS = [
   ['برای ساکنین', [['debtors', 'بدهکاران'], ['unit', 'صورت‌حساب واحد'], ['ledger', 'بدهی تفکیکی واحدها']]],
-  ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['income', 'درآمد و هزینه'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
+  ['برای هیئت‌مدیره', [['manager', 'عملکرد مدیر مالی'], ['income', 'درآمد و هزینه'], ['budget', 'بودجه در برابر واقعی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['fund', 'گزارش صندوق‌ها'], ['invoices', 'فاکتورها'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]],
   ['دفاتر حسابداری', [['journal', 'دفتر روزنامه'], ['gl', 'دفتر کل'], ['fundpay', 'پرداخت‌های صندوق'], ['balance', 'کنترل سلامت دفاتر'], ['audit', 'سابقهٔ تغییرات']], true]
 ]
 VIEWS.reports = async () => {
@@ -1670,6 +1670,28 @@ REPORTS.income = async () => {
       <p class="hint" style="margin:8px 0 0">${r.check === 0 ? 'جمع‌ها با موجودی واقعی صندوق‌ها می‌خواند.' : '<b class="amt-out">اختلاف ' + money(Math.abs(r.check)) + ' با موجودی صندوق‌ها — «کنترل سلامت دفاتر» را ببینید.</b>'}
       ${r.managerDebt > 0 ? ` · مدیر ${money(r.managerDebt)} از جیب خودش هزینه کرده که هنوز از صندوق پس نگرفته؛ این مبلغ وقتی تسویه شود در «تسویه با مدیر» می‌آید.` : ''}</p></div>
     <p class="hint">شارژ صادرشده یا فاکتور ثبت‌شده تا وقتی پولش جابه‌جا نشده اینجا نمی‌آید؛ تعهدها را در «بدهی تفکیکی واحدها» و «فاکتورها» ببینید.</p>`
+  wireCommon(); wireToday($('#repBody')); wireRangePicker()
+  document.querySelectorAll('[data-fy]').forEach(b => b.onclick = () => { const [from, to, label] = b.dataset.fy.split('|'); repRange = { from, to, label }; render() })
+}
+REPORTS.budget = async () => {
+  const periods = await api('/api/report/periods'), fy = await api('/api/report/fiscal-years')
+  if (!repRange) repRange = { from: periods[0].from, to: periods[0].to, label: periods[0].fa }
+  const r = await api(`/api/report/budget?from=${repRange.from}&to=${repRange.to}`)
+  const sg = r.suggested
+  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 3).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printAs('بودجه در برابر واقعی')">🖨 چاپ</button>`) + `
+    <div class="panel"><h3 style="margin-bottom:4px">${esc(META.buildingName)} — بودجه در برابر واقعی</h3><p class="sub">دوره: ${escFa(repRange.label)} (${faDigit(r.months)} ماه) · واقعی = هزینهٔ پرداخت‌شده از صندوق‌ها</p></div>
+    <div class="kpis">
+      ${kpi('بودجهٔ دوره', money(r.total.budget))}
+      ${kpi('هزینهٔ واقعی', money(r.total.actual))}
+      ${kpi('انحراف', signed(r.total.diff), r.total.diff > 0 ? 'بیش از بودجه' : 'کمتر از بودجه', r.total.diff > 0 ? 'bad' : '')}
+      ${kpi('شارژ پیشنهادی هر واحد', sg.perUnit ? money(sg.perUnit) : '—', sg.perUnit ? 'فعلی: ' + money(sg.current) + ' · ' + faDigit(sg.units) + ' واحد' : 'برای دسته‌ها بودجه تعیین کنید')}
+    </div>
+    <div class="panel"><div class="tablewrap"><table class="tx">
+      <thead><tr><th>دسته</th><th>بودجهٔ ماهانه</th><th>بودجهٔ دوره</th><th>واقعی</th><th>انحراف</th><th>درصد مصرف</th></tr></thead><tbody>
+      ${r.rows.length ? r.rows.map(x => `<tr><td><b>${esc(x.name)}</b></td><td class="num">${x.monthly ? money(x.monthly) : '—'}</td><td class="num">${x.budget ? money(x.budget) : '—'}</td><td class="num">${money(x.actual)}</td>
+        <td class="num ${x.budget && x.diff > 0 ? 'amt-out' : ''}">${x.budget ? signed(x.diff) : 'بدون بودجه'}</td><td class="num">${x.pct != null ? faDigit(x.pct) + '٪' : '—'}</td></tr>`).join('') : emptyRow(6, 'برای این دوره بودجه یا هزینه‌ای نیست')}
+      </tbody><tfoot><tr><td>جمع</td><td></td><td class="num">${money(r.total.budget)}</td><td class="num">${money(r.total.actual)}</td><td class="num">${signed(r.total.diff)}</td><td></td></tr></tfoot></table></div>
+      <p class="hint" style="margin:8px 0 0">بودجهٔ هر دسته از تنظیمات ← دسته‌های هزینه تعیین می‌شود. پرداخت به پیمانکارِ پروژه‌ها و تسویه با مدیر (${money(r.otherOutflow)}) جزو این جدول نیست. شارژ پیشنهادی = جمع بودجهٔ ماهانهٔ دسته‌هایی که از صندوق شارژ پرداخت می‌شوند ÷ تعداد واحدها.</p></div>`
   wireCommon(); wireToday($('#repBody')); wireRangePicker()
   document.querySelectorAll('[data-fy]').forEach(b => b.onclick = () => { const [from, to, label] = b.dataset.fy.split('|'); repRange = { from, to, label }; render() })
 }
@@ -2501,10 +2523,10 @@ SETTINGS.categories = async () => {
   $('#setBody').innerHTML = `
     <div class="panel"><div class="phead"><b>دسته‌های هزینه</b><button class="btn small primary" id="newCat">＋ دسته‌ی جدید</button></div>
       <p class="sub">روش تسهیم و صندوقِ پیش‌فرض هر دسته، هنگام ثبت فاکتور خودکار انتخاب می‌شود و همان‌جا قابل تغییر است.</p>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>نام دسته</th><th>روش تسهیم پیش‌فرض</th><th>واحد خالی سهم می‌دهد؟</th><th>صندوق</th><th>وضعیت</th><th></th></tr></thead><tbody>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>نام دسته</th><th>روش تقسیم پیش‌فرض</th><th>واحد خالی سهم می‌دهد؟</th><th>صندوق</th><th>بودجهٔ ماهانه</th><th>وضعیت</th><th></th></tr></thead><tbody>
       ${cats.map(c => `<tr><td><b>${esc(c.name)}</b>${c.is_charge_cat ? ' <span class="badge b-charge">شارژ ماهانه</span>' : ''}</td>
         <td><span class="catpill">${esc(c.methodFa)}</span></td><td>${c.include_vacant ? '✔ بله' : '— خیر'}</td>
-        <td>${esc((fundById(c.default_fund_id) || {}).name || '—')}</td>
+        <td>${esc((fundById(c.default_fund_id) || {}).name || '—')}</td><td class="num">${c.budget_monthly ? money(c.budget_monthly) : '—'}</td>
         <td>${c.active ? '<span class="badge b-settled">فعال</span>' : '<span class="badge b-vacant">غیرفعال</span>'}</td>
         <td><button class="mini-btn" data-editcat="${c.id}">ویرایش</button>
           ${c.is_charge_cat ? '' : `<button class="del" data-delcat="${c.id}">🗑</button>`}</td></tr>`).join('')}
@@ -2521,12 +2543,15 @@ function catForm(c) {
       <label class="f">روش تسهیم پیش‌فرض<select class="inp" id="ctMethod">${META.methods.map(m => `<option value="${m.value}" ${c && c.default_method === m.value ? 'selected' : ''}>${esc(m.fa)}</option>`).join('')}</select></label>
       <label class="f">صندوق پیش‌فرض<select class="inp" id="ctFund">${META.funds.map(f => `<option value="${f.id}" ${c && c.default_fund_id === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
     </div>
+    ${c && c.is_charge_cat ? '' : `<label class="f">بودجهٔ ماهانه (${curFa()}، اختیاری)<input class="inp num" id="ctBudget" data-money="ctBH" inputmode="numeric" value="${c && c.budget_monthly ? sep(Math.round(r2d(c.budget_monthly))) : ''}"><span class="hint" id="ctBH">برای گزارش «بودجه در برابر واقعی» و شارژ پیشنهادی</span></label>`}
     <label class="check"><input type="checkbox" id="ctVacant" ${c && c.include_vacant ? 'checked' : ''}> واحدهای خالی هم از این دسته سهم بدهند</label>
     ${c ? `<label class="check"><input type="checkbox" id="ctActive" ${c.active ? 'checked' : ''}> دسته فعال است</label>` : ''}</div>`,
     `<button class="btn primary" id="ctSave">ذخیره</button><button class="btn" id="ctCancel">انصراف</button>`)
+  wireMoney($('#modalBody'))
   $('#ctCancel').onclick = closeModal
   $('#ctSave').onclick = guard(async () => {
     const p = { name: $('#ctName').value.trim(), defaultMethod: $('#ctMethod').value, defaultFundId: +$('#ctFund').value, includeVacant: $('#ctVacant').checked }
+    if ($('#ctBudget')) p.budgetMonthly = readMoney($('#ctBudget'))
     if (!p.name) throw new Error('نام دسته را وارد کنید')
     if (c) { p.active = $('#ctActive').checked; await post(`/api/categories/${c.id}`, p, 'PATCH') } else await post('/api/categories', p)
     closeModal(); toast('ذخیره شد'); refresh()
