@@ -1451,7 +1451,7 @@ const showFund = guard(async id => {
   // دفتر معین صندوق: ورودی=بدهکار · خروجی=بستانکار · ماندهٔ دونده (موجودی)
   const asc = [...d.rows].reverse()   // از قدیمی به جدید برای ماندهٔ دونده
   const opening = d.fund.opening_balance || 0
-  const docNoOf = t => t.ref_payment_id ? 'رسید ' + faDigit(t.ref_payment_id)
+  const docNoOf = t => t.ref_no ? faDigit(t.ref_no) : t.ref_payment_id ? 'رسید ' + faDigit(t.ref_payment_id)
     : t.ref_invoice_id ? 'سند ' + faDigit(t.ref_invoice_id)
       : t.ref_cinvoice_id ? 'پیمانکار ' + faDigit(t.ref_cinvoice_id)
         : /transfer/.test(t.type) ? 'انتقال' : t.type === 'manager_settle' ? 'تسویه مدیر' : '—'

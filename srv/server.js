@@ -3450,6 +3450,7 @@ async function handle(req, res) {
         WHERE t.fund_id=? ORDER BY t.g_date DESC, t.id DESC`).all(id)
       const f = db.prepare(`SELECT * FROM funds WHERE id=?`).get(id)
       if (!f) return sendJSON(res, 404, { error: 'صندوق یافت نشد' })
+      for (const t of rows) t.ref_no = t.ref_payment_id ? 'رسید ' + dno('payment', t.ref_payment_id) : t.ref_invoice_id ? 'سند ' + dno('invoice', t.ref_invoice_id) : t.ref_cinvoice_id ? 'سند ' + dno('contractor', t.ref_cinvoice_id) : ['transfer_out', 'manager_settle', 'adjust_in', 'adjust_out'].includes(t.type) ? 'سند ' + dno('ftxn', t.id) : ''
       return sendJSON(res, 200, { fund: { ...f, balance: fundBalance(id), kindFa: FUND_KIND_FA[f.kind] }, rows })
     }
     if (path === '/api/funds/transfer' && M === 'POST') {
