@@ -87,7 +87,7 @@ async function waReceipt(id) {
   const v = await api(`/api/report/voucher?dtype=payment&id=${id}`); const p = v.raw
   const u = (META.units || []).find(x => x.id === p.unit_id) || {}
   if (!u.phone) return toast('برای این واحد شمارهٔ تلفن ثبت نشده است', true)
-  const t = `سلام ${u.resident_name || 'ساکن گرامی'} 🌱\nرسید پرداخت شمارهٔ ${faDigit(p.id)} — ${META.buildingName || 'ساختمان'}\nمبلغ ${moneyU(p.amount)} در تاریخ ${faDigit(p.j_date)} دریافت شد.\nبا سپاس از پرداخت شما 🙏`
+  const t = `سلام ${u.resident_name || 'ساکن گرامی'} 🌱\n${faDigit(v.head.no)} — ${META.buildingName || 'ساختمان'}\nمبلغ ${moneyU(p.amount)} در تاریخ ${faDigit(p.j_date)} دریافت شد.\nبا سپاس از پرداخت شما 🙏`
   window.open(`https://wa.me/${waPhone(u.phone)}?text=${encodeURIComponent(t)}`, '_blank', 'noopener')
 }
 const rcptBtns = id => `<button class="btn tiny" data-rcpt="${id}" title="رسید PDF">🧾</button><button class="btn tiny" data-rcwa="${id}" title="ارسال رسید در واتساپ">💬</button>`
@@ -684,7 +684,7 @@ VIEWS.invoices = async () => {
     <div class="panel"><div class="tablewrap"><table class="tx">
       <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تقسیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody id="invBody">${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}" data-q="${esc(invQ(i))}" ${qn && !invQ(i).includes(qn) ? 'hidden' : ''}>
-        <td class="num"><b>${faDigit(i.id)}</b></td>
+        <td class="num"><b>${faDigit(i.seqNo || i.id)}</b></td>
         <td><b>${esc(i.title)}</b>${i.is_charge ? ' <span class="badge b-charge">شارژ</span>' : ''}${i.from_fund ? ' <span class="badge b-charge">جاری — از صندوق</span>' : ''}${i.paid_by_manager ? ' <span class="badge b-mgr">جیب مدیر</span>' : ''}${(i.payable && i.fundUnpaid > 0) ? ' <span class="badge b-open">از صندوق پرداخت‌نشده</span>' : (i.payable && i.fundPaid > 0 ? ' <span class="badge b-settled">از صندوق پرداخت‌شده</span>' : '')}${i.vendor ? `<br><span class="dim" style="font-size:11px;color:var(--faint)">${esc(i.vendor)}</span>` : ''}</td>
         <td><span class="catpill">${esc(i.categoryName)}</span></td>
         <td class="num">${faDigit(i.j_date)}</td>
@@ -965,7 +965,7 @@ VIEWS.payments = async () => {
     `<div class="panel"><div class="tablewrap"><table class="tx">
       <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>پیش‌پرداخت</th><th>سند</th><th>رسید</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr>
-        <td class="num"><b>${faDigit(p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
+        <td class="num"><b>${faDigit(p.seqNo || p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
         <td class="num amt-in">${money(p.amount)}</td><td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td>
         <td class="num">${money(p.allocated)}</td><td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
@@ -1277,8 +1277,8 @@ const showUnitCard = guard(async id => {
   const u = d.unit
   // دفتر معین واحد: سهم‌ها (بدهکار) + پرداخت‌ها (بستانکار) به‌ترتیب تاریخ، با ماندهٔ دونده
   const moeinEntries = []
-  d.shares.forEach(s => moeinEntries.push({ g: s.g_date || '', j: s.is_opening ? '—' : s.j_date, no: s.invoice_id, title: s.title, cat: s.category || '—', isOpen: s.is_opening, inv: s.invoice_id, debit: s.share_amount, credit: 0, k: 0 }))
-  d.payments.forEach(p => moeinEntries.push({ g: p.g_date || '', j: p.is_opening ? '—' : p.j_date, no: p.id, pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', inv: 0, debit: 0, credit: p.amount, k: 1 }))
+  d.shares.forEach(s => moeinEntries.push({ g: s.g_date || '', j: s.is_opening ? '—' : s.j_date, no: s.seqNo || s.invoice_id, title: s.title, cat: s.category || '—', isOpen: s.is_opening, inv: s.invoice_id, debit: s.share_amount, credit: 0, k: 0 }))
+  d.payments.forEach(p => moeinEntries.push({ g: p.g_date || '', j: p.is_opening ? '—' : p.j_date, no: p.seqNo || p.id, pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', inv: 0, debit: 0, credit: p.amount, k: 1 }))
   moeinEntries.sort((a, b) => (a.g < b.g ? -1 : a.g > b.g ? 1 : a.k - b.k))
   let _bal = 0
   const moeinRows = moeinEntries.map(e => {

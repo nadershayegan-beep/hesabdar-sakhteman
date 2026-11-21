@@ -244,6 +244,16 @@ function migrate() {
   db.exec(`DROP TRIGGER IF EXISTS lock_shares_upd; CREATE TRIGGER lock_shares_upd BEFORE UPDATE OF share_amount, unit_id ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=OLD.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
   db.exec(`CREATE TABLE IF NOT EXISTS unit_followups (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_id INTEGER NOT NULL, g_date TEXT NOT NULL, j_date TEXT NOT NULL,
     channel TEXT DEFAULT 'note', note TEXT DEFAULT '', debt_at INTEGER DEFAULT 0, promise_g TEXT DEFAULT '', promise_j TEXT DEFAULT '', promise_amount INTEGER DEFAULT 0, created_by INTEGER, created_at TEXT NOT NULL)`)
+  // ---- شمارهٔ سندِ پیاپیِ سالانه: با ثبتِ هر سند خودکار داده می‌شود و با حذف آزاد نمی‌شود ----
+  db.exec(`CREATE TABLE IF NOT EXISTS doc_numbers (id INTEGER PRIMARY KEY AUTOINCREMENT, year INTEGER NOT NULL, seq INTEGER NOT NULL, dtype TEXT NOT NULL, ref_id INTEGER NOT NULL, created_at TEXT, UNIQUE(year,seq), UNIQUE(dtype,ref_id))`)
+  db.exec(`DROP TRIGGER IF EXISTS dno_invoices; CREATE TRIGGER dno_invoices AFTER INSERT ON invoices WHEN NEW.is_opening=0 BEGIN
+    INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'invoice', NEW.id, datetime('now')); END`)
+  db.exec(`DROP TRIGGER IF EXISTS dno_payments; CREATE TRIGGER dno_payments AFTER INSERT ON payments WHEN NEW.is_opening=0 BEGIN
+    INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'payment', NEW.id, datetime('now')); END`)
+  db.exec(`DROP TRIGGER IF EXISTS dno_cinvoices; CREATE TRIGGER dno_cinvoices AFTER INSERT ON contractor_invoices WHEN 1 BEGIN
+    INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'contractor', NEW.id, datetime('now')); END`)
+  db.exec(`DROP TRIGGER IF EXISTS dno_ftxn; CREATE TRIGGER dno_ftxn AFTER INSERT ON fund_txns WHEN NEW.type IN ('transfer_out','manager_settle','adjust_in','adjust_out') BEGIN
+    INSERT OR IGNORE INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES((CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END), (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=(CAST(substr(NEW.j_date,1,4) AS INTEGER) - CASE WHEN CAST(substr(NEW.j_date,6,2) AS INTEGER) < COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key='fiscalStartMonth'),1) THEN 1 ELSE 0 END)), 'ftxn', NEW.id, datetime('now')); END`)
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -388,6 +398,24 @@ function migrateExpPayLinks() {
   setSetting('mig_exppay_link', '1')
 }
 migrateExpPayLinks()
+function backfillDocNumbers() {
+  if (getSetting('docNoBackfill', '') === '1') return
+  const fsm = +getSetting('fiscalStartMonth', '1') || 1
+  const yr = j => +j.slice(0, 4) - (+j.slice(5, 7) < fsm ? 1 : 0)
+  const docs = [
+    ...db.prepare(`SELECT id, g_date, j_date FROM invoices WHERE is_opening=0`).all().map(r => ({ ...r, t: 'invoice' })),
+    ...db.prepare(`SELECT id, g_date, j_date FROM payments WHERE is_opening=0`).all().map(r => ({ ...r, t: 'payment' })),
+    ...db.prepare(`SELECT id, g_date, j_date FROM contractor_invoices`).all().map(r => ({ ...r, t: 'contractor' })),
+    ...db.prepare(`SELECT id, g_date, j_date FROM fund_txns WHERE type IN ('transfer_out','manager_settle','adjust_in','adjust_out')`).all().map(r => ({ ...r, t: 'ftxn' }))]
+    .filter(d => !db.prepare(`SELECT 1 FROM doc_numbers WHERE dtype=? AND ref_id=?`).get(d.t, d.id))
+    .sort((a, b) => a.g_date < b.g_date ? -1 : a.g_date > b.g_date ? 1 : a.id - b.id)
+  const ins = db.prepare(`INSERT INTO doc_numbers(year,seq,dtype,ref_id,created_at) VALUES(?, (SELECT COALESCE(MAX(seq),0)+1 FROM doc_numbers WHERE year=?), ?, ?, ?)`)
+  db.exec('BEGIN'); try { for (const d of docs) { const y = yr(d.j_date); ins.run(y, y, d.t, d.id, nowISO()) } db.exec('COMMIT') } catch (e) { db.exec('ROLLBACK'); throw e }
+  setSetting('docNoBackfill', '1')
+}
+const dnoStmt = () => db.prepare(`SELECT year, seq FROM doc_numbers WHERE dtype=? AND ref_id=?`)
+// شمارهٔ نمایشیِ سند: «۱۴۰۵-۰۰۰۱۲»؛ اگر نداشت (مثل مانده‌های اولیه) همان شناسه
+function dno(dtype, id) { const r = dnoStmt().get(dtype, id); return r ? `${r.year}-${String(r.seq).padStart(5, '0')}` : String(id) }
 function migrateFundBuckets() {
   for (const f of db.prepare(`SELECT * FROM funds WHERE COALESCE(bucket,'')=''`).all())
     db.prepare(`UPDATE funds SET bucket=? WHERE id=?`).run(bucketOfFund({ name: f.name }), f.id)
@@ -1005,7 +1033,7 @@ function invoiceRow(inv) {
     categoryName: cat ? cat.name : '—', fundName: fund ? fund.name : '—',
     methodFa: METHOD_FA[inv.method] || inv.method, kindFa: EXPENSE_KIND_FA[inv.expense_kind] || '',
     shareCount: db.prepare(`SELECT COUNT(*) c FROM invoice_shares WHERE invoice_id=?`).get(inv.id).c,
-    payable, fundPaid, fundUnpaid: payable ? inv.amount - fundPaid : 0
+    payable, fundPaid, fundUnpaid: payable ? inv.amount - fundPaid : 0, seqNo: dno('invoice', inv.id)
   }
 }
 function listInvoices(q = {}) {
@@ -1069,10 +1097,10 @@ function unitCard(unitId) {
     FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id
     LEFT JOIN expense_categories c ON c.id=i.category_id
     WHERE s.unit_id=? ORDER BY i.g_date DESC, i.id DESC`).all(unitId)
-    .map(s => { const al = shareAllocated(s.id); return { ...s, paid: al, remaining: s.share_amount - al } })
+    .map(s => { const al = shareAllocated(s.id); return { ...s, paid: al, remaining: s.share_amount - al, seqNo: s.is_opening ? '' : dno('invoice', s.invoice_id) } })
   const payments = db.prepare(`SELECT p.*, f.name fund_name FROM payments p LEFT JOIN funds f ON f.id=p.fund_id
     WHERE p.unit_id=? ORDER BY p.g_date DESC, p.id DESC`).all(unitId)
-    .map(p => ({ ...p, allocated: paymentAllocated(p.id), leftover: p.amount - paymentAllocated(p.id) }))
+    .map(p => ({ ...p, allocated: paymentAllocated(p.id), leftover: p.amount - paymentAllocated(p.id), seqNo: p.is_opening ? '' : dno('payment', p.id) }))
   const creditUses = db.prepare(`SELECT cu.*, i.title FROM credit_uses cu LEFT JOIN invoices i ON i.id=cu.invoice_id
     WHERE cu.unit_id=? ORDER BY cu.g_date DESC, cu.id DESC`).all(unitId)
   const debt = unitDebt(unitId)
@@ -1377,7 +1405,7 @@ function voucherOf(dtype, id) {
     const i = db.prepare(`SELECT i.*, c.name category, f.name fund_name FROM invoices i LEFT JOIN expense_categories c ON c.id=i.category_id LEFT JOIN funds f ON f.id=i.fund_id WHERE i.id=?`).get(id)
     if (!i) return null
     const kind = invKind(i)
-    const head = { no: String(i.id), j: i.j_date, typeFa: JKIND_FA[kind], title: i.title, amount: i.amount, meta: `دسته: ${i.category || '—'} · صندوق: ${i.fund_name || '—'}${i.from_fund ? '' : ' · روش: ' + (METHOD_FA[i.method] || i.method)}` }
+    const head = { no: 'سند ' + dno('invoice', i.id), j: i.j_date, typeFa: JKIND_FA[kind], title: i.title, amount: i.amount, meta: `دسته: ${i.category || '—'} · صندوق: ${i.fund_name || '—'}${i.from_fund ? '' : ' · روش: ' + (METHOD_FA[i.method] || i.method)}` }
     if (i.from_fund || !(i.is_charge || i.is_billing)) {
       // بخشِ هزینه: هزینه در برابرِ پولی که واقعاً از هر صندوق رفته + باقیِ پرداخت‌نشده (به مدیر یا فروشنده)
       if (!i.from_fund) {
@@ -1406,7 +1434,7 @@ function voucherOf(dtype, id) {
   if (dtype === 'payment') {
     const p = db.prepare(`SELECT p.*, u.number, u.resident_name, f.name fund_name FROM payments p LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id WHERE p.id=?`).get(id)
     if (!p) return null
-    const head = { no: 'رسید ' + p.id, j: p.j_date, typeFa: 'دریافتی', title: 'دریافتی واحد ' + p.number, amount: p.amount, meta: `صندوق: ${p.fund_name || '—'}${p.method ? ' · روش: ' + p.method : ''}${p.note ? ' · ' + p.note : ''}` }
+    const head = { no: 'رسید ' + dno('payment', p.id), j: p.j_date, typeFa: 'دریافتی', title: 'دریافتی واحد ' + p.number, amount: p.amount, meta: `صندوق: ${p.fund_name || '—'}${p.method ? ' · روش: ' + p.method : ''}${p.note ? ' · ' + p.note : ''}` }
     lines.push({ acc: fundAcc(p.fund_name), fund: p.fund_id, desc: 'دریافت نقدی به صندوق', debit: p.amount, credit: 0 })
     lines.push({ acc: 'واحد ' + p.number + (p.resident_name ? ' — ' + p.resident_name : ''), desc: 'کسر از بدهیِ واحد', debit: 0, credit: p.amount })
     return { head, lines, ...balance(lines), raw: p }
@@ -1416,7 +1444,7 @@ function voucherOf(dtype, id) {
     if (!c) return null
     const fund = db.prepare(`SELECT name FROM funds WHERE id=?`).get(c.fund_id || omraniFundId())
     const paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0), rem = c.amount - paid
-    const head = { no: 'ci-' + c.id, j: c.j_date, typeFa: (c.kind === 'sale' ? 'فروش' : 'خرید') + ' پروژه', title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', amount: c.amount, meta: `پروژه: ${c.proj || '—'} · صندوق: ${fund ? fund.name : '—'}` }
+    const head = { no: 'سند ' + dno('contractor', c.id), j: c.j_date, typeFa: (c.kind === 'sale' ? 'فروش' : 'خرید') + ' پروژه', title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', amount: c.amount, meta: `پروژه: ${c.proj || '—'} · صندوق: ${fund ? fund.name : '—'}` }
     const cps = db.prepare(`SELECT cp.fund_id, f.name, SUM(cp.amount) s FROM contractor_payments cp LEFT JOIN funds f ON f.id=cp.fund_id WHERE cp.cinvoice_id=? GROUP BY cp.fund_id`).all(c.id)
     const cpSum = cps.reduce((a, x) => a + x.s, 0)
     if (c.kind === 'sale') {
@@ -1436,7 +1464,7 @@ function voucherOf(dtype, id) {
     const t = db.prepare(`SELECT t.*, f.name fund_name, pf.name peer_name FROM fund_txns t LEFT JOIN funds f ON f.id=t.fund_id LEFT JOIN funds pf ON pf.id=t.peer_fund_id WHERE t.id=?`).get(id)
     if (!t || !['transfer_out', 'manager_settle', 'adjust_in', 'adjust_out'].includes(t.type)) return null
     const F = { acc: fundAcc(t.fund_name), fund: t.fund_id }
-    const head = { no: 'ص-' + t.id, j: t.j_date, typeFa: TXN_LABEL[t.type], title: t.note || TXN_LABEL[t.type], amount: t.amount, meta: 'صندوق: ' + (t.fund_name || '—') + (t.peer_name ? ' → ' + t.peer_name : '') }
+    const head = { no: 'سند ' + dno('ftxn', t.id), j: t.j_date, typeFa: TXN_LABEL[t.type], title: t.note || TXN_LABEL[t.type], amount: t.amount, meta: 'صندوق: ' + (t.fund_name || '—') + (t.peer_name ? ' → ' + t.peer_name : '') }
     if (t.type === 'transfer_out') { lines.push({ acc: fundAcc(t.peer_name), fund: t.peer_fund_id, desc: 'انتقال ورودی', debit: t.amount, credit: 0 }); lines.push({ ...F, desc: 'انتقال خروجی', debit: 0, credit: t.amount }) }
     else if (t.type === 'manager_settle') { lines.push({ acc: 'پرداختنی به مدیر', desc: 'بازپرداخت به مدیر', debit: t.amount, credit: 0 }); lines.push({ ...F, desc: 'پرداخت از صندوق', debit: 0, credit: t.amount }) }
     else if (t.type === 'adjust_in') { lines.push({ ...F, desc: 'افزایش موجودی', debit: t.amount, credit: 0 }); lines.push({ acc: 'تعدیل صندوق', desc: t.note || '', debit: 0, credit: t.amount }) }
@@ -1484,15 +1512,15 @@ function generalLedger(type, id, from, to) {
     const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(+id); if (!u) return null
     name = 'واحد ' + u.number + (u.resident_name ? ' — ' + u.resident_name : '')
     for (const s of db.prepare(`SELECT s.share_amount, s.invoice_id, i.title, i.j_date, i.g_date, i.is_opening, c.name category FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id LEFT JOIN expense_categories c ON c.id=i.category_id WHERE s.unit_id=?`).all(+id))
-      ent.push({ g: s.g_date, j: s.is_opening ? '—' : s.j_date, no: 'سند ' + s.invoice_id, inv: s.invoice_id, dtype: 'invoice', title: s.title, cat: s.category || '—', debit: s.share_amount, credit: 0, open: s.is_opening })
+      ent.push({ g: s.g_date, j: s.is_opening ? '—' : s.j_date, no: 'سند ' + dno('invoice', s.invoice_id), inv: s.invoice_id, dtype: 'invoice', title: s.title, cat: s.category || '—', debit: s.share_amount, credit: 0, open: s.is_opening })
     for (const p of db.prepare(`SELECT p.id, p.amount, p.j_date, p.g_date, p.is_opening, p.note, f.name fund_name FROM payments p LEFT JOIN funds f ON f.id=p.fund_id WHERE p.unit_id=?`).all(+id))
-      ent.push({ g: p.g_date, j: p.is_opening ? '—' : p.j_date, no: 'رسید ' + p.id, dtype: 'payment', pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', debit: 0, credit: p.amount, open: p.is_opening })
+      ent.push({ g: p.g_date, j: p.is_opening ? '—' : p.j_date, no: 'رسید ' + dno('payment', p.id), dtype: 'payment', pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', debit: 0, credit: p.amount, open: p.is_opening })
   } else if (type === 'fund') {
     const f = db.prepare(`SELECT * FROM funds WHERE id=?`).get(+id); if (!f) return null
     name = f.name; opening = f.opening_balance || 0
     for (const t of db.prepare(`SELECT t.*, i.title inv_title, u.number unit_number FROM fund_txns t LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN payments p ON p.id=t.ref_payment_id LEFT JOIN units u ON u.id=p.unit_id WHERE t.fund_id=?`).all(+id)) {
       const isin = ['in', 'transfer_in', 'adjust_in'].includes(t.type)
-      const no = t.ref_payment_id ? 'رسید ' + t.ref_payment_id : t.ref_invoice_id ? 'سند ' + t.ref_invoice_id : t.ref_cinvoice_id ? 'ci-' + t.ref_cinvoice_id : /transfer/.test(t.type) ? 'انتقال' : '—'
+      const no = t.ref_payment_id ? 'رسید ' + dno('payment', t.ref_payment_id) : t.ref_invoice_id ? 'سند ' + dno('invoice', t.ref_invoice_id) : t.ref_cinvoice_id ? 'سند ' + dno('contractor', t.ref_cinvoice_id) : /transfer/.test(t.type) ? 'انتقال' : '—'
       ent.push({ g: t.g_date, j: t.j_date, no, dtype: t.ref_payment_id ? 'payment' : t.ref_invoice_id ? 'invoice' : t.ref_cinvoice_id ? 'contractor' : '', refid: t.ref_payment_id || t.ref_invoice_id || t.ref_cinvoice_id, title: t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : (TXN_LABEL[t.type] || t.type)), cat: TXN_LABEL[t.type] || t.type, debit: isin ? t.amount : 0, credit: isin ? 0 : t.amount })
     }
   } else if (type === 'contractor') {
@@ -1504,19 +1532,19 @@ function generalLedger(type, id, from, to) {
     for (const c of rows) {
       const sale = c.kind === 'sale', paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0)
       // بستانکار = طلبِ پیمانکار از ما (خرید)؛ بدهکار = پرداختِ ما
-      ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (c.title || '') + (sale ? ' (فروش)' : ''), cat: c.proj || '—', debit: sale ? c.amount : 0, credit: sale ? 0 : c.amount })
+      ent.push({ g: c.g_date, j: c.j_date, no: 'سند ' + dno('contractor', c.id), dtype: 'contractor', cid: c.id, title: (c.title || '') + (sale ? ' (فروش)' : ''), cat: c.proj || '—', debit: sale ? c.amount : 0, credit: sale ? 0 : c.amount })
       for (const cp of db.prepare(`SELECT * FROM contractor_payments WHERE cinvoice_id=? ORDER BY g_date, id`).all(c.id))
-        ent.push({ g: cp.g_date, j: cp.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (sale ? 'دریافت از فروش' : 'پرداخت به پیمانکار') + (cp.note ? ' · ' + cp.note : ''), cat: c.proj || '—', debit: sale ? 0 : cp.amount, credit: sale ? cp.amount : 0 })
+        ent.push({ g: cp.g_date, j: cp.j_date, no: 'سند ' + dno('contractor', c.id), dtype: 'contractor', cid: c.id, title: (sale ? 'دریافت از فروش' : 'پرداخت به پیمانکار') + (cp.note ? ' · ' + cp.note : ''), cat: c.proj || '—', debit: sale ? 0 : cp.amount, credit: sale ? cp.amount : 0 })
     }
   } else if (type === 'project') {
     const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+id); if (!p) return null
     name = p.title
     for (const c of db.prepare(`SELECT * FROM contractor_invoices WHERE project_id=?`).all(+id)) {
       const sale = c.kind === 'sale'
-      ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', cat: sale ? 'فروش' : 'خرید', debit: sale ? 0 : c.amount, credit: sale ? c.amount : 0 })
+      ent.push({ g: c.g_date, j: c.j_date, no: 'سند ' + dno('contractor', c.id), dtype: 'contractor', cid: c.id, title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', cat: sale ? 'فروش' : 'خرید', debit: sale ? 0 : c.amount, credit: sale ? c.amount : 0 })
     }
     for (const pay of db.prepare(`SELECT pay.id, pay.amount, pay.j_date, pay.g_date, u.number FROM payments pay LEFT JOIN units u ON u.id=pay.unit_id WHERE pay.project_id=?`).all(+id))
-      ent.push({ g: pay.g_date, j: pay.j_date, no: 'رسید ' + pay.id, dtype: 'payment', pid: pay.id, title: 'دریافتِ پروژه از واحد ' + pay.number, cat: 'دریافتی', debit: 0, credit: pay.amount })
+      ent.push({ g: pay.g_date, j: pay.j_date, no: 'رسید ' + dno('payment', pay.id), dtype: 'payment', pid: pay.id, title: 'دریافتِ پروژه از واحد ' + pay.number, cat: 'دریافتی', debit: 0, credit: pay.amount })
   } else return null
   // بازهٔ تاریخ: ماندهٔ قبل از بازه به‌عنوان «اول دوره»
   let before = opening
@@ -2450,7 +2478,7 @@ function printPaymentHtml(id) {
   const U = pUnitFa(), amtDisp = isTomanDisp() ? Math.round(p.amount / 10) : p.amount
   const inner = `
     <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
-    <div class="sub">رسیدِ دریافت وجه · شمارهٔ رسید: <b>${faNum(p.id)}</b> · تاریخ: ${faNum(p.j_date)}</div>
+    <div class="sub">رسیدِ دریافت وجه · شمارهٔ رسید: <b>${faNum(dno('payment', p.id))}</b> · تاریخ: ${faNum(p.j_date)}</div>
     <div class="big">مبلغ ${pMoney(p.amount)} ${U}<div style="font-size:13px;font-weight:600;margin-top:4px">(به حروف: ${numToFaWords(amtDisp)} ${U})</div></div>
     <table><tbody>
       <tr><th style="width:30%">از</th><td>واحد ${faNum(p.number)}${p.resident_name ? ' — ' + hEsc(p.resident_name) : ''}</td></tr>
@@ -2478,9 +2506,9 @@ function printStatementHtml(unitId, from, to) {
   const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId); if (!u) return null
   const ent = []
   for (const x of db.prepare(`SELECT s.share_amount, i.id, i.title, i.g_date, i.j_date, i.is_opening, c.name cat FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id LEFT JOIN expense_categories c ON c.id=i.category_id WHERE s.unit_id=?`).all(unitId))
-    ent.push({ g: x.g_date, j: x.is_opening ? 'انتقالی' : x.j_date, no: 'سند ' + x.id, title: x.title, debit: x.share_amount, credit: 0, k: 0 })
+    ent.push({ g: x.g_date, j: x.is_opening ? 'انتقالی' : x.j_date, no: x.is_opening ? '—' : 'سند ' + dno('invoice', x.id), title: x.title, debit: x.share_amount, credit: 0, k: 0 })
   for (const p of db.prepare(`SELECT p.*, f.name fund FROM payments p LEFT JOIN funds f ON f.id=p.fund_id WHERE p.unit_id=?`).all(unitId))
-    ent.push({ g: p.g_date, j: p.is_opening ? 'انتقالی' : p.j_date, no: 'رسید ' + p.id, title: 'پرداخت' + (p.fund ? ' — ' + p.fund : '') + (p.note ? ' · ' + p.note : ''), debit: 0, credit: p.amount, k: 1 })
+    ent.push({ g: p.g_date, j: p.is_opening ? 'انتقالی' : p.j_date, no: p.is_opening ? '—' : 'رسید ' + dno('payment', p.id), title: 'پرداخت' + (p.fund ? ' — ' + p.fund : '') + (p.note ? ' · ' + p.note : ''), debit: 0, credit: p.amount, k: 1 })
   ent.sort((a, b) => a.g < b.g ? -1 : a.g > b.g ? 1 : a.k - b.k)
   let open = 0; const rows = []
   for (const e of ent) { if ((from && e.g < from)) open += e.debit - e.credit; else if (!to || e.g <= to) rows.push(e) }
@@ -3518,7 +3546,7 @@ async function handle(req, res) {
       const rows = db.prepare(`SELECT p.*, u.number, u.resident_name, f.name fund_name FROM payments p
         JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id
         WHERE ${w.join(' AND ')} ORDER BY p.g_date DESC, p.id DESC ${Q.limit ? 'LIMIT ' + Number(Q.limit) : ''}`).all(...a)
-      return sendJSON(res, 200, rows.map(p => ({ ...p, allocated: paymentAllocated(p.id), leftover: p.amount - paymentAllocated(p.id) })))
+      return sendJSON(res, 200, rows.map(p => ({ ...p, allocated: paymentAllocated(p.id), leftover: p.amount - paymentAllocated(p.id), seqNo: dno('payment', p.id) })))
     }
     if (path === '/api/payments' && M === 'POST') {
       const b = await jbody(req)
@@ -4214,6 +4242,7 @@ function listenWithFallback(port, tries = 15) {
     if (process.send) { try { process.send({ type: 'ready', port: PORT }) } catch { } }
   })
 }
+try { backfillDocNumbers() } catch (e) { console.error('شماره‌گذاری اسناد ناموفق:', e.message) }
 try { backfillContractorFundTxns() } catch (e) { console.error('backfill صندوق پیمانکار ناموفق:', e.message) }
 try { backfillProjectPayments() } catch (e) { console.error('backfill پرداخت پروژه ناموفق:', e.message) }
 listenWithFallback(PORT)
