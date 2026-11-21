@@ -382,7 +382,19 @@ function migrateCiPayments() {
 migrateCiPayments()
 
 // ---------- احراز هویت ----------
-const sessions = new Map()
+const sessions = new Map()   // sid → { uid, exp, last }
+const SESSION_MAX_MS = 30 * 86400000, SESSION_IDLE_MS = 14 * 86400000
+const PW_MIN = 8, PW_MIN_MSG = 'رمز باید حداقل ۸ کاراکتر باشد'
+function newSession(uid) { const t = randomBytes(24).toString('hex'); sessions.set(t, { uid, exp: Date.now() + SESSION_MAX_MS, last: Date.now() }); return t }
+function killSessionsOf(uid, exceptSid = null) { for (const [k, v] of sessions) if (v.uid === uid && k !== exceptSid) sessions.delete(k) }
+// محدودیتِ تلاشِ ورود (در حافظه، چون پاسخِ ناموفق تراکنش را برمی‌گرداند): ۵ خطا برای یک نام کاربری یا ۲۰ خطا از یک IP → قفل ۱۵ دقیقه
+const loginFails = new Map()
+function loginLockedMin(key) { const s = loginFails.get(key); return s && s.until > Date.now() ? Math.ceil((s.until - Date.now()) / 60000) : 0 }
+function loginFail(key, max) {
+  let s = loginFails.get(key); if (!s || (s.until && s.until <= Date.now())) s = { count: 0, until: 0 }
+  s.count++; if (s.count >= max) s.until = Date.now() + 15 * 60000
+  loginFails.set(key, s); return s.until > Date.now()
+}
 function hashPw(pw) { const salt = randomBytes(16); return { hash: scryptSync(pw, salt, 32).toString('hex'), salt: salt.toString('hex') } }
 function verifyPw(pw, hashHex, saltHex) {
   const h = scryptSync(pw, Buffer.from(saltHex, 'hex'), 32)
@@ -396,8 +408,11 @@ function getCookie(req, name) {
 }
 function authUser(req) {
   const sid = getCookie(req, 'sid'); if (!sid) return null
-  const uid = sessions.get(sid); if (!uid) return null
-  return db.prepare(`SELECT * FROM users WHERE id=? AND active=1`).get(uid) || null
+  const ss = sessions.get(sid); if (!ss) return null
+  const now = Date.now()
+  if (now > ss.exp || now - ss.last > SESSION_IDLE_MS) { sessions.delete(sid); return null }
+  ss.last = now
+  return db.prepare(`SELECT * FROM users WHERE id=? AND active=1`).get(ss.uid) || null
 }
 const userPublic = u => u && ({ id: u.id, username: u.username, name: u.display_name, role: u.role, roleFa: ROLE_FA[u.role] })
 
@@ -2578,6 +2593,7 @@ let writeChain = Promise.resolve()
 const withWriteLock = fn => { const p = writeChain.then(fn, fn); writeChain = p.catch(() => { }); return p }
 const NO_TX = new Set(['/api/backup', '/api/backup/restore', '/api/backup/inspect', '/api/update'])
 const server = createServer((req, res) => {
+  if (getSetting('lanAccess', '1') === '0' && !isLoopback(req)) { res.writeHead(403, { 'Content-Type': 'text/plain; charset=utf-8' }); return res.end('دسترسی از شبکه در تنظیمات برنامه خاموش است') }
   let p = ''; try { p = decodeURIComponent(new URL(req.url, 'http://x').pathname) } catch { }
   if (req.method === 'GET' || !p.startsWith('/api/')) return handle(req, res)
   return withWriteLock(async () => {
@@ -2649,7 +2665,7 @@ async function handle(req, res) {
       if (!noUsers) return sendJSON(res, 400, { error: 'مدیر قبلاً ساخته شده است' })
       const b = await jbody(req)
       if (!b.username || !b.password || !b.displayName) return sendJSON(res, 400, { error: 'همه‌ی فیلدها لازم است' })
-      if (String(b.password).length < 4) return sendJSON(res, 400, { error: 'رمز حداقل ۴ کاراکتر' })
+      if (String(b.password).length < PW_MIN) return sendJSON(res, 400, { error: PW_MIN_MSG })
       const { hash, salt } = hashPw(b.password)
       const uid = Number(db.prepare(`INSERT INTO users(username,display_name,role,pass_hash,pass_salt,created_at) VALUES(?,?,?,?,?,?)`)
         .run(b.username.trim(), b.displayName.trim(), 'admin', hash, salt, nowISO()).lastInsertRowid)
@@ -2661,9 +2677,18 @@ async function handle(req, res) {
 
     if (path === '/api/auth/login' && M === 'POST') {
       const b = await jbody(req)
-      const u = db.prepare(`SELECT * FROM users WHERE username=? AND active=1`).get((b.username || '').trim())
-      if (!u || !verifyPw(b.password || '', u.pass_hash, u.pass_salt)) return sendJSON(res, 401, { error: 'نام کاربری یا رمز اشتباه است' })
-      const token = randomBytes(24).toString('hex'); sessions.set(token, u.id)
+      const uname = (b.username || '').trim(), ip = clientIp(req)
+      const lockMin = Math.max(loginLockedMin('u:' + uname), loginLockedMin('ip:' + ip))
+      if (lockMin) return sendJSON(res, 429, { error: `به‌خاطر چند تلاشِ ناموفق، ورود ${faNum(lockMin)} دقیقه قفل است` })
+      const u = db.prepare(`SELECT * FROM users WHERE username=? AND active=1`).get(uname)
+      if (!u || !verifyPw(b.password || '', u.pass_hash, u.pass_salt)) {
+        const locked = loginFail('u:' + uname, 5) | loginFail('ip:' + ip, 20)
+        await delay(400)
+        if (locked) { setImmediate(() => { try { logSecurity('login_locked', uname, '', ip) } catch { } }) }
+        return sendJSON(res, 401, { error: locked ? 'به‌خاطر چند تلاشِ ناموفق، ورود ۱۵ دقیقه قفل شد' : 'نام کاربری یا رمز اشتباه است' })
+      }
+      loginFails.delete('u:' + uname)
+      const token = newSession(u.id)
       return sendJSON(res, 200, { ok: true, user: userPublic(u) },
         { 'Set-Cookie': `sid=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=2592000` })
     }
@@ -2681,7 +2706,7 @@ async function handle(req, res) {
       const u = db.prepare(`SELECT * FROM users WHERE username=? AND active=1`).get(username)
       const ok = u && u.recovery_hash && verifyPw(normalizeCode(b.code), u.recovery_hash, u.recovery_salt)
       if (!ok) { rcFail(username); logSecurity('recovery_failed', username, '', ip); await delay(500); return sendJSON(res, 401, { error: 'نام کاربری یا کد بازیابی اشتباه است' }) }
-      if (String(b.newPassword || '').length < 4) return sendJSON(res, 400, { error: 'رمز جدید حداقل ۴ کاراکتر' })
+      if (String(b.newPassword || '').length < PW_MIN) return sendJSON(res, 400, { error: PW_MIN_MSG })
       const { hash, salt } = hashPw(b.newPassword)
       db.prepare(`UPDATE users SET pass_hash=?, pass_salt=? WHERE id=?`).run(hash, salt, u.id)
       const newRecoveryCode = setRecoveryCode(u.id)   // کد قدیمی باطل، کد جدید یک‌بار
@@ -2698,7 +2723,7 @@ async function handle(req, res) {
       const username = (b.username || '').trim()
       const u = db.prepare(`SELECT * FROM users WHERE username=? AND role='admin'`).get(username)
       if (!u) return sendJSON(res, 400, { error: 'کاربر مدیر با این نام یافت نشد' })
-      if (String(b.newPassword || '').length < 4) return sendJSON(res, 400, { error: 'رمز جدید حداقل ۴ کاراکتر' })
+      if (String(b.newPassword || '').length < PW_MIN) return sendJSON(res, 400, { error: PW_MIN_MSG })
       const { hash, salt } = hashPw(b.newPassword)
       db.prepare(`UPDATE users SET pass_hash=?, pass_salt=?, active=1 WHERE id=?`).run(hash, salt, u.id)
       const newRecoveryCode = setRecoveryCode(u.id)
@@ -2727,7 +2752,7 @@ async function handle(req, res) {
     }
     if (path === '/api/security-log' && M === 'GET') {
       if (!isAdmin) return sendJSON(res, 403, { error: 'دسترسی ندارید' })
-      const FA = { recovery_generated: 'ساخت کد بازیابی', recovery_used: 'استفاده از کد بازیابی', local_reset: 'ریست محلی', recovery_failed: 'تلاش ناموفق' }
+      const FA = { recovery_generated: 'ساخت کد بازیابی', recovery_used: 'استفاده از کد بازیابی', local_reset: 'ریست محلی', recovery_failed: 'تلاش ناموفق', login_locked: 'قفل ورود پس از چند رمز اشتباه' }
       return sendJSON(res, 200, db.prepare(`SELECT * FROM security_log ORDER BY id DESC LIMIT 20`).all()
         .map(r => ({ ...r, eventFa: FA[r.event] || r.event })))
     }
@@ -3593,6 +3618,7 @@ async function handle(req, res) {
       const b = await jbody(req)
       if (!b.username || !b.displayName || !b.password || !ROLES.includes(b.role))
         return sendJSON(res, 400, { error: 'نام، نام کاربری، رمز و نقش لازم است' })
+      if (String(b.password).length < PW_MIN) return sendJSON(res, 400, { error: PW_MIN_MSG })
       if (db.prepare(`SELECT 1 FROM users WHERE username=?`).get(b.username.trim()))
         return sendJSON(res, 400, { error: 'این نام کاربری قبلاً وجود دارد' })
       const { hash, salt } = hashPw(b.password)
@@ -3605,14 +3631,18 @@ async function handle(req, res) {
       const uid = +userM[1]
       if (M === 'DELETE') {
         if (uid === user.id) return sendJSON(res, 400, { error: 'نمی‌توانید خودتان را حذف کنید' })
-        db.prepare(`DELETE FROM users WHERE id=?`).run(uid)
+        db.prepare(`DELETE FROM users WHERE id=?`).run(uid); killSessionsOf(uid)
         return sendJSON(res, 200, { ok: true })
       }
       const b = await jbody(req)
-      if (b.password != null) { const { hash, salt } = hashPw(b.password); db.prepare(`UPDATE users SET pass_hash=?,pass_salt=? WHERE id=?`).run(hash, salt, uid) }
+      if (b.password != null) {
+        if (String(b.password).length < PW_MIN) return sendJSON(res, 400, { error: PW_MIN_MSG })
+        const { hash, salt } = hashPw(b.password); db.prepare(`UPDATE users SET pass_hash=?,pass_salt=? WHERE id=?`).run(hash, salt, uid)
+        killSessionsOf(uid, uid === user.id ? getCookie(req, 'sid') : null)   // بقیهٔ دستگاه‌ها باید دوباره وارد شوند
+      }
       if (b.active != null) {
         if (uid === user.id && !b.active) return sendJSON(res, 400, { error: 'نمی‌توانید حساب خودتان را غیرفعال کنید' })
-        db.prepare(`UPDATE users SET active=? WHERE id=?`).run(b.active ? 1 : 0, uid)
+        db.prepare(`UPDATE users SET active=? WHERE id=?`).run(b.active ? 1 : 0, uid); if (!b.active) killSessionsOf(uid)
       }
       if (b.displayName) db.prepare(`UPDATE users SET display_name=? WHERE id=?`).run(b.displayName.trim(), uid)
       if (b.username && b.username.trim()) {
@@ -3633,7 +3663,7 @@ async function handle(req, res) {
         buildingName: getSetting('buildingName'), displayUnit: getSetting('displayUnit', 'toman'),
         totalUnits: +getSetting('totalUnits', '0') || 0,
         lateFeePercent: +getSetting('lateFeePercent', '0') || 0, lateFeeGraceDays: +getSetting('lateFeeGraceDays', '30') || 30,
-        ...(isAdmin ? { backupPath: getSetting('backupPath'), defaultBackupDir: DEFAULT_BK_DIR, autoBackup: getSetting('autoBackup') === '1', lastBackupAt: getSetting('lastBackupAt', '') } : {})
+        ...(isAdmin ? { lanAccess: getSetting('lanAccess', '1') === '1', backupPath: getSetting('backupPath'), defaultBackupDir: DEFAULT_BK_DIR, autoBackup: getSetting('autoBackup') === '1', lastBackupAt: getSetting('lastBackupAt', '') } : {})
       })
     if (path === '/api/settings' && M === 'POST') {
       const b = await jbody(req)
@@ -3644,6 +3674,7 @@ async function handle(req, res) {
       if (b.lateFeeGraceDays != null) setSetting('lateFeeGraceDays', Math.max(0, Math.round(+b.lateFeeGraceDays) || 0))
       if (b.backupPath != null) setSetting('backupPath', b.backupPath.trim())
       if (b.autoBackup != null) setSetting('autoBackup', b.autoBackup ? '1' : '0')
+      if (b.lanAccess != null && isAdmin) setSetting('lanAccess', b.lanAccess ? '1' : '0')
       return sendJSON(res, 200, { ok: true })
     }
     if (path === '/api/fs/dirs' && M === 'GET') {

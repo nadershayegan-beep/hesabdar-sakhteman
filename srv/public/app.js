@@ -395,7 +395,7 @@ function forgotForm() {
   $('#fgCancel').onclick = closeModal
   $('#fgSave').onclick = async () => {
     const p = $('#fgPass').value; $('#fgErr').textContent = ''
-    if (p.length < 4) return void ($('#fgErr').textContent = 'رمز حداقل ۴ کاراکتر')
+    if (p.length < 8) return void ($('#fgErr').textContent = 'رمز باید حداقل ۸ کاراکتر باشد')
     if (p !== $('#fgPass2').value) return void ($('#fgErr').textContent = 'تکرار رمز یکسان نیست')
     try {
       const r = await post('/api/auth/recover', { username: $('#fgUser').value.trim(), code: $('#fgCode').value.trim(), newPassword: p })
@@ -414,7 +414,7 @@ function localResetForm() {
   $('#lrCancel').onclick = closeModal
   $('#lrSave').onclick = async () => {
     const p = $('#lrPass').value; $('#lrErr').textContent = ''
-    if (p.length < 4) return void ($('#lrErr').textContent = 'رمز حداقل ۴ کاراکتر')
+    if (p.length < 8) return void ($('#lrErr').textContent = 'رمز باید حداقل ۸ کاراکتر باشد')
     if (p !== $('#lrPass2').value) return void ($('#lrErr').textContent = 'تکرار رمز یکسان نیست')
     try {
       const r = await post('/api/auth/local-reset', { username: $('#lrUser').value.trim(), newPassword: p })
@@ -2491,7 +2491,11 @@ SETTINGS.handover = async () => {
 SETTINGS.users = async () => {
   const users = await api('/api/users')
   const seclog = await api('/api/security-log').catch(() => [])
+  const st = await api('/api/settings')
   $('#setBody').innerHTML = `
+    <div class="panel"><div class="phead"><b>دسترسی از شبکه</b></div>
+      <label class="check"><input type="checkbox" id="lanAcc" ${st.lanAccess !== false ? 'checked' : ''}> اجازهٔ ورود از گوشی و کامپیوترهای دیگرِ همین شبکه (وای‌فای)</label>
+      <p class="hint" style="margin:6px 0 0">اگر فقط روی همین کامپیوتر کار می‌کنید خاموشش کنید. ورود با ۵ رمزِ اشتباه ۱۵ دقیقه قفل می‌شود و با تغییر رمز، بقیهٔ دستگاه‌ها از حساب خارج می‌شوند.</p></div>
     <div class="panel"><div class="phead"><b>کاربران</b><button class="btn small primary" id="newUser">＋ کاربر جدید</button></div>
       <p class="sub">رئیس هیئت مدیره و بازرس فقط مشاهده می‌کنند — امکان ثبت، ویرایش یا حذف ندارند (هم در رابط و هم در سرور).</p>
       <div class="tablewrap"><table class="tx"><thead><tr><th>نام</th><th>نام کاربری</th><th>نقش</th><th>وضعیت</th><th>کد بازیابی</th><th></th></tr></thead><tbody>
@@ -2508,6 +2512,7 @@ SETTINGS.users = async () => {
       ${seclog.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>رویداد</th><th>کاربر</th><th>جزئیات</th></tr></thead><tbody>
         ${seclog.map(s => `<tr><td class="num">${faDigit(s.j_date)}</td><td>${esc(s.eventFa)}</td><td class="num">${esc(s.username || '—')}</td><td class="hint">${esc(s.detail || '')}</td></tr>`).join('')}
         </tbody></table></div>` : '<div class="empty">رویدادی ثبت نشده است</div>'}</div>`
+  $('#lanAcc').onchange = guard(async () => { await post('/api/settings', { lanAccess: $('#lanAcc').checked }); toast($('#lanAcc').checked ? 'دسترسی از شبکه روشن شد' : 'دسترسی از شبکه خاموش شد') })
   $('#newUser').onclick = () => userForm()
   document.querySelectorAll('[data-genrc]').forEach(b => b.onclick = guard(async () => {
     const r = await post('/api/auth/recovery/regenerate', { userId: +b.dataset.genrc })
@@ -2521,7 +2526,7 @@ SETTINGS.users = async () => {
       `<button class="btn primary" id="pwSave">ذخیره</button><button class="btn" id="pwCancel">انصراف</button>`)
     $('#pwCancel').onclick = closeModal
     $('#pwSave').onclick = guard(async () => {
-      const v = $('#pwNew').value; if (v.length < 4) throw new Error('رمز حداقل ۴ کاراکتر')
+      const v = $('#pwNew').value; if (v.length < 8) throw new Error('رمز باید حداقل ۸ کاراکتر باشد')
       await post(`/api/users/${b.dataset.pw}`, { password: v }, 'PATCH'); closeModal(); toast('رمز تغییر کرد')
     })
   })
@@ -2552,7 +2557,7 @@ function userForm() {
     <label class="f">نام و نام خانوادگی<input class="inp" id="usName"></label>
     <div class="frow">
       <label class="f">نام کاربری<input class="inp" id="usUser"></label>
-      <label class="f">رمز عبور<input class="inp" id="usPass" type="password"></label>
+      <label class="f">رمز عبور<input class="inp" id="usPass" type="password" placeholder="حداقل ۸ کاراکتر"></label>
     </div>
     <label class="f">نقش<select class="inp" id="usRole">${META.roles.map(r => `<option value="${r.value}">${esc(r.fa)}</option>`).join('')}</select></label></div>`,
     `<button class="btn primary" id="usSave">افزودن</button><button class="btn" id="usCancel">انصراف</button>`)
