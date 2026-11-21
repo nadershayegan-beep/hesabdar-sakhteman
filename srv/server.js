@@ -242,6 +242,8 @@ function migrate() {
   db.exec(`DROP TRIGGER IF EXISTS lock_shares_ins; CREATE TRIGGER lock_shares_ins BEFORE INSERT ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=NEW.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
   db.exec(`DROP TRIGGER IF EXISTS lock_shares_del; CREATE TRIGGER lock_shares_del BEFORE DELETE ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=OLD.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
   db.exec(`DROP TRIGGER IF EXISTS lock_shares_upd; CREATE TRIGGER lock_shares_upd BEFORE UPDATE OF share_amount, unit_id ON invoice_shares WHEN (SELECT g_date FROM invoices WHERE id=OLD.invoice_id) <= (SELECT value FROM settings WHERE key='lockDateG') BEGIN SELECT RAISE(ABORT, 'دورهٔ مالی تا این تاریخ بسته است؛ برای تغییر، اول از تنظیمات ← بستن دوره آن را باز کنید'); END`)
+  db.exec(`CREATE TABLE IF NOT EXISTS unit_followups (id INTEGER PRIMARY KEY AUTOINCREMENT, unit_id INTEGER NOT NULL, g_date TEXT NOT NULL, j_date TEXT NOT NULL,
+    channel TEXT DEFAULT 'note', note TEXT DEFAULT '', debt_at INTEGER DEFAULT 0, promise_g TEXT DEFAULT '', promise_j TEXT DEFAULT '', promise_amount INTEGER DEFAULT 0, created_by INTEGER, created_at TEXT NOT NULL)`)
   addCol('funds', 'bucket', `TEXT DEFAULT ''`)                // نقشِ صندوق: charge=شارژ/جاری · omrani=قبوض و متفرقه · project=عمرانی/پروژه          // پیوندِ دقیقِ خروجیِ صندوق به ردیفِ پرداختِ هزینه // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
@@ -1639,6 +1641,8 @@ function dashboard() {
   if (missing.length) alerts.push({ level: 'amber', kind: 'charge', text: `شارژِ ${missing.length} ماه صادر نشده` })
   if (unpaidCI.count) alerts.push({ level: 'amber', kind: 'ci', text: `${unpaidCI.count} فاکتور پیمانکارِ پرداخت‌نشده`, amount: unpaidCI.total })
   if (overdue.count) alerts.push({ level: 'amber', kind: 'overdue', text: `${overdue.count} بدهکارِ بالای ۹۰ روز`, amount: overdue.total })
+  const duePromises = debtors.map(u => promiseStatus(u.id)).filter(p => p && p.due)
+  if (duePromises.length) alerts.push({ level: 'amber', kind: 'promise', text: `${duePromises.length} قولِ پرداختِ سررسیدشده که هنوز پرداخت نشده` })
   const unpaidExp = unpaidExpensesTotal()
   if (unpaidExp > 0) alerts.push({ level: 'amber', kind: 'exp', text: 'هزینه‌های پرداخت‌نشده از صندوق', amount: unpaidExp })
   const lb = getSetting('lastBackupAt', '')
@@ -1659,11 +1663,27 @@ function dashboard() {
     fundsOv, recentMoves, recentDocs, alerts, lastBackupAt: lb
   }
 }
+// ---------- پیگیریِ بدهکاران ----------
+const FOLLOW_FA = { whatsapp: 'واتساپ', call: 'تماس', visit: 'حضوری', sms: 'پیامک', note: 'یادداشت' }
+const followupsOf = unitId => db.prepare(`SELECT f.*, u.display_name by_name FROM unit_followups f LEFT JOIN users u ON u.id=f.created_by WHERE f.unit_id=? ORDER BY f.created_at DESC`).all(unitId).map(f => ({ ...f, channelFa: FOLLOW_FA[f.channel] || f.channel }))
+// قولِ پرداختِ باز: آخرین قول که تاریخش رسیده و از زمانِ ثبتش پرداختی (به اندازهٔ قول) نیامده
+function promiseStatus(unitId) {
+  const p = db.prepare(`SELECT * FROM unit_followups WHERE unit_id=? AND promise_g<>'' ORDER BY created_at DESC LIMIT 1`).get(unitId); if (!p) return null
+  const paidSince = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments WHERE unit_id=? AND created_at>=?`).get(unitId, p.created_at).s
+  const kept = paidSince >= (p.promise_amount || 1)
+  return { j: p.promise_j, g: p.promise_g, amount: p.promise_amount, kept, due: !kept && p.promise_g <= todayG() }
+}
 function debtorsReport() {
   const rows = unitsWithBalance().filter(u => u.debt > 0)
     .sort((a, b) => (b.aging ? b.aging.days : 0) - (a.aging ? a.aging.days : 0) || b.debt - a.debt)
   const buckets = { '۰-۳۰': 0, '۳۱-۶۰': 0, '۶۱-۹۰': 0, '+۹۰': 0 }
-  for (const r of rows) { r.ages = unitAges(r.id, r.debt); for (const k of AGE_KEYS) buckets[k] += r.ages[k] }
+  for (const r of rows) {
+    r.ages = unitAges(r.id, r.debt); for (const k of AGE_KEYS) buckets[k] += r.ages[k]
+    const lf = db.prepare(`SELECT j_date, channel, note FROM unit_followups WHERE unit_id=? ORDER BY created_at DESC LIMIT 1`).get(r.id)
+    r.lastFollow = lf ? { j: lf.j_date, channelFa: FOLLOW_FA[lf.channel] || lf.channel, note: lf.note } : null
+    r.followCount = db.prepare(`SELECT COUNT(*) c FROM unit_followups WHERE unit_id=?`).get(r.id).c
+    r.promise = promiseStatus(r.id)
+  }
   return { rows, total: rows.reduce((s, r) => s + r.debt, 0), buckets }
 }
 function managerReport(from, to) {
@@ -3169,6 +3189,20 @@ async function handle(req, res) {
         ? `تعداد واحدهای فعال (${activeCount}) از تعداد تعیین‌شده‌ی ساختمان (${total}) بیشتر شد` : ''
       return sendJSON(res, 200, { ok: true, id, warning, activeCount, totalUnits: total })
     }
+    const ufM = /^\/api\/units\/(\d+)\/followups$/.exec(path)
+    if (ufM && M === 'GET') return sendJSON(res, 200, followupsOf(+ufM[1]))
+    if (ufM && M === 'POST') {
+      const b = await jbody(req), uid = +ufM[1]
+      if (!db.prepare(`SELECT 1 FROM units WHERE id=?`).get(uid)) return sendJSON(res, 404, { error: 'واحد یافت نشد' })
+      const d = (b.jy ? jDates(b) : (() => { const t = todayJ(); return { g_date: todayG(), j_date: jStr(t.jy, t.jm, t.jd) } })())
+      let pg = '', pj = ''
+      if (b.promise && b.promise.jy) { const pd = jDates(b.promise); pg = pd.g_date; pj = pd.j_date }
+      const id = Number(db.prepare(`INSERT INTO unit_followups(unit_id,g_date,j_date,channel,note,debt_at,promise_g,promise_j,promise_amount,created_by,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(uid, d.g_date, d.j_date, FOLLOW_FA[b.channel] ? b.channel : 'note', String(b.note || '').trim(), unitDebt(uid), pg, pj, Math.max(0, Math.round(+b.promiseAmount || 0)), user.id, nowISO()).lastInsertRowid)
+      return sendJSON(res, 200, { ok: true, id })
+    }
+    const fdM = /^\/api\/followups\/(\d+)$/.exec(path)
+    if (fdM && M === 'DELETE') { db.prepare(`DELETE FROM unit_followups WHERE id=?`).run(+fdM[1]); return sendJSON(res, 200, { ok: true }) }
     const unitM = /^\/api\/units\/(\d+)$/.exec(path)
     if (unitM && M === 'PATCH') {
       const id = +unitM[1], b = await jbody(req)

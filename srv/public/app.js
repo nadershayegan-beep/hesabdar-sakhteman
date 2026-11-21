@@ -52,9 +52,25 @@ function payInfoText() {
   const card = m.payCard ? String(m.payCard).replace(/[^\d۰-۹]/g, '').replace(/(.{4})(?=.)/g, '$1-') : ''
   return (card ? `کارت: ${card}\n` : '') + (m.payIban ? `شبا: ${m.payIban}\n` : '') + (m.payHolder ? `به نام: ${m.payHolder}\n` : '') + (m.payDueDay ? `مهلت پرداخت شارژ: تا ${faDigit(m.payDueDay)}ام هر ماه\n` : '')
 }
+function followupForm(unitId, after) {
+  openModal('ثبت پیگیری', `<div class="form">
+    <label class="f">روش<select class="inp" id="fuCh"><option value="call">تماس</option><option value="whatsapp">واتساپ</option><option value="sms">پیامک</option><option value="visit">حضوری</option><option value="note">یادداشت</option></select></label>
+    <label class="f">نتیجه / توضیح<input class="inp" id="fuNote" placeholder="مثلاً قول داد آخر ماه بپردازد"></label>
+    <label class="f">قولِ پرداخت تا تاریخ (اختیاری) ${dateBoxHtml('fup')}</label>
+    <label class="f">مبلغِ قول (${curFa()}، اختیاری)<input class="inp num" id="fuAmt" data-money="fuHint" inputmode="numeric"><span class="hint" id="fuHint"></span></label></div>`,
+    `<button class="btn primary" id="fuSave">ثبت</button><button class="btn" id="fuCancel">انصراف</button>`)
+  wireToday($('#modalBody')); wireMoney($('#modalBody'))
+  $('#fuCancel').onclick = closeModal
+  $('#fuSave').onclick = guard(async () => {
+    const pr = readDate('fup'), amt = readMoney($('#fuAmt'))
+    await post(`/api/units/${unitId}/followups`, { channel: $('#fuCh').value, note: $('#fuNote').value.trim(), promise: pr.jy && pr.jm && pr.jd ? pr : null, promiseAmount: amt })
+    closeModal(); toast('پیگیری ثبت شد'); after ? after() : refresh()
+  })
+}
 function openWhatsApp(u) {
   if (!u.phone) return toast('برای این واحد شماره تلفن ثبت نشده است', true)
   const ph = waPhone(u.phone)
+  if (isAdmin()) post(`/api/units/${u.id}/followups`, { channel: 'whatsapp', note: 'ارسال پیام بدهی' }).catch(() => { })
   const url = `https://wa.me/${ph}?text=${encodeURIComponent(debtorWaText(u))}`
   window.open(url, '_blank', 'noopener')
 }
@@ -537,7 +553,7 @@ VIEWS.dashboard = async () => {
   const alertAct = a => a.kind === 'charge' ? (isAdmin() ? `<button class="btn tiny primary" id="issueAll">صدور شارژ</button>` : '')
     : a.kind === 'fund' ? `<button class="link" data-fundcard="${a.fund}">گردش صندوق</button>`
       : a.kind === 'ci' ? `<button class="link" data-go="projects">پروژه‌ها</button>`
-        : a.kind === 'overdue' ? `<button class="link" data-go="reports:debtors">بدهکاران</button>`
+        : (a.kind === 'overdue' || a.kind === 'promise') ? `<button class="link" data-go="reports:debtors">بدهکاران</button>`
           : a.kind === 'backup' ? (isAdmin() ? `<button class="link" data-go="settings:backup">پشتیبان‌گیری</button>` : '')
           : a.kind === 'health' ? `<button class="link" data-go="reports:balance">مشاهدهٔ ایرادها</button>`
           : a.kind === 'exp' ? (isAdmin() ? `<button class="link" id="dPayExp">پرداخت</button>` : '') : ''
@@ -1323,9 +1339,15 @@ const showUnitCard = guard(async id => {
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>بابت</th><th>توضیح</th></tr></thead><tbody>
       ${d.creditUses.map(c => `<tr><td class="num">${faDigit(c.j_date)}</td><td class="num amt-in">${money(c.amount)}</td><td>${esc(c.title || '—')}</td><td>${esc(c.note || '—')}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}
+    <div class="panel printhide"><div class="phead"><b>پیگیری‌ها</b>${adminOnly('<button class="btn small" id="ucFu">＋ ثبت پیگیری</button>')}</div><div id="ucFuBox" class="hint">در حال بارگذاری…</div></div>
     <div class="printarea" id="stmtArea"></div>`
   wireCommon()
   $('#backBtn').onclick = () => goBack('units')
+  if ($('#ucFu')) $('#ucFu').onclick = () => followupForm(u.id)
+  api(`/api/units/${u.id}/followups`).then(fl => { const box = $('#ucFuBox'); if (!box) return
+    box.outerHTML = fl.length ? `<div class="tablewrap" id="ucFuBox"><table class="tx"><thead><tr><th>تاریخ</th><th>روش</th><th>توضیح</th><th>قول پرداخت</th><th>بدهی در آن روز</th><th>ثبت‌کننده</th>${adminOnly('<th></th>')}</tr></thead><tbody>${fl.map(f => `<tr><td class="num">${faDigit(f.j_date)}</td><td>${esc(f.channelFa)}</td><td>${esc(f.note || '—')}</td><td>${f.promise_j ? faDigit(f.promise_j) + (f.promise_amount ? ' · ' + money(f.promise_amount) : '') : '—'}</td><td class="num">${money(f.debt_at)}</td><td>${esc(f.by_name || '—')}</td>${adminOnly(`<td><button class="del" data-fudel="${f.id}">🗑</button></td>`)}</tr>`).join('')}</tbody></table></div>` : '<div id="ucFuBox" class="empty">هنوز پیگیری‌ای ثبت نشده</div>'
+    document.querySelectorAll('[data-fudel]').forEach(b => b.onclick = () => confirmBox('این ردیف پیگیری حذف شود؟', async () => { await api('/api/followups/' + b.dataset.fudel, { method: 'DELETE' }); refresh() }))
+  }).catch(() => { })
   if ($('#ucEdit')) $('#ucEdit').onclick = () => unitForm(unitById(u.id))
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
   $('#ucStmt').onclick = () => { $('#stmtArea').innerHTML = statementHtml(d); print() }
@@ -1777,18 +1799,21 @@ REPORTS.debtors = async () => {
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th>${Object.keys(r.buckets).map(b => `<th>${b} روز</th>`).join('')}<th class="printhide">اقدام</th></tr></thead><tbody>
+      <thead><tr><th>واحد</th><th>ساکن</th><th>تلفن</th><th>بدهی</th>${Object.keys(r.buckets).map(b => `<th>${b} روز</th>`).join('')}<th>آخرین پیگیری</th><th>قول پرداخت</th><th class="printhide">اقدام</th></tr></thead><tbody>
       ${r.rows.length ? r.rows.map((u, i) => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
         <td class="num">${faDigit(u.phone || '—')}</td><td class="num amt-out">${money(u.debt)}</td>
         ${Object.keys(r.buckets).map(b => `<td class="num ${b === '+۹۰' && u.ages && u.ages[b] ? 'amt-out' : ''}">${u.ages && u.ages[b] ? money(u.ages[b]) : '—'}</td>`).join('')}
-        <td class="printhide rowact"><button class="btn tiny" data-wa="${i}" title="پیام واتساپ">💬</button><button class="btn tiny" data-pdf="${i}" title="صورت‌حساب PDF">📄</button></td></tr>`).join('')
-      : emptyRow(9, 'هیچ واحدی بدهکار نیست')}
-      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td>${Object.values(r.buckets).map(v => `<td class="num">${money(v)}</td>`).join('')}<td class="printhide"></td></tr></tfoot></table></div>
+        <td>${u.lastFollow ? `<span class="num">${faDigit(u.lastFollow.j)}</span> <span class="hint">${esc(u.lastFollow.channelFa)}${u.followCount > 1 ? ' · ' + faDigit(u.followCount) + ' بار' : ''}</span>` : '<span class="dim">—</span>'}</td>
+        <td>${u.promise ? (u.promise.kept ? `<span class="badge b-settled">عمل شد</span>` : `<span class="badge ${u.promise.due ? 'b-no' : 'b-open'}">${u.promise.due ? 'سررسید گذشته' : 'تا'} ${faDigit(u.promise.j)}</span>${u.promise.amount ? ' <span class="hint">' + money(u.promise.amount) + '</span>' : ''}`) : '<span class="dim">—</span>'}</td>
+        <td class="printhide rowact">${isAdmin() ? `<button class="btn tiny" data-fu="${u.id}" title="ثبت پیگیری">📝</button>` : ''}<button class="btn tiny" data-wa="${i}" title="پیام واتساپ">💬</button><button class="btn tiny" data-pdf="${i}" title="صورت‌حساب PDF">📄</button></td></tr>`).join('')
+      : emptyRow(11, 'هیچ واحدی بدهکار نیست')}
+      </tbody><tfoot><tr><td colspan="3">جمع کل</td><td class="num">${money(r.total)}</td>${Object.values(r.buckets).map(v => `<td class="num">${money(v)}</td>`).join('')}<td colspan="2"></td><td class="printhide"></td></tr></tfoot></table></div>
       <div class="hint printhide" style="margin-top:8px">💡 واتساپ فقط متن پیام را آماده می‌کند؛ فایل PDF به‌صورت خودکار پیوست نمی‌شود. اگر می‌خواهید صورت‌حساب را بفرستید، اول با «📄» فایل را بسازید و در واتساپ دستی پیوست کنید.</div>
     </div>`
   wireCommon()
   if ($('#dbBatchPdf')) $('#dbBatchPdf').onclick = () => saveDebtorsBatchPdf(LAST_DEBTORS)
-  document.querySelectorAll('[data-wa]').forEach(b => b.onclick = e => { e.stopPropagation(); openWhatsApp(LAST_DEBTORS[+b.dataset.wa]) })
+  document.querySelectorAll('[data-wa]').forEach(b => b.onclick = e => { e.stopPropagation(); openWhatsApp(LAST_DEBTORS[+b.dataset.wa]); setTimeout(render, 600) })
+  document.querySelectorAll('[data-fu]').forEach(b => b.onclick = e => { e.stopPropagation(); followupForm(+b.dataset.fu) })
   document.querySelectorAll('[data-pdf]').forEach(b => b.onclick = e => { e.stopPropagation(); saveUnitPdf(LAST_DEBTORS[+b.dataset.pdf]) })
 }
 
