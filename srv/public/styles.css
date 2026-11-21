@@ -500,3 +500,5 @@ input.jdtext{cursor:pointer;background:var(--panel)}
 .jd.tdy{outline:1px solid var(--accent);outline-offset:-1px}
 .jd.on{background:var(--accent);color:#fff}
 .jft{display:flex;justify-content:space-between;margin-top:8px;padding-top:6px;border-top:1px solid var(--line)}
+/* دکمهٔ شناور روی پنجره‌های باز نیاید */
+body:has(#modal:not(.hidden)) .fab-wrap,body:has(.cfm) .fab-wrap,body:has(.jdp) .fab-wrap{display:none!important}
