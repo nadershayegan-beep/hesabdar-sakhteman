@@ -198,6 +198,11 @@ const todayJ = () => { const d = new Date(); return toJalaali(d.getFullYear(), d
 // مُهرِ تاریخِ شمسی برای نامِ فایل (ارقامِ لاتین): 1405-08-30
 const jStamp = () => { const t = todayJ(); return `${t.jy}-${String(t.jm).padStart(2, '0')}-${String(t.jd).padStart(2, '0')}` }
 // چاپ/ذخیرهٔ PDF از مرورگر با نامِ پیش‌فرضِ مناسب (نامِ گزارش + تاریخ) تا تکراری/گنگ نشود
+// چاپِ رسمی از سرور: اپ نصبی → PDF در «اسناد صادرشده»؛ مرورگر → صفحهٔ چاپی
+window.printOfficial = function (rel, name) {
+  if (IS_DESKTOP && window.hesabdar && window.hesabdar.savePdf) { toast('در حال ساخت PDF…'); window.hesabdar.savePdf(rel, name).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : (x && x.error) || 'ناموفق', !(x && x.ok))) }
+  else window.open(rel + (rel.includes('?') ? '&' : '?') + 'print=1', '_blank')
+}
 window.printAs = function (name) {
   const prev = document.title
   document.title = `${name} — ${jStamp()}`
@@ -1351,7 +1356,7 @@ const showUnitCard = guard(async id => {
   }).catch(() => { })
   if ($('#ucEdit')) $('#ucEdit').onclick = () => unitForm(unitById(u.id))
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
-  $('#ucStmt').onclick = () => { $('#stmtArea').innerHTML = statementHtml(d); print() }
+  $('#ucStmt').onclick = () => printOfficial(`/print/unit/${u.id}`, `صورت‌حساب واحد ${u.number}`)
   $('#ucPdf').onclick = () => saveUnitPdf(u)
   document.querySelectorAll('[data-ucview]').forEach(b => b.onclick = () => {
     document.querySelectorAll('[data-ucview]').forEach(x => x.classList.toggle('on', x === b))
@@ -1376,25 +1381,6 @@ const saveUnitPdf = guard(async u => {
   }
 })
 
-function statementHtml(d) {
-  const u = d.unit, open = d.shares.filter(s => s.remaining > 0)
-  return `<div class="stmt">
-    <h2>${esc(d.buildingName || 'ساختمان')}</h2>
-    <div class="stsub">صورت‌حساب واحد ${faDigit(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''} · تاریخ صدور: ${faDigit(d.today)}</div>
-    <table><thead><tr><th>شرح</th><th>تاریخ</th><th>سهم (${curFa()})</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
-      ${d.shares.map(s => `<tr><td>${esc(s.title)}</td><td>${s.is_opening ? 'انتقالی' : faDigit(s.j_date)}</td>
-        <td>${money(s.share_amount)}</td><td>${money(s.paid)}</td><td>${money(s.remaining)}</td></tr>`).join('')}
-      <tr><th>جمع</th><th></th><th>${money(d.totalShares)}</th><th>${money(d.totalShares - open.reduce((s, x) => s + x.remaining, 0))}</th><th>${money(open.reduce((s, x) => s + x.remaining, 0))}</th></tr>
-    </tbody></table>
-    <table><thead><tr><th>پرداخت‌های ثبت‌شده</th><th>تاریخ</th><th>مبلغ (${curFa()})</th></tr></thead><tbody>
-      ${d.payments.length ? d.payments.map(p => `<tr><td>${esc(p.note || p.fund_name || 'واریز')}</td><td>${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td>${money(p.amount)}</td></tr>`).join('')
-      : '<tr><td colspan="3">پرداختی ثبت نشده است</td></tr>'}
-      <tr><th>جمع پرداخت‌ها</th><th></th><th>${money(d.totalPaid)}</th></tr>
-    </tbody></table>
-    <div class="total">${d.debt > 0 ? `مانده‌ی بدهی: ${moneyU(d.debt)}` : d.debt < 0 ? `پیش‌پرداخت: ${moneyU(-d.debt)}` : 'تسویه‌ی کامل — بدهی ندارید'}</div>
-    <div class="stfoot">این صورت‌حساب از نرم‌افزار «حسابدار ساختمان توی دید» صادر شده است.</div>
-  </div>`
-}
 
 // ==================== صندوق‌ها ====================
 VIEWS.funds = async () => {
@@ -1658,7 +1644,7 @@ REPORTS.income = async () => {
         : `<tr><td colspan="${cols.length + 2}" class="dim">موردی نبوده</td></tr>`}
       <tr class="tot"><td>جمع ${side === 'in' ? 'درآمدها' : 'هزینه‌ها'}</td>${cols.map(p => `<td class="num">${money(side === 'in' ? p.income : p.expense)}</td>`).join('')}<td class="num">${money(tot)}</td>${pr ? `<td class="num">${money(side === 'in' ? pr.income : pr.expense)}</td>` : ''}</tr>`
   }
-  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 4).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printAs('صورت درآمد و هزینه')">🖨 چاپ</button>`) + `
+  $('#repBody').innerHTML = rangePickerHtml(periods, `<div class="chips">${fy.years.slice(0, 4).map(y => `<button class="chip ${y.from === repRange.from && y.to === repRange.to ? 'on' : ''}" data-fy="${y.from}|${y.to}|${y.label}">${escFa(y.label)}</button>`).join('')}</div><button class="btn small" onclick="printOfficial('/print/report/income?from=' + repRange.from + '&to=' + repRange.to, 'صورت درآمد و هزینه')">🖨 چاپ رسمی</button>`) + `
     <div class="panel"><h3 style="margin-bottom:4px">${esc(r.buildingName)} — صورت درآمد و هزینه</h3>
       <p class="sub">دوره: ${escFa(repRange.label)} · مبنا: ${esc(r.basis)}</p></div>
     <div class="kpis">
@@ -1796,7 +1782,7 @@ REPORTS.debtors = async () => {
   const batchBtn = IS_DESKTOP && r.rows.length
     ? `<button class="btn small" id="dbBatchPdf">📄 صورت‌حساب همه (PDF)</button>` : ''
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="printAs('گزارش بدهکاران')">🖨 چاپ</button></div>
+    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="printOfficial('/print/report/debtors', 'گزارش بدهکاران')">🖨 چاپ رسمی</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
@@ -1897,7 +1883,7 @@ REPORTS.fund = async () => {
   const t = ov.total
   $('#repBody').innerHTML = `
     <div class="filters printhide">
-      <button class="btn small" onclick="printAs('گزارش کامل صندوق‌ها')">🖨 چاپ گزارش کامل</button></div>
+      <button class="btn small" onclick="printOfficial('/print/report/funds', 'گزارش کامل صندوق‌ها')">🖨 چاپ رسمی</button></div>
     <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج ± انتقال بین صندوق‌ها = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق. انتقال‌ها جزو دریافتی و مخارج نیستند.</p>
     <div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : 'good')}
@@ -2009,7 +1995,7 @@ REPORTS.gl = async () => {
   $('#glAcc').onchange = () => { const c = cur(); draw(c.t, c.id, c.f, c.to) }
   $('#glFrom').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
   $('#glTo').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
-  $('#glPrint').onclick = () => { const c = cur(); if (!c.id) return toast('اول حساب را انتخاب کنید', true); printAs('دفتر کل') }
+  $('#glPrint').onclick = () => { const c = cur(); if (!c.id) return toast('اول حساب را انتخاب کنید', true); printOfficial(`/print/report/gl?type=${c.t}&id=${encodeURIComponent(c.id)}&from=${encodeURIComponent(c.f || '')}&to=${encodeURIComponent(c.to || '')}`, 'دفتر کل') }
 }
 
 // ---- دفتر روزنامه ----
@@ -2042,7 +2028,7 @@ REPORTS.journal = async () => {
       <label class="f" style="max-width:190px">صندوق<select class="inp" id="jnFund"><option value="">همه</option>${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
       <label class="f" style="max-width:190px">واحد<select class="inp" id="jnUnit"><option value="">همه</option>${META.units.filter(u => u.active).map(u => `<option value="${u.id}">واحد ${escFa(u.number)}</option>`).join('')}</select></label>
       <label class="f" style="max-width:160px">جستجو در شرح<input class="inp" id="jnQ" placeholder="مثلاً آب"></label>
-      <button class="btn small" id="jnApply">اعمال</button><button class="btn small" onclick="printAs('دفتر روزنامه')">🖨 چاپ</button>
+      <button class="btn small" id="jnApply">اعمال</button><button class="btn small" id="jnPrint">🖨 چاپ رسمی</button>
     </div>
     <p class="hint">هر سند دوطرفه و متوازن است؛ با کلیک، برگهٔ سند با همهٔ طرف‌حساب‌ها باز می‌شود.</p>
     <div class="kpis" id="jnKpis"></div>
@@ -2052,6 +2038,7 @@ REPORTS.journal = async () => {
     </table></div></div>`
   const run = () => draw($('#jnFrom').value, $('#jnTo').value, $('#jnType').value, $('#jnFund').value, $('#jnUnit').value, $('#jnQ').value)
   $('#jnApply').onclick = run
+  $('#jnPrint').onclick = () => printOfficial('/print/report/journal?' + new URLSearchParams({ from: $('#jnFrom').value, to: $('#jnTo').value, type: $('#jnType').value, fundId: $('#jnFund').value, unitId: $('#jnUnit').value, q: $('#jnQ').value }), 'دفتر روزنامه')
   ;['jnType', 'jnFund', 'jnUnit'].forEach(idd => $('#' + idd).onchange = run)
   $('#jnQ').addEventListener('keydown', e => { if (e.key === 'Enter') run() })
   run()

@@ -2388,18 +2388,20 @@ h1{font-size:19px;margin:0 0 2px;color:#0f2847}
 .payinfo{font-size:12.5px;border:1px dashed #9db3cc;border-radius:8px;padding:8px 12px;margin:0 0 10px;background:#fbfcfe}
 h3{font-size:13.5px;margin:14px 0 4px}
 /* جدول‌ها: استاندارد حسابداری — سرستونِ پررنگ، ردیف‌های یک‌درمیان، ترازِ عددی، جمعِ متمایز */
-table{width:100%;border-collapse:collapse;margin:8px 0;border:1px solid #c3cedd;border-radius:8px;overflow:hidden}
+table{width:100%;border-collapse:collapse;margin:8px 0;border:1px solid #c3cedd}
 th,td{border:1px solid #dbe3ee;padding:7px 9px;text-align:right;font-size:11.5px;vertical-align:middle}
-thead th{background:#1d5fa8;color:#fff;font-weight:700;font-size:11.5px;border-color:#1a558f;white-space:nowrap}
+thead th{background:#eef2f7;color:#0f2847;font-weight:700;font-size:11.5px;border-color:#c3cedd;border-bottom:1.5px solid #8ea3bd;white-space:nowrap}
 tbody tr:nth-child(even){background:#f4f7fb}
 tbody tr:nth-child(odd){background:#fff}
-tbody tr:hover{background:#eaf1fa}
 .num{font-variant-numeric:tabular-nums;text-align:right;direction:ltr;unicode-bidi:plaintext;white-space:nowrap}
 th.num{text-align:right}
 tr.tot td,tr.tot th{font-weight:800;background:#e8eef7;border-top:2px solid #1d5fa8;color:#0f2847}
 .amt-out{color:#c0392b}.amt-in{color:#0f8a56}
 .foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#7a828f;font-size:10.5px;text-align:center}
-.sign{display:flex;justify-content:space-between;margin-top:22px;font-size:12px;color:#333}
+.sign{display:flex;justify-content:space-around;gap:20px;margin-top:28px;font-size:11.5px;color:#333;break-inside:avoid}
+.sign div{flex:1;text-align:center;border-top:1px solid #9aa8b8;padding-top:6px;max-width:55mm}
+.hdr{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:1.5px solid #0f2847;padding-bottom:6px;margin-bottom:10px}
+.hdr .meta{font-size:10.5px;color:#5b6472;text-align:left}
 .kpis{display:flex;flex-wrap:wrap;gap:9px;margin:10px 0}
 .kpi{flex:1 1 130px;border:1px solid #d3dce8;border-radius:10px;padding:9px 12px;background:#fbfcfe;box-shadow:0 1px 2px rgba(16,40,71,.05)}
 .kpi .k{font-size:10.5px;color:#5b6472}
@@ -2455,40 +2457,100 @@ function printPaymentHtml(id) {
     <div class="foot">صادرشده از «حسابدار ساختمان»</div>`
   return printLayout(`رسید ${p.id} — واحد ${p.number}`, inner)
 }
+// بلوکِ امضا و سربرگِ رسمی برای همهٔ چاپ‌ها
+const signBlock = labels => `<div class="sign">${labels.map(l => `<div>${hEsc(l)}</div>`).join('')}</div>`
+const printHdr = (title, sub) => { const t = todayJ(); return `<div class="hdr"><div><h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1><div class="sub" style="margin:0">${hEsc(title)}${sub ? ' · ' + sub : ''}</div></div>
+  <div class="meta">تاریخ صدور: ${faNum(jStr(t.jy, t.jm, t.jd))}<br>مبالغ به ${pUnitFa()}</div></div>` }
+const pm = r => (r < 0 ? '(' + pMoney(-r) + ')' : pMoney(r))
+// صورت‌حسابِ ساکن: ماندهٔ اول دوره، ردیف‌های «بابت / بدهی / پرداخت / مانده»، ماندهٔ هر سبد و «قابل پرداخت»
+function printStatementHtml(unitId, from, to) {
+  const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(unitId); if (!u) return null
+  const ent = []
+  for (const x of db.prepare(`SELECT s.share_amount, i.id, i.title, i.g_date, i.j_date, i.is_opening, c.name cat FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id LEFT JOIN expense_categories c ON c.id=i.category_id WHERE s.unit_id=?`).all(unitId))
+    ent.push({ g: x.g_date, j: x.is_opening ? 'انتقالی' : x.j_date, no: 'سند ' + x.id, title: x.title, debit: x.share_amount, credit: 0, k: 0 })
+  for (const p of db.prepare(`SELECT p.*, f.name fund FROM payments p LEFT JOIN funds f ON f.id=p.fund_id WHERE p.unit_id=?`).all(unitId))
+    ent.push({ g: p.g_date, j: p.is_opening ? 'انتقالی' : p.j_date, no: 'رسید ' + p.id, title: 'پرداخت' + (p.fund ? ' — ' + p.fund : '') + (p.note ? ' · ' + p.note : ''), debit: 0, credit: p.amount, k: 1 })
+  ent.sort((a, b) => a.g < b.g ? -1 : a.g > b.g ? 1 : a.k - b.k)
+  let open = 0; const rows = []
+  for (const e of ent) { if ((from && e.g < from)) open += e.debit - e.credit; else if (!to || e.g <= to) rows.push(e) }
+  let bal = open
+  const body = rows.map(e => { bal += e.debit - e.credit; return `<tr><td class="num">${faNum(e.j)}</td><td class="num">${faNum(e.no)}</td><td>${hEsc(e.title)}</td><td class="num">${e.debit ? pMoney(e.debit) : ''}</td><td class="num">${e.credit ? pMoney(e.credit) : ''}</td><td class="num">${pm(bal)}</td></tr>` }).join('')
+  const totD = rows.reduce((a, e) => a + e.debit, 0), totC = rows.reduce((a, e) => a + e.credit, 0)
+  const lr = unitLedgerReport().rows.find(r => r.id === unitId) || { charge: 0, omrani: 0, projectDue: 0 }
+  const debt = unitDebt(unitId), U = pUnitFa()
+  const range = from || to ? `از ${from ? faNum(gToJStr(from)) : 'ابتدا'} تا ${to ? faNum(gToJStr(to)) : 'امروز'}` : 'از ابتدا تا امروز'
+  const inner = `${printHdr('صورت‌حساب واحد ' + faNum(u.number) + (u.resident_name ? ' — ' + hEsc(u.resident_name) : ''), range)}
+    <div class="big">${debt > 0 ? `قابل پرداخت: <span class="amt-out">${pMoney(debt)} ${U}</span>` : debt < 0 ? `پیش‌پرداخت: ${pMoney(-debt)} ${U}` : 'تسویه است — بدهی ندارید'}</div>
+    ${debt > 0 ? payInfoHtml() : ''}
+    <table><thead><tr><th>تاریخ</th><th>شماره</th><th>بابت</th><th>بدهی</th><th>پرداخت</th><th>مانده</th></tr></thead><tbody>
+    <tr><td colspan="5">ماندهٔ از قبل</td><td class="num">${pm(open)}</td></tr>
+    ${body || '<tr><td colspan="6" style="text-align:center;color:#888">در این بازه گردشی نبوده</td></tr>'}
+    <tr class="tot"><td colspan="3">جمع دوره</td><td class="num">${pMoney(totD)}</td><td class="num">${pMoney(totC)}</td><td class="num">${pm(bal)}</td></tr></tbody></table>
+    <div class="sech">ماندهٔ بدهی به تفکیک</div>
+    <table><thead><tr><th>شارژ</th><th>قبوض و متفرقه</th><th>پروژه‌ها (طبق مصوبه)</th><th>جمع</th></tr></thead><tbody>
+    <tr><td class="num">${pMoney(lr.charge)}</td><td class="num">${pMoney(lr.omrani)}</td><td class="num">${pMoney(Math.max(0, lr.projectDue))}</td><td class="num"><b>${pMoney(Math.max(0, debt))}</b></td></tr></tbody></table>
+    <div class="sub" style="margin-top:6px">شارژ ماهانهٔ این واحد: <b>${pMoney(u.monthly_charge != null ? u.monthly_charge : chargeAmountAt(curPeriod()))} ${U}</b>. ماندهٔ داخل پرانتز یعنی پیش‌پرداخت.</div>
+    ${signBlock(['مدیر مالی ساختمان', 'مهر ساختمان'])}
+    <div class="foot">حسابدار ساختمان توی دید</div>`
+  return printLayout(`صورت‌حساب واحد ${u.number}`, inner)
+}
+// چاپِ رسمیِ گزارش‌های جدولی (دفتر روزنامه، دفتر کل، بدهکاران، صندوق‌ها، درآمد و هزینه)
+function printReportHtml(kind, Q) {
+  const U = pUnitFa()
+  if (kind === 'debtors') {
+    const r = debtorsReport()
+    return printLayout('گزارش بدهکاران', `${printHdr('گزارش بدهکاران', 'به تفکیک قدمت')}
+      <table><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th>${AGE_KEYS.map(k => `<th>${k} روز</th>`).join('')}<th>آخرین پیگیری</th></tr></thead><tbody>
+      ${r.rows.map(x => `<tr><td class="num">${faNum(x.number)}</td><td>${hEsc(Q.names === '0' ? '—' : (x.resident_name || '—'))}</td><td class="num">${pMoney(x.debt)}</td>${AGE_KEYS.map(k => `<td class="num">${x.ages[k] ? pMoney(x.ages[k]) : '—'}</td>`).join('')}<td>${x.lastFollow ? faNum(x.lastFollow.j) + ' ' + hEsc(x.lastFollow.channelFa) : '—'}</td></tr>`).join('')}
+      <tr class="tot"><td colspan="2">جمع</td><td class="num">${pMoney(r.total)}</td>${AGE_KEYS.map(k => `<td class="num">${pMoney(r.buckets[k])}</td>`).join('')}<td></td></tr></tbody></table>
+      ${signBlock(['مدیر مالی', 'بازرس / هیئت‌مدیره'])}`)
+  }
+  if (kind === 'journal') {
+    const d = journalReport(Q)
+    return printLayout('دفتر روزنامه', `${printHdr('دفتر روزنامه', Q.from || Q.to ? 'از ' + faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : '')}
+      <table><thead><tr><th>ردیف</th><th>شماره سند</th><th>تاریخ</th><th>شرح</th><th>طرف بدهکار</th><th>طرف بستانکار</th><th>بدهکار</th><th>بستانکار</th></tr></thead><tbody>
+      ${d.rows.map(x => `<tr><td class="num">${faNum(x.row)}</td><td class="num">${faNum(x.no)}</td><td class="num">${faNum(x.j)}</td><td>${hEsc(x.title)}</td><td>${hEsc(x.debitAcc)}</td><td>${hEsc(x.creditAcc)}</td><td class="num">${pMoney(x.debit)}</td><td class="num">${pMoney(x.credit)}</td></tr>`).join('')}
+      <tr class="tot"><td colspan="6">جمع (${faNum(d.rows.length)} سند)</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td></tr></tbody></table>
+      <div class="sub">کنترل با موجودی صندوق‌ها: ${d.control.ok ? 'می‌خواند' : 'اختلاف دارد'} — ${d.control.funds.map(f => hEsc(f.name) + ' ' + pMoney(f.actual)).join(' · ')}</div>
+      ${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}`)
+  }
+  if (kind === 'gl') {
+    const d = generalLedger(Q.type, Q.id, Q.from, Q.to); if (!d) return null
+    let bal = d.opening
+    return printLayout('دفتر کل — ' + d.name, `${printHdr('دفتر کل — ' + hEsc(d.name), Q.from || Q.to ? 'از ' + faNum(Q.from || 'ابتدا') + ' تا ' + faNum(Q.to || 'امروز') : '')}
+      <table><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th></tr></thead><tbody>
+      <tr><td colspan="5">ماندهٔ اول دوره</td><td class="num">${pm(d.opening)}</td></tr>
+      ${d.rows.map(e => `<tr><td class="num">${faNum(e.j)}</td><td class="num">${faNum(e.no)}</td><td>${hEsc(e.title)}</td><td class="num">${e.debit ? pMoney(e.debit) : ''}</td><td class="num">${e.credit ? pMoney(e.credit) : ''}</td><td class="num">${pm(e.balance)}</td></tr>`).join('')}
+      <tr class="tot"><td colspan="3">جمع</td><td class="num">${pMoney(d.totalDebit)}</td><td class="num">${pMoney(d.totalCredit)}</td><td class="num">${pm(d.finalBalance)}</td></tr></tbody></table>
+      <div class="sub">ماندهٔ داخل پرانتز = بستانکار.</div>${signBlock(['تنظیم‌کننده (مدیر مالی)', 'بازرس'])}`)
+  }
+  if (kind === 'funds') {
+    const ov = fundsOverview(), t = ov.total
+    return printLayout('گزارش صندوق‌ها', `${printHdr('گزارش کامل صندوق‌ها', 'از ابتدا تا امروز')}
+      <table><thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>انتقال (±)</th><th>موجودی</th><th>بدهی ساکنین</th></tr></thead><tbody>
+      ${ov.funds.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.opening)}</td><td class="num">${pMoney(f.received)}</td><td class="num">${pMoney(f.spent)}</td><td class="num">${f.transferNet ? pm(f.transferNet) : '—'}</td><td class="num">${pm(f.balance)}</td><td class="num">${pMoney(f.unitDebt)}</td></tr>`).join('')}
+      <tr class="tot"><td>جمع</td><td class="num">${pMoney(t.opening)}</td><td class="num">${pMoney(t.received)}</td><td class="num">${pMoney(t.spent)}</td><td class="num">—</td><td class="num">${pm(t.balance)}</td><td class="num">${pMoney(t.unitDebt)}</td></tr></tbody></table>
+      ${signBlock(['مدیر مالی', 'هیئت‌مدیره'])}`)
+  }
+  if (kind === 'income') {
+    const r = incomeStatement(Q.from, Q.to)
+    const blk = side => r.lines.filter(l => l.side === side).map(l => `<tr><td>${hEsc(l.group)}</td><td>${hEsc(l.label)}</td><td class="num">${pMoney(l.total)}</td></tr>`).join('')
+    return printLayout('صورت درآمد و هزینه', `${printHdr('صورت درآمد و هزینه (نقدی)', 'از ' + faNum(r.fromJ) + ' تا ' + faNum(r.toJ))}
+      <table><thead><tr><th>گروه</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>
+      <tr><td colspan="3"><b>درآمدها</b></td></tr>${blk('in')}<tr class="tot"><td colspan="2">جمع درآمدها</td><td class="num">${pMoney(r.income)}</td></tr>
+      <tr><td colspan="3"><b>هزینه‌ها</b></td></tr>${blk('out')}<tr class="tot"><td colspan="2">جمع هزینه‌ها</td><td class="num">${pMoney(r.expense)}</td></tr>
+      <tr class="tot"><td colspan="2">خالص دوره</td><td class="num">${pm(r.net)}</td></tr></tbody></table>
+      <table><tbody><tr><td>موجودی صندوق‌ها در ابتدای دوره</td><td class="num">${pm(r.openCash)}</td></tr><tr><td>موجودی صندوق‌ها در پایان دوره</td><td class="num">${pm(r.closeCash)}</td></tr></tbody></table>
+      ${signBlock(['مدیر مالی', 'هیئت‌مدیره', 'بازرس'])}`)
+  }
+  return null
+}
 // اطلاعاتِ واریز (کارت/شبا/صاحب حساب/مهلت) برای پیام‌ها و صورت‌حساب‌ها
 function payInfo() { return { payCard: getSetting('payCard', ''), payIban: getSetting('payIban', ''), payHolder: getSetting('payHolder', ''), payDueDay: +getSetting('payDueDay', '0') || 0 } }
 function payInfoHtml() {
   const p = payInfo(); if (!p.payCard && !p.payIban) return ''
   const card = p.payCard ? faNum(String(p.payCard).replace(/[^\d۰-۹]/g, '').replace(/(.{4})(?=.)/g, '$1-')) : ''
   return `<div class="payinfo"><b>واریز به:</b> ${card ? 'کارت <span class="num" dir="ltr">' + card + '</span>' : ''}${p.payIban ? ` · شبا <span class="num" dir="ltr">${hEsc(p.payIban)}</span>` : ''}${p.payHolder ? ' · به نام ' + hEsc(p.payHolder) : ''}${p.payDueDay ? ` · مهلت پرداخت شارژ: تا ${faNum(p.payDueDay)}ام هر ماه` : ''}</div>`
-}
-function printUnitHtml(c) {
-  const u = c.unit, open = c.shares.filter(s => s.remaining > 0)
-  const debtLine = c.debt > 0
-    ? `بدهی فعلی: <span class="amt-out">${pMoney(c.debt)} ${pUnitFa()}</span>${c.aging ? ` · قدمت: ${c.aging.days > 9000 ? 'انتقالی' : faNum(c.aging.days) + ' روز'}` : ''}`
-    : c.debt < 0 ? `پیش‌پرداخت: <span class="amt-in">${pMoney(-c.debt)} ${pUnitFa()}</span>` : 'تسویه‌ی کامل — بدهی ندارید'
-  const inner = `
-    <h1>${hEsc(c.buildingName || 'ساختمان')}</h1>
-    <div class="sub">صورت‌حساب واحد ${faNum(u.number)}${u.resident_name ? ' — ' + hEsc(u.resident_name) : ''} · تاریخ صدور: ${faNum(c.today)}</div>
-    <div class="big">${debtLine}</div>
-    ${c.debt > 0 ? payInfoHtml() : ''}
-    <h3>ریز بدهکاری‌ها</h3>
-    <table><thead><tr><th>شماره سند</th><th>شرح</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
-    ${open.length ? open.map(s => `<tr><td class="num">${faNum(s.invoice_id)}</td><td>${hEsc(s.title)}</td><td>${hEsc(s.category || '—')}</td><td class="num">${s.is_opening ? 'انتقالی' : faNum(s.j_date)}</td>
-      <td class="num">${pMoney(s.share_amount)}</td><td class="num">${pMoney(s.paid)}</td><td class="num amt-out">${pMoney(s.remaining)}</td></tr>`).join('')
-    : '<tr><td colspan="7" style="text-align:center;color:#888">بدهیِ بازی ندارید</td></tr>'}
-    </tbody></table>
-    <h3>دریافتی‌های ثبت‌شده‌ی شما</h3>
-    <table><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>توضیح</th></tr></thead><tbody>
-    ${c.payments.length ? c.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faNum(p.j_date)}</td><td class="num amt-in">${pMoney(p.amount)}</td>
-      <td>${hEsc(p.fund_name || '—')}</td><td>${hEsc(p.note || '')}</td></tr>`).join('')
-    : '<tr><td colspan="4" style="text-align:center;color:#888">پرداختی ثبت نشده</td></tr>'}
-    </tbody></table>
-    <table><tbody><tr class="tot"><td>جمع سهم‌ها</td><td class="num">${pMoney(c.totalShares)} ${pUnitFa()}</td>
-      <td>جمع پرداختی</td><td class="num">${pMoney(c.totalPaid)} ${pUnitFa()}</td></tr></tbody></table>
-    <div class="sub" style="margin-top:8px">شارژ ماهانه‌ی این واحد: <b>${pMoney(u.chargeAmount)} ${pUnitFa()}</b></div>
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
-  return printLayout(`صورت‌حساب واحد ${u.number}`, inner)
 }
 
 // آخرین روز میلادیِ یک دوره‌ی جلالی (برای بازه‌ی گزارش)
@@ -2547,7 +2609,8 @@ function printSummaryHtml(period, showNames) {
     <div class="big" style="font-size:14px">${bc.ok
       ? 'کنترل سلامت دفاتر: همهٔ آزمون‌ها سالم است.'
       : 'کنترل سلامت دفاتر ایراد پیدا کرده — گزارش «کنترل سلامت دفاتر» را در نرم‌افزار بررسی کنید.'}</div>
-    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+    ${signBlock(['مدیر مالی', 'رئیس هیئت‌مدیره', 'بازرس'])}
+    <div class="foot">حسابدار ساختمان توی دید</div>`
   return printLayout(`خلاصه‌ی ماهانه — ${periodFa(p)}`, inner)
 }
 
@@ -3940,7 +4003,15 @@ async function handle(req, res) {
         const c = unitCard(+um[1])
         if (!c) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">واحد یافت نشد</p>') }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
-        return res.end(printUnitHtml(c))
+        const html = printStatementHtml(+um[1], Q.from || '', Q.to || '')
+        return res.end(Q.print === '1' ? html.replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script></body>') : html)
+      }
+      const prM = /^\/print\/report\/(debtors|journal|gl|funds|income)$/.exec(path)
+      if (prM) {
+        const html = printReportHtml(prM[1], Q)
+        if (!html) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">داده‌ای نیست</p>') }
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(Q.print === '1' ? html.replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script></body>') : html)
       }
       if (path === '/print/summary') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
