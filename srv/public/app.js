@@ -285,7 +285,7 @@ async function boot() {
   await loadMeta()
   if (!isAdmin()) $('#nav').querySelector('[data-view="settings"]').classList.add('hidden')
   setupQuickFab()
-  render()
+  routeFromHash() || render()
 }
 // دکمهٔ دسترسی سریعِ شناور (فقط مدیر): فاکتور، پرداخت هزینه، دریافت گروهی/تکی
 function setupQuickFab() {
@@ -465,13 +465,55 @@ function localResetForm() {
 // ==================== مسیریابی ====================
 $('#nav').onclick = e => {
   const b = e.target.closest('.nav-i'); if (!b) return
-  VIEW = b.dataset.view
-  $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x === b))
+  VIEW = b.dataset.view; NAV_STACK = []
   render()
 }
 const VIEWS = {}
-function render() { const f = VIEWS[VIEW] || VIEWS.dashboard; $('#view').innerHTML = '<div class="empty">در حال بارگذاری…</div>'; f().catch(e => { $('#view').innerHTML = `<div class="empty">${esc(e.message)}</div>` }) }
-async function refresh() { await loadMeta(); render() }
+// وضعیتِ ناوبری: DETAIL = کارتِ باز (واحد/صندوق/پروژه)؛ NAV_STACK برای «بازگشت» به جای قبلی
+let DETAIL = null, NAV_STACK = [], LAST_VIEW_RENDERED = ''
+const DETAIL_FN = { unit: id => showUnitCard(id), fund: id => showFund(id), project: id => showProject(id) }
+const syncNav = () => $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === VIEW))
+function setHash() {
+  const h = DETAIL ? `#/${DETAIL.type}/${DETAIL.id}` : `#/${VIEW}${VIEW === 'reports' ? '/' + repTab : ''}`
+  if (location.hash !== h) try { history.pushState(null, '', h) } catch { }
+}
+// صدا زده می‌شود در ابتدای هر کارتِ جزئیات؛ اگر کارتِ تازه است، جای فعلی در پشته می‌رود
+function markDetail(type, id) {
+  const same = DETAIL && DETAIL.type === type && DETAIL.id === id
+  if (!same) { NAV_STACK.push({ view: VIEW, repTab, detail: DETAIL, y: scrollY }); if (NAV_STACK.length > 30) NAV_STACK.shift() }
+  DETAIL = { type, id }; setHash()
+  return same
+}
+async function goBack(fallbackView) {
+  const st = NAV_STACK.pop()
+  if (!st) { VIEW = fallbackView; DETAIL = null; return render() }
+  VIEW = st.view; repTab = st.repTab || repTab; syncNav()
+  if (st.detail) { DETAIL = st.detail; await DETAIL_FN[st.detail.type](st.detail.id) } else { DETAIL = null; await render() }
+  requestAnimationFrame(() => scrollTo(0, st.y || 0))
+}
+function render() {
+  const f = VIEWS[VIEW] || VIEWS.dashboard
+  const key = VIEW + '|' + (VIEW === 'reports' ? repTab : '')
+  const same = !DETAIL && LAST_VIEW_RENDERED === key, y = scrollY
+  DETAIL = null; LAST_VIEW_RENDERED = key; syncNav(); setHash()
+  // همان صفحه دوباره ساخته می‌شود؟ محتوای قبلی تا رسیدنِ داده می‌ماند و اسکرول برمی‌گردد
+  if (!same) $('#view').innerHTML = '<div class="empty">در حال بارگذاری…</div>'
+  return f().then(() => { if (same) requestAnimationFrame(() => scrollTo(0, y)) }).catch(e => { $('#view').innerHTML = `<div class="empty">${esc(e.message)}</div>` })
+}
+// بعد از هر ثبت/ویرایش/حذف: اگر کارتی باز است همان کارت تازه می‌شود (کاربر از کارت بیرون نمی‌افتد)
+async function refresh() {
+  await loadMeta()
+  if (DETAIL) { const y = scrollY; await DETAIL_FN[DETAIL.type](DETAIL.id); requestAnimationFrame(() => scrollTo(0, y)) }
+  else render()
+}
+// آدرسِ hash: باز کردنِ مستقیم و دکمهٔ «عقب» مرورگر
+function routeFromHash() {
+  const m = /^#\/([a-z]+)(?:\/([\w-]+))?/.exec(location.hash || ''); if (!m) return false
+  if (DETAIL_FN[m[1]] && m[2]) { const d = { type: m[1], id: +m[2] }; VIEW = { unit: 'units', fund: 'funds', project: 'projects' }[m[1]]; syncNav(); DETAIL = d; DETAIL_FN[m[1]](+m[2]); return true }
+  if (VIEWS[m[1]]) { VIEW = m[1]; if (m[1] === 'reports' && m[2]) repTab = m[2]; DETAIL = null; render(); return true }
+  return false
+}
+window.addEventListener('popstate', () => { if (ME) { NAV_STACK = []; routeFromHash() || render() } })
 
 const head = (title, sub, actions = '') =>
   `<div class="vhead printhide"><div><h1>${esc(title)}</h1><p class="sub">${esc(sub)}</p></div><div class="fbtns">${actions}</div></div>`
@@ -594,8 +636,7 @@ function wireCommon() {
     const [v, tab] = b.dataset.go.split(':')
     if (tab && v === 'reports') repTab = tab
     if (tab && v === 'settings') setTab = tab
-    VIEW = v
-    $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === VIEW))
+    VIEW = v; NAV_STACK = []
     render()
   })
   document.querySelectorAll('[data-unit]').forEach(r => r.onclick = () => showUnitCard(+r.dataset.unit))
@@ -1199,6 +1240,7 @@ function unitForm(u) {
 // ---------- کارت واحد ----------
 const showUnitCard = guard(async id => {
   const d = await api(`/api/unit/${id}`)
+  if (!markDetail('unit', id)) scrollTo(0, 0)
   const u = d.unit
   // دفتر معین واحد: سهم‌ها (بدهکار) + پرداخت‌ها (بستانکار) به‌ترتیب تاریخ، با ماندهٔ دونده
   const moeinEntries = []
@@ -1273,7 +1315,7 @@ const showUnitCard = guard(async id => {
       </tbody></table></div></div>` : ''}
     <div class="printarea" id="stmtArea"></div>`
   wireCommon()
-  $('#backBtn').onclick = () => { VIEW = 'units'; render() }
+  $('#backBtn').onclick = () => goBack('units')
   if ($('#ucEdit')) $('#ucEdit').onclick = () => unitForm(unitById(u.id))
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
   $('#ucStmt').onclick = () => { $('#stmtArea').innerHTML = statementHtml(d); print() }
@@ -1354,6 +1396,7 @@ const TXN_FA = { in: 'واریز ساکن', out: 'پرداخت فاکتور', tr
 const isIn = t => t === 'in' || t === 'transfer_in' || t === 'adjust_in'
 const showFund = guard(async id => {
   const d = await api(`/api/funds/${id}/txns`)
+  if (!markDetail('fund', id)) scrollTo(0, 0)
   // دفتر معین صندوق: ورودی=بدهکار · خروجی=بستانکار · ماندهٔ دونده (موجودی)
   const asc = [...d.rows].reverse()   // از قدیمی به جدید برای ماندهٔ دونده
   const opening = d.fund.opening_balance || 0
@@ -1400,7 +1443,7 @@ const showFund = guard(async id => {
         </tbody><tfoot><tr><td colspan="3">جمع</td><td class="num amt-in">${money(totIn)}</td><td class="num amt-out">${money(totOut)}</td>
           <td class="num ${d.fund.balance < 0 ? 'amt-out' : ''}">${balCell(d.fund.balance)}</td><td class="printhide"></td></tr></tfoot></table></div>
       </div></div>`
-  $('#backBtn').onclick = () => { VIEW = 'funds'; render() }
+  $('#backBtn').onclick = () => goBack('funds')
   document.querySelectorAll('[data-fview]').forEach(b => b.onclick = () => {
     document.querySelectorAll('[data-fview]').forEach(x => x.classList.toggle('on', x === b))
     const simple = b.dataset.fview === 'simple'
@@ -2928,6 +2971,7 @@ function quoteRow(q) {
 }
 const showProject = guard(async id => {
   const d = await api('/api/projects/' + id)
+  if (!markDetail('project', id)) scrollTo(0, 0)
   const p = d.project, refresh = () => showProject(id)
   $('#view').innerHTML =
     `<button class="btn small back printhide" id="backBtn">→ بازگشت به پروژه‌ها</button>` +
@@ -2969,7 +3013,7 @@ const showProject = guard(async id => {
       ${adminOnly(`<div style="padding:10px 0 0"><button class="btn small" id="ciNew">＋ فاکتور پیمانکار</button></div>`)}
       <div class="hint" style="margin-top:6px">فاکتور خریدِ «پرداخت‌شده» از صندوق اصلی کسر و فروشِ «دریافت‌شده» به آن اضافه می‌شود.</div></div>
     <div class="panel"><div class="phead"><b>اسناد پروژه</b></div>${attachRow({ id: p.id, attachments: d.attachments }, 'project')}</div>`
-  $('#backBtn').onclick = () => { VIEW = 'projects'; render() }
+  $('#backBtn').onclick = () => goBack('projects')
   if ($('#pjReport')) $('#pjReport').onclick = () => {
     const rel = '/print/expenses?mode=project&projectId=' + id
     if (IS_DESKTOP && window.hesabdar.savePdf) { toast('در حال ساخت گزارش…'); window.hesabdar.savePdf(rel, `گزارش پروژه ${p.title}`).then(x => toast(x && x.ok ? 'PDF ذخیره شد' : 'ناموفق', !(x && x.ok))) }
@@ -2988,7 +3032,7 @@ const showProject = guard(async id => {
       async () => { const r = await post('/api/projects/' + id + '/reconcile', {}); toast(`ثبت شد — هزینهٔ کامل ${moneyU(r.amount)}${p.budget ? ` · انحراف ${signed(dev)}` : ''}`); refresh() })
   }
   if ($('#pjDel')) $('#pjDel').onclick = () => confirmBox(`پروژه «${p.title}» و همه‌ی استعلام‌ها و اسنادش حذف شود؟`,
-    async () => { await api('/api/projects/' + id, { method: 'DELETE' }); toast('حذف شد'); VIEW = 'projects'; render() })
+    async () => { await api('/api/projects/' + id, { method: 'DELETE' }); toast('حذف شد'); VIEW = 'projects'; NAV_STACK = []; render() })
   document.querySelectorAll('[data-q-sel]').forEach(b => b.onclick = guard(async () => {
     await post('/api/quotes/' + b.dataset.qSel + '/select', { selected: b.dataset.qSelOn !== '1' }); refresh()
   }))
