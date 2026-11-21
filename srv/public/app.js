@@ -1103,22 +1103,23 @@ function bulkPaymentForm() {
   })
 }
 
-function paymentForm(presetUnit, pay, after, presetProject) {
+function paymentForm(presetUnit, pay, after, presetProject, creditMode) {
   const store = { doc: null }
   const forProject = +presetProject || 0
   const units = META.units.filter(u => u.active || (pay && u.id === pay.unit_id))
   const selUnit = pay ? pay.unit_id : presetUnit
   const payJ = pay ? { jy: +pay.j_date.slice(0, 4), jm: +pay.j_date.slice(5, 7), jd: +pay.j_date.slice(8, 10) } : null
-  const body = openModal(pay ? 'ویرایش دریافتی' : 'ثبت دریافتی', `
+  const body = openModal(pay ? 'ویرایش دریافتی' : creditMode ? 'استفاده از پیش‌پرداخت' : 'ثبت دریافتی', `
     <div class="form">
       <div class="frow">
         <label class="f">واحد<select class="inp" id="pyUnit">${units.map(u => `<option value="${u.id}" ${selUnit === u.id ? 'selected' : ''}>واحد ${escFa(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''}</option>`).join('')}</select></label>
         <label class="f">مبلغ (${curFa()})<input class="inp num" id="pyAmount" data-money="pyHint" inputmode="numeric" value="${pay ? sep(Math.round(r2d(pay.amount))) : ''}"><span class="hint" id="pyHint"></span></label>
       </div>
-      ${!pay ? `<div class="frow"><label class="f">منبع پرداخت<select class="inp" id="pySource">
-        <option value="cash">واریز نقدی (به صندوق)</option>
-        <option value="credit">پرداخت از محل طلبِ واحد</option></select></label>
-        <label class="f" id="pyCreditWrap" style="display:none">طلبِ موجودِ واحد<input class="inp" id="pyCreditAvail" disabled></label></div>` : ''}
+      ${!pay && (creditMode || forProject) ? `<div class="frow"><label class="f" ${creditMode ? 'hidden' : ''}>منبع پرداخت<select class="inp" id="pySource">
+        <option value="cash" ${creditMode ? '' : 'selected'}>واریز نقدی (به صندوق)</option>
+        <option value="credit" ${creditMode ? 'selected' : ''}>استفاده از پیش‌پرداختِ واحد</option></select></label>
+        <label class="f" id="pyCreditWrap" style="display:none">پیش‌پرداختِ موجودِ واحد<input class="inp" id="pyCreditAvail" disabled></label></div>` : ''}
+      ${creditMode ? '<p class="hint" style="margin:0">پولی که این واحد قبلاً بیشتر از بدهی‌اش داده، روی بدهی‌های تیک‌خورده می‌نشیند. پولی وارد صندوق نمی‌شود.</p>' : ''}
       <div class="frow">
         <label class="f">تاریخ${dateBoxHtml('py', payJ)}</label>
         <label class="f" id="pyFundWrap">صندوق مقصد<select class="inp" id="pyFund">${META.funds.map(f => `<option value="${f.id}" ${pay && pay.fund_id === f.id ? 'selected' : ''}>${esc(f.name)}</option>`).join('')}</select></label>
@@ -1130,7 +1131,7 @@ function paymentForm(presetUnit, pay, after, presetProject) {
       <div id="pyDocWrap">${docPickerHtml('pyDoc')}</div>
       <div class="panel" style="margin:0;background:var(--panel-2)">
         <div class="phead"><b>بدهی‌های باز این واحد</b><span class="hint strong" id="pyCredit"></span></div>
-        <p class="hint" style="margin:0 0 8px">${pay ? 'با ذخیرهٔ ویرایش، مبلغ دوباره از قدیمی‌ترین بدهی تسویه می‌شود (FIFO).' : 'اگر هیچ فاکتوری تیک نخورد، مبلغ به‌صورت خودکار از قدیمی‌ترین بدهی تسویه می‌شود (FIFO).'}</p>
+        <p class="hint" style="margin:0 0 8px">${pay ? 'اگر مبلغ، واحد یا صندوق را عوض کنید، مبلغ دوباره از قدیمی‌ترین بدهی کم می‌شود.' : 'اگر هیچ فاکتوری تیک نخورد، مبلغ اول از قدیمی‌ترین بدهی کم می‌شود.'}</p>
         <div id="pyOpen"><div class="empty">در حال بارگذاری…</div></div>
       </div>
     </div>`,
@@ -1146,13 +1147,13 @@ function paymentForm(presetUnit, pay, after, presetProject) {
     if ($('#pyDocWrap')) $('#pyDocWrap').style.display = c ? 'none' : ''
     if ($('#pyCreditWrap')) $('#pyCreditWrap').style.display = c ? '' : 'none'
     if ($('#pyCreditAvail')) $('#pyCreditAvail').value = moneyU(store.credit)
-    $('#pySave').textContent = c ? 'پرداخت از طلب' : 'ثبت دریافتی'
+    $('#pySave').textContent = c ? 'کسر از پیش‌پرداخت' : 'ثبت دریافتی'
   }
   const loadOpen = guard(async () => {
     const d = await api(`/api/unit/${$('#pyUnit').value}/open`)
     store.credit = d.credit || 0
-    $('#pyCredit').textContent = d.credit > 0 ? `طلبِ فعلیِ واحد: ${moneyU(d.credit)}` : ''
-    if (forProject && !isCredit()) $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت «طلبِ پروژه» برای واحد می‌ماند.</div>'
+    $('#pyCredit').textContent = d.credit > 0 ? `پیش‌پرداختِ فعلیِ واحد: ${moneyU(d.credit)}` : ''
+    if (forProject && !isCredit()) $('#pyOpen').innerHTML = '<div class="empty">این پرداخت بابت شارژِ پروژه ثبت می‌شود؛ اگر بیشتر از سهم نهایی باشد، به‌صورت پیش‌پرداختِ پروژه برای واحد می‌ماند.</div>'
     else $('#pyOpen').innerHTML = d.rows.length ? `<div class="tablewrap"><table class="tx"><thead><tr><th></th><th>فاکتور</th><th>تاریخ</th><th>مانده</th></tr></thead><tbody>
       ${d.rows.map(r => `<tr><td>${pay ? '' : `<input type="checkbox" data-inv="${r.invoice_id}" style="width:16px;height:16px;accent-color:var(--accent)">`}</td>
         <td>${esc(r.title)}</td><td class="num">${r.is_opening ? 'انتقالی' : faDigit(r.j_date)}</td><td class="num amt-out">${money(r.remaining)}</td></tr>`).join('')}
@@ -1163,7 +1164,7 @@ function paymentForm(presetUnit, pay, after, presetProject) {
   $('#pyUnit').onchange = loadOpen; loadOpen()
   $('#pySave').onclick = guard(async () => {
     if (!pay && isCredit()) {
-      if (!(store.credit > 0)) throw new Error('این واحد طلبی ندارد')
+      if (!(store.credit > 0)) throw new Error('این واحد پیش‌پرداختی ندارد')
       const amt = readMoney($('#pyAmount'))
       const invoiceIds = [...$('#pyOpen').querySelectorAll('input[type=checkbox]:checked')].map(c => +c.dataset.inv)
       const payload = { unitId: +$('#pyUnit').value, ...readDate('py'), note: $('#pyNote').value.trim() }
@@ -1299,7 +1300,7 @@ const showUnitCard = guard(async id => {
   $('#view').innerHTML =
     `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
     head(`کارت واحد ${faDigit(u.number)}`, `${u.resident_name || 'بدون ساکن'} · ${faDigit(u.area || 0)} متر · ${faDigit(u.occupants || 0)} نفر${u.occupied ? '' : ' · خالی'}`,
-      adminOnly(`<button class="btn" id="ucEdit">✏️ ویرایش واحد</button><button class="btn primary" id="ucPay">＋ ثبت دریافتی</button>`) +
+      adminOnly(`<button class="btn" id="ucEdit">✏️ ویرایش واحد</button>${d.payments.some(p => p.leftover > 0) && d.shares.some(x => x.remaining > 0) ? '<button class="btn" id="ucCredit">استفاده از پیش‌پرداخت</button>' : ''}<button class="btn primary" id="ucPay">＋ ثبت دریافتی</button>`) +
       `<button class="btn" id="ucStmt">🖨 صورت‌حساب</button><button class="btn" id="ucPdf">📄 PDF</button><a class="btn" href="/api/export/unit?id=${u.id}">⬇️ CSV</a>`) +
     `<div class="kpis printhide">
       ${kpi(d.debt >= 0 ? 'بدهی کل' : TERMS.credit, money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
@@ -1356,6 +1357,7 @@ const showUnitCard = guard(async id => {
   }).catch(() => { })
   if ($('#ucEdit')) $('#ucEdit').onclick = () => unitForm(unitById(u.id))
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
+  if ($('#ucCredit')) $('#ucCredit').onclick = () => paymentForm(u.id, null, null, 0, true)
   $('#ucStmt').onclick = () => printOfficial(`/print/unit/${u.id}`, `صورت‌حساب واحد ${u.number}`)
   $('#ucPdf').onclick = () => saveUnitPdf(u)
   document.querySelectorAll('[data-ucview]').forEach(b => b.onclick = () => {
