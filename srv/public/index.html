@@ -76,6 +76,18 @@
   <main class="main" id="view"></main>
 </div>
 
+<!-- دکمهٔ دسترسی سریع (شناور) -->
+<div class="fab-wrap printhide hidden" id="fabWrap">
+  <div class="fab-menu" id="fabMenu">
+    <button class="fab-item" data-quick="invoice"><span>🧾</span> ثبت فاکتور</button>
+    <button class="fab-item" data-quick="charge"><span>📅</span> صدور شارژ ماهانه</button>
+    <button class="fab-item" data-quick="pay"><span>💸</span> پرداخت هزینه</button>
+    <button class="fab-item" data-quick="bulk"><span>👥</span> دریافت گروهی</button>
+    <button class="fab-item" data-quick="receipt"><span>💰</span> دریافت تکی</button>
+  </div>
+  <button class="fab-main" id="fabMain" title="دسترسی سریع" aria-label="دسترسی سریع">＋</button>
+</div>
+
 <div class="toast" id="toast"></div>
 <div class="modal hidden" id="modal">
   <div class="mbox">

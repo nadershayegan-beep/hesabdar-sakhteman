@@ -182,13 +182,29 @@ function checkUpdates() {
 // ---------- تولید PDF از صفحات چاپیِ داخلی ----------
 const OUT_DIR = () => path.join(USER_DIR, 'اسناد صادرشده')
 const safeFile = s => String(s || 'سند').replace(/[\/\\:*?"<>|\n\r]/g, '_').replace(/\s+/g, ' ').trim().slice(0, 90)
+// تاریخِ شمسیِ امروز برای نامِ فایل: 1405-08-30 (ارقامِ لاتین، مناسبِ نامِ فایل)
+function jalaliStamp() {
+  try {
+    const p = new Intl.DateTimeFormat('en-US-u-ca-persian-nu-latn', { year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date())
+    const g = t => (p.find(x => x.type === t) || {}).value || ''
+    return `${g('year')}-${g('month')}-${g('day')}`
+  } catch { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` }
+}
+// مسیرِ یکتا: اگر «نام — تاریخ.pdf» موجود بود، شماره می‌خورد تا تکراری نشود
+async function uniquePdfPath(dir, base) {
+  for (let i = 1; ; i++) {
+    const name = i === 1 ? base : `${base} (${i})`
+    const p = path.join(dir, name + '.pdf')
+    try { await fs.access(p) } catch { return p }   // موجود نیست → همین
+  }
+}
 
 // یک صفحه‌ی /print/... را در پنجره‌ی پنهان بارگذاری و به PDF تبدیل و ذخیره می‌کند.
 async function renderPdf(relPath, filename) {
   if (!serverUrl) throw new Error('سرور آماده نیست')
   if (!/^\/print\//.test(relPath || '')) throw new Error('مسیر نامعتبر')
   await fs.mkdir(OUT_DIR(), { recursive: true })
-  const outPath = path.join(OUT_DIR(), safeFile(filename) + '.pdf')
+  const outPath = await uniquePdfPath(OUT_DIR(), `${safeFile(filename)} — ${jalaliStamp()}`)
   let pw = new BrowserWindow({
     show: false, width: 900, height: 1200,
     webPreferences: { contextIsolation: true, nodeIntegration: false }

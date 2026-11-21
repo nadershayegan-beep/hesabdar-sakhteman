@@ -208,6 +208,7 @@ function migrate() {
   addCol('fund_txns', 'ref_cinvoice_id', 'INTEGER')       // پیوند تراکنش صندوق به فاکتور پیمانکار (خرید/فروش پروژه)
   addCol('payments', 'project_id', 'INTEGER DEFAULT 0')   // پرداختِ علامت‌خوردهٔ پروژه (دفترِ مجزا؛ مازاد = طلبِ پروژه)
   addCol('invoices', 'from_fund', 'INTEGER DEFAULT 0')    // 1 = هزینهٔ جاری از صندوق (بدون تقسیم/بدهکار کردن واحدها)
+  addCol('contractor_invoices', 'paid_amount', 'INTEGER DEFAULT 0') // مبلغِ پرداخت‌شده (پرداختِ جزئی مجاز)؛ مانده = amount − paid_amount
 }
 function ensureSchema() { db.exec(SCHEMA_SQL); migrate() }
 ensureSchema()
@@ -318,6 +319,22 @@ function migrateData() {
   setSetting('mig_expense_pay', '1')
 }
 migrateData()
+// عطف‌به‌ماسبق: فاکتورهای پیمانکارِ «تسویه‌شده»ی قدیمی، مبلغِ پرداختی‌شان = کلِ مبلغ شود
+function migrateCInvoicePaidAmount() {
+  if (getSetting('mig_cinv_paidamt', '') === '1') return
+  db.prepare(`UPDATE contractor_invoices SET paid_amount=amount WHERE paid=1 AND COALESCE(paid_amount,0)=0`).run()
+  setSetting('mig_cinv_paidamt', '1')
+}
+migrateCInvoicePaidAmount()
+// عطف‌به‌ماسبق: وضعیتِ فاکتورهای «جاری/از محل شارژ» بر اساس پرداختِ صندوق (نه وصول از ساکنین) بازمحاسبه شود
+function migrateFromFundStatus() {
+  if (getSetting('mig_fromfund_status', '') === '1') return
+  const fp = `(SELECT COALESCE(SUM(amount),0) FROM expense_payments WHERE invoice_id=invoices.id)`
+  db.prepare(`UPDATE invoices SET status='settled' WHERE COALESCE(from_fund,0)=1 AND is_opening=0 AND ${fp} >= amount`).run()
+  db.prepare(`UPDATE invoices SET status='open'     WHERE COALESCE(from_fund,0)=1 AND is_opening=0 AND ${fp} <  amount`).run()
+  setSetting('mig_fromfund_status', '1')
+}
+migrateFromFundStatus()
 
 // ---------- احراز هویت ----------
 const sessions = new Map()
@@ -490,8 +507,19 @@ function openSharesOfUnit(unitId, onlyIds = null) {
   return filtered.filter(r => r.share_amount - shareAllocated(r.id) > 0)
 }
 
-// تخصیص یک پرداخت: اگر فاکتور مشخصی انتخاب شده باشد اول به آن، وگرنه FIFO
-function allocatePayment(paymentId, targetInvoiceIds = null) {
+// دستهٔ سبدِ یک صندوق بر اساس نامش: charge (شارژ/جاری) | omrani (قبوض/متفرقه) | project (عمرانی)
+function fundBucket(fundId) {
+  const f = fundId ? db.prepare(`SELECT name FROM funds WHERE id=?`).get(fundId) : null
+  const n = f ? f.name : ''
+  return /شارژ|جاری/.test(n) ? 'charge' : /قبوض|متفرقه/.test(n) ? 'omrani' : 'project'
+}
+// آیا سهم s در سبدِ دستهٔ cat است؟ (chg=شارژ، opn=انتقالی، bill&proj=پروژه، باقی=قبوض/توزیعی)
+const shareInBucket = (s, cat) => cat === 'charge' ? (s.chg || s.opn || (s.bill && !s.proj_id))
+  : cat === 'project' ? (s.bill && !!s.proj_id)
+  : (!s.chg && !s.opn && !s.bill && !s.proj_id)
+
+// تخصیص یک پرداخت: اول به فاکتورهای هدف؛ سپس (جز در حالت strict) خودکار فقط روی سبدِ هم‌دستهٔ همان صندوقِ پرداخت
+function allocatePayment(paymentId, targetInvoiceIds = null, strict = false) {
   const pay = db.prepare(`SELECT * FROM payments WHERE id=?`).get(paymentId)
   if (!pay) return 0
   let left = paymentLeftover(pay)
@@ -502,14 +530,13 @@ function allocatePayment(paymentId, targetInvoiceIds = null) {
     const inv = projectChargeInvoice(pay.project_id)
     if (inv) queue.push(...openSharesOfUnit(pay.unit_id, [inv.id]))
   } else {
-    // پرداخت عمومی: انتخابِ صریحِ کاربر محترم است (حتی اگر قبوض/پروژه را هدف بگیرد)؛
-    // ولی تسویهٔ خودکارِ (FIFO) فقط روی سبدِ «شارژ/جاری» می‌نشیند (شارژ ماهانه، انتقالی، جریمه)،
-    // نه قبوض/متفرقه و نه پروژه — تا اعتبارِ واحد خودبه‌خود روی قبض‌ها پخش نشود.
     const all = openSharesOfUnit(pay.unit_id)
     const tset = new Set(targetInvoiceIds && targetInvoiceIds.length ? targetInvoiceIds : [])
-    const isChargeBucket = s => s.chg || s.opn || (s.bill && !s.proj_id)
     const targeted = tset.size ? all.filter(s => tset.has(s.invoice_id)) : []
-    const auto = all.filter(s => !tset.has(s.invoice_id) && !s.proj_id && isChargeBucket(s))
+    // strict: فقط روی فاکتورهای هدف؛ مازاد به‌صورت بستانکاری می‌ماند (برای «بابتِ یک فاکتورِ مشخص»)
+    // غیرِ strict: پس از هدف‌ها، خودکار FIFO فقط روی سبدِ هم‌دستهٔ همان صندوقِ پرداخت (قبوض→قبوض، عمرانی→پروژه، شارژ→شارژ)؛ هرگز بین صندوق‌ها جابه‌جا نمی‌شود
+    const cat = fundBucket(pay.fund_id)
+    const auto = strict ? [] : all.filter(s => !tset.has(s.invoice_id) && shareInBucket(s, cat))
     queue.push(...targeted, ...auto)
   }
   const ins = db.prepare(`INSERT INTO payment_allocations(payment_id,share_id,amount) VALUES(?,?,?)`)
@@ -579,9 +606,13 @@ function invoiceCollected(invId) {
     JOIN invoice_shares s ON s.id=a.share_id WHERE s.invoice_id=?`).get(invId).s
 }
 function refreshInvoiceStatus(invId) {
-  const inv = db.prepare(`SELECT amount FROM invoices WHERE id=?`).get(invId); if (!inv) return
-  const status = invoiceCollected(invId) >= inv.amount ? 'settled' : 'open'
-  db.prepare(`UPDATE invoices SET status=? WHERE id=?`).run(status, invId)
+  const inv = db.prepare(`SELECT * FROM invoices WHERE id=?`).get(invId); if (!inv) return
+  // هزینهٔ جاری (از محل شارژ): با پرداخت کاملِ صندوق تمام می‌شود (واحدها بدهکار نمی‌شوند)
+  // شارژ/قبوض/پروژه: با وصولِ کامل از ساکنین
+  const settled = inv.from_fund
+    ? invoiceFundPaid(invId) >= inv.amount
+    : invoiceCollected(invId) >= inv.amount
+  db.prepare(`UPDATE invoices SET status=? WHERE id=?`).run(settled ? 'settled' : 'open', invId)
 }
 
 // نوشتن سهم‌های یک فاکتور (ساخت یا ویرایش). تخصیص‌های موجود حفظ می‌شوند و مازاد آزاد می‌گردد.
@@ -615,6 +646,7 @@ function writeShares(invId, shares) {
 // ---------- صندوق ----------
 const FUND_IN = `('in','transfer_in')`
 const FUND_OUT = `('out','transfer_out','manager_settle')`
+const TXN_LABEL = { in: 'واریز ساکن', out: 'پرداخت فاکتور', transfer_in: 'انتقال ورودی', transfer_out: 'انتقال خروجی', manager_settle: 'تسویه با مدیر' }
 function fundBalance(id) {
   const f = db.prepare(`SELECT opening_balance FROM funds WHERE id=?`).get(id); if (!f) return 0
   const i = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(id).s
@@ -638,11 +670,13 @@ const omraniFundId = () => { const f = db.prepare(`SELECT id FROM funds WHERE na
 // idempotent: تراکنش قبلیِ همین فاکتور حذف و در صورت لزوم دوباره ساخته می‌شود
 function syncContractorFundTxn(ci, by) {
   db.prepare(`DELETE FROM fund_txns WHERE ref_cinvoice_id=?`).run(ci.id)
-  if (!ci.paid || !(ci.amount > 0)) return
+  // مبلغِ مؤثر = پرداخت‌شدهٔ واقعی (پرداختِ جزئی)؛ سازگاری با رکوردهای قدیمیِ فقط‌تیک‌دار
+  const paidAmt = Math.min(ci.amount || 0, ci.paid_amount != null ? (ci.paid_amount || 0) : (ci.paid ? (ci.amount || 0) : 0))
+  if (!(paidAmt > 0)) return
   const fundId = ci.fund_id && db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(ci.fund_id) ? ci.fund_id : omraniFundId()
   if (!fundId) return
   const isSale = ci.kind === 'sale'
-  addFundTxn(fundId, isSale ? 'in' : 'out', ci.amount, {
+  addFundTxn(fundId, isSale ? 'in' : 'out', paidAmt, {
     g_date: ci.g_date, j_date: ci.j_date, cinvId: ci.id, by,
     note: (isSale ? 'درآمد فروش پروژه: ' : 'پرداخت هزینهٔ پروژه: ') + (ci.title || (isSale ? 'فروش' : 'خرید'))
   })
@@ -1100,6 +1134,197 @@ function fundReport(fundId) {
   }
 }
 
+// ======== دفتر روزنامه / دفتر کل (معین) / برگهٔ سند دوطرفه ========
+const jnorm = s => String(s || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/-/g, '/').trim()
+// نوعِ ماهیتِ فاکتور
+function invKind(i) { return i.from_fund ? 'exp' : i.is_charge ? 'charge' : (i.is_billing && i.project_id) ? 'proj' : 'bill' }
+const JKIND_FA = { charge: 'شارژ ماهانه', bill: 'قبوض و متفرقه', proj: 'پروژه (عمرانی)', exp: 'هزینهٔ جاری', pay: 'دریافتی', ci: 'فاکتور پیمانکار', transfer: 'انتقال صندوق' }
+
+// خلاصهٔ یک سمتِ سند (چند حساب → یک برچسب)
+function sideLabel(lines) {
+  if (!lines.length) return '—'
+  if (lines.length === 1) return lines[0].acc
+  if (lines.every(l => /^واحد/.test(l.acc))) return 'واحدها (' + faNum(lines.length) + ')'
+  return lines[0].acc + ' و ' + faNum(lines.length - 1) + ' حساب دیگر'
+}
+// دفتر روزنامه: هر سند یک ردیفِ دوطرفهٔ متوازن (طرف‌حسابِ بدهکار / طرف‌حسابِ بستانکار + مبلغِ برابر)
+function journalReport(q = {}) {
+  const nf = jnorm(q.from), nt = jnorm(q.to), typ = q.type || '', fundId = +q.fundId || 0, unitId = +q.unitId || 0, search = (q.q || '').trim()
+  const inR = jd => (!nf || jnorm(jd) >= nf) && (!nt || jnorm(jd) <= nt)
+  const omrani = omraniFundId()
+  const refs = []
+  if (!typ || ['charge', 'bill', 'proj', 'exp'].includes(typ)) {
+    for (const i of db.prepare(`SELECT i.*, c.name category FROM invoices i LEFT JOIN expense_categories c ON c.id=i.category_id WHERE i.is_opening=0`).all()) {
+      const kind = invKind(i)
+      if (typ && typ !== kind) continue
+      if (!inR(i.j_date)) continue
+      if (fundId && i.fund_id !== fundId) continue
+      if (unitId && !db.prepare(`SELECT 1 FROM invoice_shares WHERE invoice_id=? AND unit_id=?`).get(i.id, unitId)) continue
+      if (search && !(i.title || '').includes(search)) continue
+      refs.push({ g: i.g_date, j: i.j_date, dtype: 'invoice', id: i.id, kind })
+    }
+  }
+  if (!typ || typ === 'pay') {
+    for (const p of db.prepare(`SELECT p.*, u.number unit_number FROM payments p LEFT JOIN units u ON u.id=p.unit_id WHERE p.is_opening=0`).all()) {
+      if (!inR(p.j_date)) continue
+      if (fundId && p.fund_id !== fundId) continue
+      if (unitId && p.unit_id !== unitId) continue
+      if (search && !('دریافتی واحد ' + p.unit_number + ' ' + (p.note || '')).includes(search)) continue
+      refs.push({ g: p.g_date, j: p.j_date, dtype: 'payment', id: p.id, kind: 'pay' })
+    }
+  }
+  if ((!typ || typ === 'ci') && !unitId) {
+    for (const c of db.prepare(`SELECT * FROM contractor_invoices`).all()) {
+      if (!inR(c.j_date)) continue
+      if (fundId && (c.fund_id || omrani) !== fundId) continue
+      if (search && !((c.title || '') + ' ' + (c.vendor_name || '')).includes(search)) continue
+      refs.push({ g: c.g_date, j: c.j_date, dtype: 'contractor', id: c.id, kind: 'ci' })
+    }
+  }
+  refs.sort((a, b) => a.g < b.g ? -1 : a.g > b.g ? 1 : a.id - b.id)
+  const rows = refs.map((r, k) => {
+    const v = voucherOf(r.dtype, r.id)
+    if (!v) return null
+    return {
+      row: k + 1, dtype: r.dtype, id: r.id, kind: r.kind, no: v.head.no, j: v.head.j, title: v.head.title, typeFa: v.head.typeFa,
+      debitAcc: sideLabel(v.lines.filter(l => l.debit > 0)), creditAcc: sideLabel(v.lines.filter(l => l.credit > 0)),
+      debit: v.totalDebit, credit: v.totalCredit, balanced: v.balanced
+    }
+  }).filter(Boolean)
+  const totalDebit = rows.reduce((s, d) => s + d.debit, 0), totalCredit = rows.reduce((s, d) => s + d.credit, 0)
+  return { rows, totalDebit, totalCredit, balanced: totalDebit === totalCredit, kindFa: JKIND_FA }
+}
+
+// برگهٔ سندِ دوطرفه: خطوطِ بدهکار/بستانکار که همیشه متوازن‌اند
+function voucherOf(dtype, id) {
+  const lines = []
+  if (dtype === 'invoice') {
+    const i = db.prepare(`SELECT i.*, c.name category, f.name fund_name FROM invoices i LEFT JOIN expense_categories c ON c.id=i.category_id LEFT JOIN funds f ON f.id=i.fund_id WHERE i.id=?`).get(id)
+    if (!i) return null
+    const kind = invKind(i)
+    const head = { no: String(i.id), j: i.j_date, typeFa: JKIND_FA[kind], title: i.title, amount: i.amount, meta: `دسته: ${i.category || '—'} · صندوق: ${i.fund_name || '—'}${i.from_fund ? '' : ' · روش: ' + (METHOD_FA[i.method] || i.method)}` }
+    if (i.from_fund) {
+      const fp = invoiceFundPaid(i.id), un = i.amount - fp
+      lines.push({ acc: 'هزینه: ' + (i.category || i.title), desc: i.title, debit: i.amount, credit: 0 })
+      if (fp > 0) lines.push({ acc: 'صندوق ' + (i.fund_name || ''), desc: 'پرداخت از صندوق', debit: 0, credit: fp })
+      if (un > 0) lines.push({ acc: 'بدهی به فروشنده', desc: 'پرداخت‌نشده', debit: 0, credit: un })
+    } else {
+      const shares = db.prepare(`SELECT s.share_amount, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY CAST(u.number AS INTEGER)`).all(i.id)
+      for (const s of shares) lines.push({ acc: 'واحد ' + s.number + (s.resident_name ? ' — ' + s.resident_name : ''), desc: 'سهمِ این سند', debit: s.share_amount, credit: 0 })
+      const credAcc = kind === 'charge' ? 'درآمد شارژ ماهانه' : kind === 'proj' ? 'تعهد پروژه (عمرانی)' : 'صندوق ' + (i.fund_name || '')
+      lines.push({ acc: credAcc, desc: kind === 'bill' ? 'پرداخت از صندوق / طلب از واحدها' : 'در مقابلِ سهمِ واحدها', debit: 0, credit: i.amount })
+    }
+    return { head, lines, ...balance(lines), raw: i }
+  }
+  if (dtype === 'payment') {
+    const p = db.prepare(`SELECT p.*, u.number, u.resident_name, f.name fund_name FROM payments p LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id WHERE p.id=?`).get(id)
+    if (!p) return null
+    const head = { no: 'رسید ' + p.id, j: p.j_date, typeFa: 'دریافتی', title: 'دریافتی واحد ' + p.number, amount: p.amount, meta: `صندوق: ${p.fund_name || '—'}${p.method ? ' · روش: ' + p.method : ''}${p.note ? ' · ' + p.note : ''}` }
+    lines.push({ acc: 'صندوق ' + (p.fund_name || ''), desc: 'دریافت نقدی به صندوق', debit: p.amount, credit: 0 })
+    lines.push({ acc: 'واحد ' + p.number + (p.resident_name ? ' — ' + p.resident_name : ''), desc: 'کسر از بدهیِ واحد', debit: 0, credit: p.amount })
+    return { head, lines, ...balance(lines), raw: p }
+  }
+  if (dtype === 'contractor') {
+    const c = db.prepare(`SELECT ci.*, p.title proj FROM contractor_invoices ci LEFT JOIN projects p ON p.id=ci.project_id WHERE ci.id=?`).get(id)
+    if (!c) return null
+    const fund = db.prepare(`SELECT name FROM funds WHERE id=?`).get(c.fund_id || omraniFundId())
+    const paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0), rem = c.amount - paid
+    const head = { no: 'ci-' + c.id, j: c.j_date, typeFa: (c.kind === 'sale' ? 'فروش' : 'خرید') + ' پروژه', title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', amount: c.amount, meta: `پروژه: ${c.proj || '—'} · صندوق: ${fund ? fund.name : '—'}` }
+    if (c.kind === 'sale') {
+      if (paid > 0) lines.push({ acc: 'صندوق ' + (fund ? fund.name : ''), desc: 'دریافت از فروش', debit: paid, credit: 0 })
+      if (rem > 0) lines.push({ acc: 'دریافتنی از ' + (c.vendor_name || 'خریدار'), desc: 'دریافت‌نشده', debit: rem, credit: 0 })
+      lines.push({ acc: 'درآمد فروش پروژه', desc: c.title || '', debit: 0, credit: c.amount })
+    } else {
+      lines.push({ acc: 'هزینهٔ پروژه', desc: c.title || '', debit: c.amount, credit: 0 })
+      if (paid > 0) lines.push({ acc: 'صندوق ' + (fund ? fund.name : ''), desc: 'پرداخت به پیمانکار', debit: 0, credit: paid })
+      if (rem > 0) lines.push({ acc: 'پرداختنی به ' + (c.vendor_name || 'پیمانکار'), desc: 'پرداخت‌نشده', debit: 0, credit: rem })
+    }
+    return { head, lines, ...balance(lines), raw: c }
+  }
+  return null
+}
+function balance(lines) { const d = lines.reduce((a, l) => a + l.debit, 0), c = lines.reduce((a, l) => a + l.credit, 0); return { totalDebit: d, totalCredit: c, balanced: d === c } }
+
+// فهرستِ حساب‌های قابلِ انتخاب برای دفتر کل
+function ledgerAccounts() {
+  const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  const units = listUnits().filter(u => u.active).map(u => ({ id: u.id, label: 'واحد ' + u.number + (u.resident_name ? ' — ' + u.resident_name : '') })).sort((a, b) => faToEn(a.label) - faToEn(b.label))
+  const funds = listFunds().map(f => ({ id: f.id, label: f.name }))
+  const projects = projectsList().map(p => ({ id: p.id, label: p.title }))
+  const vend = {}
+  for (const c of db.prepare(`SELECT vendor_id, vendor_name FROM contractor_invoices`).all()) { const key = c.vendor_id || ('n:' + (c.vendor_name || '')); vend[key] = vend[key] || { id: c.vendor_id ? String(c.vendor_id) : key, label: c.vendor_name || 'پیمانکار' } }
+  return { unit: units, fund: funds, project: projects, contractor: Object.values(vend) }
+}
+
+// دفتر کل (معین) یک حساب: ردیف‌های بدهکار/بستانکار با ماندهٔ دونده
+function generalLedger(type, id, from, to) {
+  const nf = jnorm(from), nt = jnorm(to)
+  const inR = jd => (!nf || jnorm(jd) >= nf) && (!nt || jnorm(jd) <= nt)
+  let name = '', opening = 0, ent = []
+  if (type === 'unit') {
+    const u = db.prepare(`SELECT * FROM units WHERE id=?`).get(+id); if (!u) return null
+    name = 'واحد ' + u.number + (u.resident_name ? ' — ' + u.resident_name : '')
+    for (const s of db.prepare(`SELECT s.share_amount, s.invoice_id, i.title, i.j_date, i.g_date, i.is_opening, c.name category FROM invoice_shares s JOIN invoices i ON i.id=s.invoice_id LEFT JOIN expense_categories c ON c.id=i.category_id WHERE s.unit_id=?`).all(+id))
+      ent.push({ g: s.g_date, j: s.is_opening ? '—' : s.j_date, no: 'سند ' + s.invoice_id, inv: s.invoice_id, dtype: 'invoice', title: s.title, cat: s.category || '—', debit: s.share_amount, credit: 0, open: s.is_opening })
+    for (const p of db.prepare(`SELECT p.id, p.amount, p.j_date, p.g_date, p.is_opening, p.note, f.name fund_name FROM payments p LEFT JOIN funds f ON f.id=p.fund_id WHERE p.unit_id=?`).all(+id))
+      ent.push({ g: p.g_date, j: p.is_opening ? '—' : p.j_date, no: 'رسید ' + p.id, dtype: 'payment', pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', debit: 0, credit: p.amount, open: p.is_opening })
+  } else if (type === 'fund') {
+    const f = db.prepare(`SELECT * FROM funds WHERE id=?`).get(+id); if (!f) return null
+    name = f.name; opening = f.opening_balance || 0
+    for (const t of db.prepare(`SELECT t.*, i.title inv_title, u.number unit_number FROM fund_txns t LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN payments p ON p.id=t.ref_payment_id LEFT JOIN units u ON u.id=p.unit_id WHERE t.fund_id=?`).all(+id)) {
+      const isin = t.type === 'in' || t.type === 'transfer_in'
+      const no = t.ref_payment_id ? 'رسید ' + t.ref_payment_id : t.ref_invoice_id ? 'سند ' + t.ref_invoice_id : t.ref_cinvoice_id ? 'ci-' + t.ref_cinvoice_id : /transfer/.test(t.type) ? 'انتقال' : '—'
+      ent.push({ g: t.g_date, j: t.j_date, no, dtype: t.ref_payment_id ? 'payment' : t.ref_invoice_id ? 'invoice' : t.ref_cinvoice_id ? 'contractor' : '', refid: t.ref_payment_id || t.ref_invoice_id || t.ref_cinvoice_id, title: t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : (TXN_LABEL[t.type] || t.type)), cat: TXN_LABEL[t.type] || t.type, debit: isin ? t.amount : 0, credit: isin ? 0 : t.amount })
+    }
+  } else if (type === 'contractor') {
+    const isNum = /^\d+$/.test(String(id))
+    const where = isNum ? `ci.vendor_id=${+id}` : `ci.vendor_name=?`
+    const args = isNum ? [] : [String(id).replace(/^n:/, '')]
+    const rows = db.prepare(`SELECT ci.*, p.title proj FROM contractor_invoices ci LEFT JOIN projects p ON p.id=ci.project_id WHERE ${where}`).all(...args)
+    name = (rows[0] && rows[0].vendor_name) || 'پیمانکار'
+    for (const c of rows) {
+      const sale = c.kind === 'sale', paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0)
+      // بستانکار = طلبِ پیمانکار از ما (خرید)؛ بدهکار = پرداختِ ما
+      ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (c.title || '') + (sale ? ' (فروش)' : ''), cat: c.proj || '—', debit: sale ? c.amount : 0, credit: sale ? 0 : c.amount })
+      if (paid > 0) ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (sale ? 'دریافت از فروش' : 'پرداخت به پیمانکار'), cat: c.proj || '—', debit: sale ? 0 : paid, credit: sale ? paid : 0 })
+    }
+  } else if (type === 'project') {
+    const p = db.prepare(`SELECT * FROM projects WHERE id=?`).get(+id); if (!p) return null
+    name = p.title
+    for (const c of db.prepare(`SELECT * FROM contractor_invoices WHERE project_id=?`).all(+id)) {
+      const sale = c.kind === 'sale'
+      ent.push({ g: c.g_date, j: c.j_date, no: 'ci-' + c.id, dtype: 'contractor', cid: c.id, title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', cat: sale ? 'فروش' : 'خرید', debit: sale ? 0 : c.amount, credit: sale ? c.amount : 0 })
+    }
+    for (const pay of db.prepare(`SELECT pay.id, pay.amount, pay.j_date, pay.g_date, u.number FROM payments pay LEFT JOIN units u ON u.id=pay.unit_id WHERE pay.project_id=?`).all(+id))
+      ent.push({ g: pay.g_date, j: pay.j_date, no: 'رسید ' + pay.id, dtype: 'payment', pid: pay.id, title: 'دریافتِ پروژه از واحد ' + pay.number, cat: 'دریافتی', debit: 0, credit: pay.amount })
+  } else return null
+  // بازهٔ تاریخ: ماندهٔ قبل از بازه به‌عنوان «اول دوره»
+  let before = opening
+  const rows = []
+  ent.sort((a, b) => (a.g < b.g ? -1 : a.g > b.g ? 1 : 0))
+  for (const e of ent) { if (nf && jnorm(e.j) !== '—' && jnorm(e.j) < nf) { before += e.debit - e.credit; continue } ; if (inR(e.j) || e.j === '—') rows.push(e) }
+  let bal = before
+  const out = rows.map(e => { bal += e.debit - e.credit; return { ...e, balance: bal } })
+  const totD = rows.reduce((a, e) => a + e.debit, 0), totC = rows.reduce((a, e) => a + e.credit, 0)
+  return { type, id, name, opening: before, rows: out, totalDebit: totD, totalCredit: totC, finalBalance: bal }
+}
+
+// گزارشِ کاملِ همهٔ صندوق‌ها (از ابتدا تا الان): موجودی اولیه · دریافتی · مخارج · موجودی فعلی · بدهکارِ واحدها
+function fundsOverview() {
+  const ledger = unitLedgerReport().rows
+  const debtField = { charge: 'charge', omrani: 'omrani', project: 'projectDue' }
+  const funds = fundStats().map(f => {
+    const cat = /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project'
+    const unitDebt = ledger.reduce((a, r) => a + Math.max(0, r[debtField[cat]] || 0), 0)
+    return { id: f.id, name: f.name, kindFa: f.kindFa, cat, opening: f.opening, received: f.received, spent: f.spent, balance: f.balance, unitDebt }
+  })
+  const total = funds.reduce((a, f) => ({
+    opening: a.opening + f.opening, received: a.received + f.received, spent: a.spent + f.spent,
+    balance: a.balance + f.balance, unitDebt: a.unitDebt + f.unitDebt
+  }), { opening: 0, received: 0, spent: 0, balance: 0, unitDebt: 0 })
+  return { funds, total }
+}
+
 // ---------- ضریب تأخیر در پرداخت ----------
 const gMinusDays = (g, days) => { const d = new Date(Date.parse(g + 'T00:00:00Z') - days * 86400000); return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}` }
 function lateFeeCategoryId() {
@@ -1161,6 +1386,43 @@ function dashboard() {
   // شارژ ماهانه (تعهد ساکنین) از هزینه‌های واقعی ساختمان جدا حساب می‌شود
   const monthCharge = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM invoices WHERE is_opening=0 AND is_charge=1 AND g_date>=? AND g_date<?`).get(from, to).s
   const monthExpense = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM invoices WHERE is_opening=0 AND is_charge=0 AND is_billing=0 AND g_date>=? AND g_date<?`).get(from, to).s
+  // وصولِ شارژِ این ماه: چند واحد کامل پرداخته‌اند و چقدر وصول شده
+  const chInv = db.prepare(`SELECT * FROM invoices WHERE is_charge=1 AND charge_period=?`).get(p)
+  let charge = null
+  if (chInv) {
+    const sh = db.prepare(`SELECT id, share_amount FROM invoice_shares WHERE invoice_id=?`).all(chInv.id)
+    const paid = sh.filter(s => shareAllocated(s.id) >= s.share_amount).length
+    const collected = sh.reduce((a, s) => a + Math.min(s.share_amount, shareAllocated(s.id)), 0)
+    charge = { units: sh.length, paidUnits: paid, committed: chInv.amount, collected, gap: chInv.amount - collected }
+  }
+  // بدهیِ معوق (+۹۰ روز)
+  const overdueRows = debtors.filter(u => u.aging && u.aging.days > 90)
+  const overdue = { count: overdueRows.length, total: overdueRows.reduce((a, u) => a + u.debt, 0) }
+  // فاکتورهای پیمانکارِ پرداخت‌نشده (خرید)
+  const ciOpen = db.prepare(`SELECT * FROM contractor_invoices WHERE kind<>'sale'`).all()
+    .map(c => ({ ...c, rem: c.amount - (c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0)) })).filter(c => c.rem > 0)
+  const unpaidCI = { count: ciOpen.length, total: ciOpen.reduce((a, c) => a + c.rem, 0) }
+  // طلبِ هر صندوق از ساکنین
+  const fundsOv = fundsOverview().funds
+  // آخرین گردش‌های صندوق
+  const recentMoves = db.prepare(`SELECT t.*, f.name fund_name, i.title inv_title, u.number unit_number FROM fund_txns t
+    LEFT JOIN funds f ON f.id=t.fund_id LEFT JOIN invoices i ON i.id=t.ref_invoice_id
+    LEFT JOIN payments pp ON pp.id=t.ref_payment_id LEFT JOIN units u ON u.id=pp.unit_id
+    ORDER BY t.g_date DESC, t.id DESC LIMIT 6`).all()
+    .map(t => ({ j: t.j_date, fund: t.fund_name, isIn: t.type === 'in' || t.type === 'transfer_in', amount: t.amount,
+      title: t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : (TXN_LABEL[t.type] || t.type)),
+      dtype: t.ref_payment_id ? 'payment' : t.ref_invoice_id ? 'invoice' : t.ref_cinvoice_id ? 'contractor' : '', refid: t.ref_payment_id || t.ref_invoice_id || t.ref_cinvoice_id }))
+  // آخرین اسنادِ دفتر روزنامه
+  const recentDocs = journalReport({}).rows.slice(-6).reverse()
+  // هشدارها
+  const alerts = []
+  for (const f of funds) if (f.balance < 0) alerts.push({ level: 'red', text: `کسریِ ${f.name}: ${f.balance}`, amount: -f.balance, fund: f.id, kind: 'fund' })
+  const missing = missingChargePeriods()
+  if (missing.length) alerts.push({ level: 'amber', kind: 'charge', text: `شارژِ ${missing.length} ماه صادر نشده` })
+  if (unpaidCI.count) alerts.push({ level: 'amber', kind: 'ci', text: `${unpaidCI.count} فاکتور پیمانکارِ پرداخت‌نشده`, amount: unpaidCI.total })
+  if (overdue.count) alerts.push({ level: 'amber', kind: 'overdue', text: `${overdue.count} بدهکارِ بالای ۹۰ روز`, amount: overdue.total })
+  const unpaidExp = unpaidExpensesTotal()
+  if (unpaidExp > 0) alerts.push({ level: 'amber', kind: 'exp', text: 'هزینه‌های پرداخت‌نشده از صندوق', amount: unpaidExp })
   return {
     funds, fundTotal: funds.reduce((s, f) => s + f.balance, 0),
     totalDebt, totalCredit, managerDebt: managerDebt(),
@@ -1168,9 +1430,11 @@ function dashboard() {
     unitCount: units.filter(u => u.active).length,
     topDebtors: debtors.slice(0, 5),
     openInvoices: listInvoices({ status: 'open', limit: 8 }),
-    missingCharges: missingChargePeriods(),
-    unpaidExpenses: unpaidExpensesTotal(), interFund: interFundDebts(),
-    fundStats: fundStats(), projectSummaries: projectsList().filter(p => projectChargeInvoice(p.id)).map(p => ({ id: p.id, title: p.title, status: p.status, statusFa: p.statusFa, ...projectSummary(p) }))
+    missingCharges: missing,
+    unpaidExpenses: unpaidExp, interFund: interFundDebts(),
+    fundStats: fundStats(), projectSummaries: projectsList().filter(p => projectChargeInvoice(p.id)).map(p => ({ id: p.id, title: p.title, status: p.status, statusFa: p.statusFa, ...projectSummary(p) })),
+    charge, overdue, unpaidCI, ciOpen: ciOpen.slice(0, 5).map(c => ({ id: c.id, title: c.title, vendor: c.vendor_name, rem: c.rem, project_id: c.project_id })),
+    fundsOv, recentMoves, recentDocs, alerts
   }
 }
 function debtorsReport() {
@@ -1656,29 +1920,37 @@ const pSep = n => faNum(String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?
 const pMoney = r => pSep(isTomanDisp() ? (r || 0) / 10 : (r || 0))
 const printLayout = (title, inner) => `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${hEsc(title)}</title>
 <style>
-@page{size:A4;margin:14mm}
+@page{size:A4;margin:13mm}
 *{box-sizing:border-box}
-body{font-family:Tahoma,'IRANSans','Vazirmatn',system-ui,sans-serif;color:#111;margin:0;font-size:13px;line-height:1.8;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+body{font-family:Tahoma,'IRANSans','Vazirmatn',system-ui,sans-serif;color:#1a2230;margin:0;font-size:12.5px;line-height:1.75;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff}
 .stmt{max-width:182mm;margin:0 auto}
-h1{font-size:19px;margin:0 0 2px}
-.sub{color:#555;font-size:12px;margin:0 0 10px}
-.big{font-size:17px;font-weight:800;border:2px solid #1d5fa8;border-radius:8px;padding:11px 14px;margin:10px 0;background:#f2f6fc}
-h3{font-size:14px;margin:14px 0 4px}
-table{width:100%;border-collapse:collapse;margin:6px 0}
-th,td{border:1px solid #cbd5e1;padding:6px 8px;text-align:right;font-size:12px}
-th{background:#eef2f7;font-weight:700}
-.num{font-variant-numeric:tabular-nums}
-.tot td{font-weight:800;background:#f8fafc}
+h1{font-size:19px;margin:0 0 2px;color:#0f2847}
+.sub{color:#5b6472;font-size:11.5px;margin:0 0 10px}
+.big{font-size:17px;font-weight:800;border:1.5px solid #1d5fa8;border-radius:10px;padding:11px 14px;margin:10px 0;background:#eef4fc}
+h3{font-size:13.5px;margin:14px 0 4px}
+/* جدول‌ها: استاندارد حسابداری — سرستونِ پررنگ، ردیف‌های یک‌درمیان، ترازِ عددی، جمعِ متمایز */
+table{width:100%;border-collapse:collapse;margin:8px 0;border:1px solid #c3cedd;border-radius:8px;overflow:hidden}
+th,td{border:1px solid #dbe3ee;padding:7px 9px;text-align:right;font-size:11.5px;vertical-align:middle}
+thead th{background:#1d5fa8;color:#fff;font-weight:700;font-size:11.5px;border-color:#1a558f;white-space:nowrap}
+tbody tr:nth-child(even){background:#f4f7fb}
+tbody tr:nth-child(odd){background:#fff}
+tbody tr:hover{background:#eaf1fa}
+.num{font-variant-numeric:tabular-nums;text-align:left;direction:ltr;white-space:nowrap}
+th.num{text-align:left}
+tr.tot td,tr.tot th{font-weight:800;background:#e8eef7;border-top:2px solid #1d5fa8;color:#0f2847}
 .amt-out{color:#c0392b}.amt-in{color:#0f8a56}
-.foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#666;font-size:11px;text-align:center}
+.foot{margin-top:16px;border-top:1px solid #cbd5e1;padding-top:8px;color:#7a828f;font-size:10.5px;text-align:center}
 .sign{display:flex;justify-content:space-between;margin-top:22px;font-size:12px;color:#333}
-.kpis{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0}
-.kpi{flex:1 1 130px;border:1px solid #cbd5e1;border-radius:8px;padding:8px 11px;background:#f8fafc}
-.kpi .k{font-size:11px;color:#555}
-.kpi .v{font-size:16px;font-weight:800;margin-top:3px}
-.kpi .s{font-size:10px;color:#777;margin-top:1px}
-.sech{font-size:14px;margin:15px 0 4px;font-weight:800}
+.kpis{display:flex;flex-wrap:wrap;gap:9px;margin:10px 0}
+.kpi{flex:1 1 130px;border:1px solid #d3dce8;border-radius:10px;padding:9px 12px;background:#fbfcfe;box-shadow:0 1px 2px rgba(16,40,71,.05)}
+.kpi .k{font-size:10.5px;color:#5b6472}
+.kpi .v{font-size:16px;font-weight:800;margin-top:3px;color:#0f2847;direction:ltr;text-align:right}
+.kpi .v.ok{color:#0f8a56}.kpi .v.warn{color:#c0392b}
+.kpi .s{font-size:9.5px;color:#8a919d;margin-top:1px}
+.sech{font-size:13.5px;margin:16px 0 5px;font-weight:800;color:#0f2847;border-right:4px solid #1d5fa8;padding:2px 9px 2px 0;background:#f4f7fb;border-radius:0 6px 6px 0}
 .ok{color:#0f8a56}.warn{color:#c0392b}
+tr,td,th,.kpi{break-inside:avoid}
+thead{display:table-header-group}
 </style></head><body><div class="stmt">${inner}</div></body></html>`
 
 function printUnitHtml(c) {
@@ -1691,10 +1963,10 @@ function printUnitHtml(c) {
     <div class="sub">صورت‌حساب واحد ${faNum(u.number)}${u.resident_name ? ' — ' + hEsc(u.resident_name) : ''} · تاریخ صدور: ${faNum(c.today)}</div>
     <div class="big">${debtLine}</div>
     <h3>ریز بدهکاری‌ها</h3>
-    <table><thead><tr><th>شرح</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
-    ${open.length ? open.map(s => `<tr><td>${hEsc(s.title)}</td><td>${hEsc(s.category || '—')}</td><td class="num">${s.is_opening ? 'انتقالی' : faNum(s.j_date)}</td>
+    <table><thead><tr><th>شماره سند</th><th>شرح</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
+    ${open.length ? open.map(s => `<tr><td class="num">${faNum(s.invoice_id)}</td><td>${hEsc(s.title)}</td><td>${hEsc(s.category || '—')}</td><td class="num">${s.is_opening ? 'انتقالی' : faNum(s.j_date)}</td>
       <td class="num">${pMoney(s.share_amount)}</td><td class="num">${pMoney(s.paid)}</td><td class="num amt-out">${pMoney(s.remaining)}</td></tr>`).join('')
-    : '<tr><td colspan="6" style="text-align:center;color:#888">بدهیِ بازی ندارید</td></tr>'}
+    : '<tr><td colspan="7" style="text-align:center;color:#888">بدهیِ بازی ندارید</td></tr>'}
     </tbody></table>
     <h3>دریافتی‌های ثبت‌شده‌ی شما</h3>
     <table><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>توضیح</th></tr></thead><tbody>
@@ -1783,13 +2055,117 @@ function printInvoiceHtml(id) {
   const totOcc = shares.reduce((a, s) => a + s.occShare, 0), totCom = shares.reduce((a, s) => a + s.comShare, 0)
   const inner = `
     <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
-    <div class="sub">صورت‌ریز تقسیم فاکتور: ${hEsc(inv.title)}${inv.category ? ' — ' + hEsc(inv.category) : ''} · تاریخ: ${faNum(inv.j_date)} · روش: ${METHOD_FA[inv.method] || inv.method}${inv.doc_no ? ' · سند: ' + faNum(inv.doc_no) : ''}</div>
+    <div class="sub">صورت‌ریز تقسیم فاکتور: ${hEsc(inv.title)}${inv.category ? ' — ' + hEsc(inv.category) : ''} · شمارهٔ سند: ${faNum(inv.id)} · تاریخ: ${faNum(inv.j_date)} · روش: ${METHOD_FA[inv.method] || inv.method}${inv.doc_no ? ' · سند فیزیکی: ' + faNum(inv.doc_no) : ''}</div>
     <div class="big">مبلغ کل فاکتور: ${pMoney(inv.amount)} ${U}${combined ? ` · جمع سهمِ نفرات: ${pMoney(totOcc)} · جمع سهمِ مشاعات: ${pMoney(totCom)}` : ''}</div>
     <table><thead><tr>${head}</tr></thead><tbody>${rows}
       <tr class="tot">${combined ? `<td colspan="4">جمع</td><td class="num">${pMoney(totOcc)}</td><td class="num">${pMoney(totCom)}</td><td class="num">${pMoney(inv.amount)}</td>` : `<td colspan="2">جمع</td><td class="num">${pMoney(inv.amount)}</td>`}</tr>
     </tbody></table>
     <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
   return printLayout('صورت‌ریز فاکتور — ' + inv.title, inner)
+}
+
+// گزارشِ چاپیِ فاکتوری با ریزِ سهم و بدهیِ هر واحد برای هر فاکتور (برای ارائه به اهالی/هیئت‌مدیره)
+const METHOD_EXPLAIN = {
+  equal: 'مساوی بین واحدها', area: 'به نسبت متراژ', occupants: 'به نسبت نفرات',
+  occ_common: 'نفرات + ۱ سهم مشاعات (سرانه)', per_unit_charge: 'به نسبت شارژ ماهانه', custom: 'دستی'
+}
+function printInvoicesReportHtml(fundId, status, jFrom, jTo) {
+  const U = pUnitFa()
+  const kpi = (k, v, s, cls) => `<div class="kpi"><div class="k">${k}</div><div class="v ${cls || ''}">${v}</div>${s ? `<div class="s">${s}</div>` : ''}</div>`
+  const norm = s => String(s || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/-/g, '/').trim()
+  const nf = norm(jFrom), nt = norm(jTo)
+  let invs = listInvoices(fundId ? { fund_id: fundId } : {})
+  const isSettled = i => i.payable ? (i.fundUnpaid <= 0) : (i.remaining <= 0)
+  if (status === 'settled') invs = invs.filter(isSettled)
+  else if (status === 'open') invs = invs.filter(i => !isSettled(i))
+  if (nf) invs = invs.filter(i => norm(i.j_date) >= nf)
+  if (nt) invs = invs.filter(i => norm(i.j_date) <= nt)
+  const amountSum = invs.reduce((a, i) => a + i.amount, 0)
+  const fundPaidSum = invs.reduce((a, i) => a + (i.payable ? i.fundPaid : 0), 0)
+  const fundUnpaidSum = invs.reduce((a, i) => a + (i.payable ? i.fundUnpaid : 0), 0)
+  const resDue = invs.reduce((a, i) => a + ((i.shareCount > 0 && !i.from_fund) ? Math.max(0, i.remaining) : 0), 0)
+  const fund = fundId ? db.prepare(`SELECT name FROM funds WHERE id=?`).get(fundId) : null
+  const today = (() => { const t = todayJ(); return jStr(t.jy, t.jm, t.jd) })()
+  const statusFa = status === 'settled' ? 'تسویه‌شده' : status === 'open' ? 'تسویه‌نشده' : 'همه'
+  // داده‌ها را یک‌بار جمع می‌کنیم تا سه بخش از آن ساخته شود
+  const details = invs.map(i => ({
+    i, shares: db.prepare(`SELECT s.*, u.number, u.resident_name, u.area, u.occupants, u.common_units, u.occupied
+      FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY u.floor, CAST(u.number AS INTEGER), u.id`).all(i.id)
+      .map(s => { const paid = shareAllocated(s.id); return { ...s, paid, remaining: s.share_amount - paid } })
+  }))
+  const statusTxtOf = i => i.payable
+    ? (i.fundUnpaid <= 0 ? '<span class="ok">پرداخت‌شده از صندوق</span>' : i.fundPaid > 0 ? '<span class="warn">بخشی پرداخت‌شده</span>' : '<span class="warn">پرداخت‌نشده از صندوق</span>')
+    : (i.remaining <= 0 ? '<span class="ok">وصول‌شده</span>' : '<span class="warn">در حال وصول</span>')
+  // بخش ۱: فهرست فاکتورها
+  const invListTable = `<table><thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>مبلغ</th><th>پرداخت از صندوق</th><th>وصول از ساکنین</th><th>وضعیت</th></tr></thead><tbody>
+    ${invs.map(i => `<tr><td class="num">${faNum(i.id)}</td><td>${hEsc(i.title)}</td><td>${hEsc(i.categoryName)}</td><td class="num">${faNum(i.j_date)}</td><td class="num">${pMoney(i.amount)}</td>
+      <td class="num">${i.payable ? pMoney(i.fundPaid) : '—'}</td>
+      <td class="num">${(i.shareCount > 0 && !i.from_fund) ? pMoney(i.collected) : '—'}</td>
+      <td>${statusTxtOf(i)}</td></tr>`).join('')}
+    <tr class="tot"><td colspan="4">جمع</td><td class="num">${pMoney(amountSum)}</td><td class="num">${pMoney(fundPaidSum)}</td><td class="num">—</td><td></td></tr>
+    </tbody></table>`
+  // بخش ۲: بدهیِ هر واحد به این صندوق (مجموعِ ماندهٔ فاکتورهای تسهیمی)
+  const byUnit = new Map()
+  for (const { shares } of details) for (const s of shares) {
+    const u = byUnit.get(s.unit_id) || { number: s.number, name: s.resident_name, share: 0, paid: 0, rem: 0 }
+    u.share += s.share_amount; u.paid += s.paid; u.rem += Math.max(0, s.remaining); byUnit.set(s.unit_id, u)
+  }
+  const faToEn2 = x => parseInt(String(x).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
+  const unitAgg = [...byUnit.values()].sort((a, b) => faToEn2(a.number) - faToEn2(b.number))
+  const tAgg = unitAgg.reduce((a, u) => ({ share: a.share + u.share, paid: a.paid + u.paid, rem: a.rem + u.rem }), { share: 0, paid: 0, rem: 0 })
+  const unitDebtTable = `<table><thead><tr><th>واحد</th><th>ساکن</th><th>جمع سهم</th><th>پرداخت‌شده</th><th>بدهیِ مانده</th></tr></thead><tbody>
+    ${unitAgg.length ? unitAgg.map(u => `<tr><td class="num">${faNum(u.number)}</td><td>${hEsc(u.name || '—')}</td><td class="num">${pMoney(u.share)}</td>
+      <td class="num amt-in">${pMoney(u.paid)}</td><td class="num ${u.rem > 0 ? 'amt-out' : ''}">${u.rem > 0 ? pMoney(u.rem) : '۰'}</td></tr>`).join('') : '<tr><td colspan="5" style="text-align:center;color:#888">واحدی نیست</td></tr>'}
+    <tr class="tot"><td colspan="2">جمع کل</td><td class="num">${pMoney(tAgg.share)}</td><td class="num">${pMoney(tAgg.paid)}</td><td class="num">${pMoney(tAgg.rem)}</td></tr>
+    </tbody></table>`
+  // بخش ۳: ریزِ فاکتور‌به‌فاکتور
+  const blocks = details.map(({ i, shares }) => {
+    const statusTxt = statusTxtOf(i)
+    const meta = `دسته: ${hEsc(i.categoryName)} · صندوق: ${hEsc(i.fundName)} · تاریخ: ${faNum(i.j_date)}`
+      + (i.payable ? ` · پرداخت از صندوق: ${pMoney(i.fundPaid)}${i.fundUnpaid > 0 ? ` (مانده ${pMoney(i.fundUnpaid)})` : ''}` : '')
+    let unitTable = ''
+    if (shares.length && !i.from_fund) {
+      const totShare = shares.reduce((a, s) => a + s.share_amount, 0)
+      const totPaid = shares.reduce((a, s) => a + s.paid, 0)
+      const totRem = shares.reduce((a, s) => a + s.remaining, 0)
+      // ستون‌های مبنای محاسبه بر اساس روش تسهیم
+      const occ = s => s.occupied ? (+s.occupants || 0) : 0, com = s => +s.common_units || 0
+      let mHead = '', mCell = () => '', spanExtra = 0
+      if (i.method === 'occ_common') { mHead = '<th>نفرات</th><th>مشاعات</th><th>ضریب</th>'; spanExtra = 3; mCell = s => `<td class="num">${faNum(occ(s))}</td><td class="num">${faNum(com(s))}</td><td class="num">${faNum(occ(s) + com(s))}</td>` }
+      else if (i.method === 'occupants') { mHead = '<th>نفرات</th>'; spanExtra = 1; mCell = s => `<td class="num">${faNum(occ(s))}</td>` }
+      else if (i.method === 'area') { mHead = '<th>متراژ</th>'; spanExtra = 1; mCell = s => `<td class="num">${faNum(s.area || 0)}</td>` }
+      unitTable = `<table><thead><tr><th>واحد</th><th>ساکن</th>${mHead}<th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
+        ${shares.map(s => `<tr><td class="num">${faNum(s.number)}</td><td>${hEsc(s.resident_name || '—')}</td>${mCell(s)}
+          <td class="num">${pMoney(s.share_amount)}</td><td class="num amt-in">${pMoney(s.paid)}</td>
+          <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${s.remaining > 0 ? pMoney(s.remaining) : '۰'}</td></tr>`).join('')}
+        <tr class="tot"><td colspan="${2 + spanExtra}">جمع</td><td class="num">${pMoney(totShare)}</td><td class="num">${pMoney(totPaid)}</td><td class="num">${pMoney(totRem)}</td></tr>
+        </tbody></table>`
+    } else if (i.from_fund) {
+      unitTable = `<div class="sub">هزینهٔ جاری — از صندوق پرداخت می‌شود و بین واحدها تقسیم نمی‌شود.</div>`
+    }
+    return `<div style="margin:14px 0;break-inside:avoid">
+      <div class="sech">سند ${faNum(i.id)} — ${hEsc(i.title)} — ${pMoney(i.amount)} ${U} · ${statusTxt}</div>
+      <div class="sub">${meta}</div>
+      <div class="sub">روشِ محاسبه: <b>${METHOD_EXPLAIN[i.method] || i.methodFa || i.method}</b>${shares.length && !i.from_fund ? ` · بین ${faNum(shares.length)} واحد` : ''}</div>
+      ${unitTable}</div>`
+  }).join('')
+  const inner = `
+    <h1>${hEsc(getSetting('buildingName') || 'ساختمان')}</h1>
+    <div class="sub">گزارش فاکتوری — ریزِ سهم و بدهیِ واحدها · تاریخ گزارش‌گیری: ${faNum(today)}${(nf || nt) ? ' · بازه: ' + faNum(nf || '…') + ' تا ' + faNum(nt || '…') : ''}${fund ? ' · صندوق: ' + hEsc(fund.name) : ' · همهٔ صندوق‌ها'} · وضعیت: ${statusFa}</div>
+    <div class="kpis">
+      ${kpi('جمع فاکتورها', pMoney(amountSum) + ' ' + U, faNum(invs.length) + ' فاکتور')}
+      ${kpi('پرداخت‌شده از صندوق', pMoney(fundPaidSum) + ' ' + U, '', 'ok')}
+      ${kpi('بدهی به فروشنده', pMoney(fundUnpaidSum) + ' ' + U, '', fundUnpaidSum > 0 ? 'warn' : 'ok')}
+      ${kpi('بدهی ساکنین', pMoney(resDue) + ' ' + U, 'قبوض/پروژهٔ وصول‌نشده', resDue > 0 ? 'warn' : 'ok')}
+    </div>
+    <div class="sech">۱) فهرست فاکتورها</div>
+    ${invListTable}
+    <div class="sech">۲) بدهیِ هر واحد به ${fund ? hEsc(fund.name) : 'صندوق‌ها'}</div>
+    ${unitDebtTable}
+    <div class="sech">۳) ریزِ فاکتور‌به‌فاکتور</div>
+    ${blocks || '<div class="sub">فاکتورِ تسهیمی‌ای نیست</div>'}
+    <div class="foot">صادرشده از «حسابدار ساختمان توی دید» · toyedid.com</div>`
+  return printLayout('گزارش فاکتوری ریز — ' + today, inner)
 }
 
 function printExpensesHtml(r) {
@@ -2140,8 +2516,11 @@ const server = createServer(async (req, res) => {
       if (!(+b.amount > 0)) return sendJSON(res, 400, { error: 'مبلغ فاکتور لازم است' })
       const vname = +b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()
       const kind = b.kind === 'sale' ? 'sale' : 'purchase'
-      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,note,kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`)
-        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), Math.round(+b.amount), d.g_date, d.j_date, b.paid ? 1 : 0, (b.note || '').trim(), kind, nowISO()).lastInsertRowid)
+      const amt = Math.round(+b.amount)
+      // مبلغِ پرداختی: اگر آمده همان؛ وگرنه از تیکِ «تسویه‌شده» (کل یا صفر)؛ سقف = مبلغ فاکتور
+      const paidAmt = Math.max(0, Math.min(amt, b.paidAmount != null ? Math.round(+b.paidAmount) : (b.paid ? amt : 0)))
+      const id = Number(db.prepare(`INSERT INTO contractor_invoices(project_id,vendor_id,vendor_name,title,amount,g_date,j_date,paid,paid_amount,note,kind,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`)
+        .run(+b.projectId || 0, +b.vendorId || 0, vname, (b.title || '').trim(), amt, d.g_date, d.j_date, paidAmt >= amt ? 1 : 0, paidAmt, (b.note || '').trim(), kind, nowISO()).lastInsertRowid)
       syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(id), user.id)
       return sendJSON(res, 200, { ok: true, id })
     }
@@ -2150,10 +2529,16 @@ const server = createServer(async (req, res) => {
       const cur = db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]); if (!cur) return sendJSON(res, 404, { error: 'یافت نشد' })
       const b = await jbody(req); const d = (b.jy || b.jm || b.jd) ? jDates(b) : { g_date: cur.g_date, j_date: cur.j_date }; if (d.error) return sendJSON(res, 400, d)
       const vname = b.vendorId != null ? (+b.vendorId ? vendorName(+b.vendorId) : (b.vendorName || '').trim()) : cur.vendor_name
-      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,note=?,kind=? WHERE id=?`)
+      const amt = b.amount != null ? Math.round(+b.amount) : cur.amount
+      // مبلغِ پرداختی: اگر paidAmount آمده همان؛ وگرنه از تیکِ paid؛ وگرنه مقدارِ فعلی (با سقفِ مبلغ)
+      const paidAmt = Math.max(0, Math.min(amt,
+        b.paidAmount != null ? Math.round(+b.paidAmount)
+          : b.paid != null ? (b.paid ? amt : 0)
+            : (cur.paid_amount != null ? cur.paid_amount : (cur.paid ? cur.amount : 0))))
+      db.prepare(`UPDATE contractor_invoices SET vendor_id=?,vendor_name=?,title=?,amount=?,g_date=?,j_date=?,paid=?,paid_amount=?,note=?,kind=? WHERE id=?`)
         .run(b.vendorId != null ? +b.vendorId : cur.vendor_id, vname, (b.title ?? cur.title).trim(),
-          b.amount != null ? Math.round(+b.amount) : cur.amount, d.g_date, d.j_date,
-          b.paid != null ? (b.paid ? 1 : 0) : cur.paid, (b.note ?? cur.note).trim(),
+          amt, d.g_date, d.j_date,
+          paidAmt >= amt ? 1 : 0, paidAmt, (b.note ?? cur.note).trim(),
           b.kind ? (b.kind === 'sale' ? 'sale' : 'purchase') : cur.kind, +ciM[1])
       syncContractorFundTxn(db.prepare(`SELECT * FROM contractor_invoices WHERE id=?`).get(+ciM[1]), user.id)
       return sendJSON(res, 200, { ok: true })
@@ -2471,8 +2856,10 @@ const server = createServer(async (req, res) => {
       const fundId = +b.fundId
       if (!db.prepare(`SELECT 1 FROM funds WHERE id=?`).get(fundId)) return sendJSON(res, 400, { error: 'صندوق مقصد را انتخاب کنید' })
       const d = jDates(b); if (d.error) return sendJSON(res, 400, d)
-      const targets = +b.invoiceId ? [+b.invoiceId] : null
       const note = (b.note || '').trim()
+      // بابتِ یک فاکتورِ مشخص → strict روی همان؛ بابتِ «کلی» → auto آگاه‌به‌صندوق، فقط روی سبدِ همان صندوقِ مقصد
+      const targets = +b.invoiceId ? [+b.invoiceId] : null
+      const strict = !!+b.invoiceId
       let count = 0, total = 0
       for (const it of (Array.isArray(b.items) ? b.items : [])) {
         const unitId = +it.unitId, amount = Math.round(+it.amount)
@@ -2481,7 +2868,7 @@ const server = createServer(async (req, res) => {
         const id = Number(db.prepare(`INSERT INTO payments(unit_id,amount,g_date,j_date,fund_id,method,doc_file,note,created_by,created_at)
           VALUES(?,?,?,?,?,?,?,?,?,?)`).run(unitId, amount, d.g_date, d.j_date, fundId, b.method || '', '', note || 'دریافت گروهی', user.id, nowISO()).lastInsertRowid)
         addFundTxn(fundId, 'in', amount, { ...d, payId: id, note: `دریافتی واحد ${u.number}`, by: user.id })
-        allocatePayment(id, targets)
+        allocatePayment(id, targets, strict)
         count++; total += amount
       }
       if (!count) return sendJSON(res, 400, { error: 'هیچ واحدی با مبلغ معتبر انتخاب نشد' })
@@ -2674,6 +3061,11 @@ const server = createServer(async (req, res) => {
     if (path === '/api/report/unit-ledger' && M === 'GET') return sendJSON(res, 200, unitLedgerReport())
     if (path === '/api/report/unit-statement' && M === 'GET') { const r = unitStatement(+Q.unitId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'واحد یافت نشد' }) }
     if (path === '/api/report/fund' && M === 'GET') { const r = fundReport(+Q.fundId); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'صندوق یافت نشد' }) }
+    if (path === '/api/report/funds-overview' && M === 'GET') return sendJSON(res, 200, fundsOverview())
+    if (path === '/api/report/journal' && M === 'GET') return sendJSON(res, 200, journalReport(Q))
+    if (path === '/api/report/ledger-accounts' && M === 'GET') return sendJSON(res, 200, ledgerAccounts())
+    if (path === '/api/report/ledger' && M === 'GET') { const r = generalLedger(Q.type, Q.id, Q.from || '', Q.to || ''); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'حساب یافت نشد' }) }
+    if (path === '/api/report/voucher' && M === 'GET') { const r = voucherOf(Q.dtype, +Q.id); return r ? sendJSON(res, 200, r) : sendJSON(res, 404, { error: 'سند یافت نشد' }) }
     if (path === '/api/report/manager' && M === 'GET') return sendJSON(res, 200, managerReport(Q.from, Q.to))
     if (path === '/api/report/balance' && M === 'GET') return sendJSON(res, 200, balanceCheck())
     if (path === '/api/report/fundpay' && M === 'GET') return sendJSON(res, 200, fundPaymentsReport(Q.from, Q.to))
@@ -2863,6 +3255,12 @@ const server = createServer(async (req, res) => {
         if (r.error) { res.writeHead(404, { 'Content-Type': 'text/html; charset=utf-8' }); return res.end('<p style="font-family:Tahoma;direction:rtl">داده‌ای نیست</p>') }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
         return res.end(printExpensesHtml(r))
+      }
+      if (path === '/print/report/invoices') {
+        let html = printInvoicesReportHtml(+Q.fund || 0, Q.status || '', Q.from || '', Q.to || '')
+        if (Q.print === '1') html = html.replace('</body>', '<script>window.addEventListener("load",function(){setTimeout(function(){window.print()},300)})</script></body>')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' })
+        return res.end(html)
       }
       const piM = /^\/print\/invoice\/(\d+)$/.exec(path)
       if (piM) {

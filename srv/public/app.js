@@ -85,6 +85,16 @@ function confirmBox(msg, onYes) {
 
 // ---------- تاریخ ----------
 const todayJ = () => { const d = new Date(); return toJalaali(d.getFullYear(), d.getMonth() + 1, d.getDate()) }
+// مُهرِ تاریخِ شمسی برای نامِ فایل (ارقامِ لاتین): 1405-08-30
+const jStamp = () => { const t = todayJ(); return `${t.jy}-${String(t.jm).padStart(2, '0')}-${String(t.jd).padStart(2, '0')}` }
+// چاپ/ذخیرهٔ PDF از مرورگر با نامِ پیش‌فرضِ مناسب (نامِ گزارش + تاریخ) تا تکراری/گنگ نشود
+window.printAs = function (name) {
+  const prev = document.title
+  document.title = `${name} — ${jStamp()}`
+  const restore = () => { document.title = prev; window.removeEventListener('afterprint', restore) }
+  window.addEventListener('afterprint', restore)
+  setTimeout(() => { window.print() }, 40)
+}
 function dateBoxHtml(pre, j) {
   const t = j || todayJ()
   return `<div class="datebox">
@@ -181,10 +191,64 @@ async function boot() {
   $('#meName').textContent = ME.name; $('#meRole').textContent = ME.roleFa
   await loadMeta()
   if (!isAdmin()) $('#nav').querySelector('[data-view="settings"]').classList.add('hidden')
+  setupQuickFab()
   render()
+}
+// دکمهٔ دسترسی سریعِ شناور (فقط مدیر): فاکتور، پرداخت هزینه، دریافت گروهی/تکی
+function setupQuickFab() {
+  const wrap = $('#fabWrap'); if (!wrap) return
+  if (!isAdmin()) { wrap.classList.add('hidden'); return }
+  wrap.classList.remove('hidden')
+  const close = () => wrap.classList.remove('open')
+  $('#fabMain').onclick = e => { e.stopPropagation(); wrap.classList.toggle('open') }
+  document.addEventListener('click', e => { if (!wrap.contains(e.target)) close() })
+  wrap.querySelectorAll('[data-quick]').forEach(b => b.onclick = () => {
+    close()
+    const q = b.dataset.quick
+    if (q === 'invoice') invoiceForm()
+    else if (q === 'receipt') paymentForm()
+    else if (q === 'bulk') bulkPaymentForm()
+    else if (q === 'pay') payExpensePicker()
+    else if (q === 'charge') quickIssueCharge()
+  })
+}
+// صدور سریعِ شارژ ماهانه از دکمهٔ دسترسی سریع
+async function quickIssueCharge() {
+  const p = await api('/api/charge/periods')
+  const body = openModal('📅 صدور شارژ ماهانه', `<div class="form">
+    <p class="hint">ماه جاری: <b>${escFa(p.currentFa)}</b></p>
+    ${p.missing.length ? `<p class="sub">ماه‌هایی که هنوز شارژ صادر نشده‌اند:</p>
+      <div class="tablewrap"><table class="tx"><tbody>${p.missing.map(m => `<tr><td><b>${escFa(m.fa)}</b></td>
+        <td style="text-align:left"><button class="btn tiny primary" data-qissue="${m.period}">صدور</button></td></tr>`).join('')}</tbody></table></div>
+      <div class="fbtns" style="margin-top:8px"><button class="btn primary" id="qiAll">صدور همهٔ ماه‌های عقب‌افتاده</button></div>`
+    : '<div class="empty">شارژِ همهٔ ماه‌ها صادر شده است ✔</div>'}
+  </div>`, `<button class="btn" id="qiCancel">بستن</button>`)
+  $('#qiCancel').onclick = closeModal
+  body.querySelectorAll('[data-qissue]').forEach(b => b.onclick = guard(async () => { const r = await post('/api/charge/issue', { period: b.dataset.qissue }); toast(r.created === false ? 'این ماه قبلاً صادر شده' : 'شارژ صادر شد'); closeModal(); refresh() }))
+  if ($('#qiAll')) $('#qiAll').onclick = guard(async () => { for (const m of p.missing) await post('/api/charge/issue', { period: m.period }); toast('شارژِ ماه‌های عقب‌افتاده صادر شد'); closeModal(); refresh() })
+}
+// انتخابِ یک فاکتورِ هزینهٔ پرداخت‌نشده از صندوق و رفتن به فرم پرداخت
+async function payExpensePicker() {
+  const rows = (await api('/api/invoices')).filter(i => i.payable && i.fundUnpaid > 0)
+  const body = openModal('💸 پرداخت هزینه از صندوق', rows.length ? `<div class="form">
+    <p class="hint">فاکتوری که می‌خواهی از صندوق پرداخت کنی را انتخاب کن:</p>
+    <div class="tablewrap" style="max-height:60vh;overflow:auto"><table class="tx">
+      <thead><tr><th>شماره</th><th>عنوان</th><th>صندوق</th><th>مانده پرداخت</th><th></th></tr></thead><tbody>
+      ${rows.map(i => `<tr><td class="num">${faDigit(i.id)}</td><td><b>${esc(i.title)}</b><br><span class="hint">${esc(i.categoryName)} · ${faDigit(i.j_date)}</span></td>
+        <td class="hint">${esc(i.fundName)}</td><td class="num amt-out">${money(i.fundUnpaid)}</td>
+        <td><button class="btn tiny primary" data-pay="${i.id}">پرداخت</button></td></tr>`).join('')}
+      </tbody></table></div></div>` : '<div class="empty">هیچ هزینهٔ پرداخت‌نشده‌ای از صندوق نیست 🎉</div>',
+    `<button class="btn" id="pxCancel">بستن</button>`)
+  $('#pxCancel').onclick = closeModal
+  body.querySelectorAll('[data-pay]').forEach(b => b.onclick = async () => {
+    const i = rows.find(x => x.id === +b.dataset.pay)
+    const d = await api('/api/invoice/' + i.id)
+    payExpenseForm(d.invoice, d.funds)
+  })
 }
 function showAuth(setup) {
   $('#auth').classList.remove('hidden'); $('#shell').classList.add('hidden')
+  { const fw = $('#fabWrap'); if (fw) fw.classList.add('hidden') }
   $('#authTitle').textContent = setup ? 'ساخت حساب مدیر ساختمان' : 'ورود'
   $('#authSub').textContent = setup ? 'اولین اجرا — حساب مدیر را بسازید' : 'برای ادامه وارد شوید'
   $('#authBtn').textContent = setup ? 'ساخت حساب' : 'ورود'
@@ -301,54 +365,97 @@ const statusBadge = s => s === 'settled' ? '<span class="badge b-settled">تسو
 VIEWS.dashboard = async () => {
   const d = await api('/api/report/dashboard')
   const missing = d.missingCharges || []
-  const notice = missing.length && isAdmin()
-    ? `<div class="notice printhide"><span>⚠️ شارژ ${missing.length === 1 ? 'ماه' : missing.length + ' ماه'} صادر نشده است: ${missing.map(m => escFa(m.fa)).join('، ')}</span>
-       <button class="btn small primary" id="issueAll">صدور شارژ این ماه‌ها</button></div>` : ''
   const rcBanner = (NEEDS_RC && isAdmin())
-    ? `<div class="notice printhide" style="border-color:var(--out);background:var(--out-soft)"><span>⚠️ برای حساب شما <b>کد بازیابی</b> تنظیم نشده. اگر رمزتان را فراموش کنید، دسترسی به دفاتر مالی از دست می‌رود.</span>
-       <button class="btn small primary" id="getRc">🔑 الان کد بازیابی بگیر</button></div>` : ''
-  $('#view').innerHTML = head('داشبورد', `${esc(META.buildingName)} · ${escFa(d.monthFa)} · ${faDigit(d.unitCount)} واحد فعال`,
-    adminOnly(`<button class="btn primary" id="qInvoice">＋ فاکتور</button><button class="btn" id="qPayment">＋ دریافتی</button>`)) + rcBanner + notice +
-    `<div class="kpis">
-      ${kpi('موجودی کل صندوق‌ها', money(d.fundTotal), d.funds.map(f => `${esc(f.name)}: ${money(f.balance)}`).join(' · '), 'hero')}
+    ? `<div class="notice printhide" style="border-color:var(--out);background:var(--out-soft)"><span>برای حساب شما <b>کد بازیابی</b> تنظیم نشده. اگر رمزتان را فراموش کنید، دسترسی به دفاتر مالی از دست می‌رود.</span>
+       <button class="btn small primary" id="getRc">دریافت کد بازیابی</button></div>` : ''
+  const bal = v => v < 0 ? `<span class="amt-out">(${money(-v)})</span>` : money(v)
+  // ---- نیازمند توجه ----
+  const alertAct = a => a.kind === 'charge' ? (isAdmin() ? `<button class="btn tiny primary" id="issueAll">صدور شارژ</button>` : '')
+    : a.kind === 'fund' ? `<button class="link" data-fundcard="${a.fund}">گردش صندوق</button>`
+      : a.kind === 'ci' ? `<button class="link" data-go="projects">پروژه‌ها</button>`
+        : a.kind === 'overdue' ? `<button class="link" data-go="reports">بدهکاران</button>`
+          : a.kind === 'exp' ? (isAdmin() ? `<button class="link" id="dPayExp">پرداخت</button>` : '') : ''
+  const alertsHtml = (d.alerts || []).length ? `<div class="panel dalerts"><div class="phead"><b>نیازمند توجه</b><span class="hint">${faDigit(d.alerts.length)} مورد</span></div>
+    ${d.alerts.map(a => `<div class="darow"><span class="ddot ${a.level === 'red' ? 'r' : 'a'}"></span>
+      <span class="dtx">${a.kind === 'fund' ? esc(a.text.split(':')[0]) + ': <b class="num amt-out">' + money(a.amount) + '</b>' : esc(a.text)}${a.kind !== 'fund' && a.amount ? ' — <b class="num">' + money(a.amount) + '</b>' : ''}${a.kind === 'charge' ? ' (' + missing.map(m => escFa(m.fa)).join('، ') + ')' : ''}</span>
+      <span class="dact">${alertAct(a)}</span></div>`).join('')}</div>` : ''
+  // ---- صندوق‌ها ----
+  const fundsOv = d.fundsOv || []
+  const totalFundDebt = fundsOv.reduce((a, f) => a + (f.unitDebt || 0), 0)
+  const fundCards = fundsOv.map(f => `<div class="kpi kclick" data-fundcard="${f.id}"><div class="lbl">${esc(f.name)}</div>
+      <div class="val num">${bal(f.balance)}<span class="r"> ${curFa()}</span></div>
+      <div class="d">طلب از ساکنین: <b class="num">${money(f.unitDebt || 0)}</b>${f.balance < 0 ? ' · <span class="amt-out">کسری</span>' : ''}</div></div>`).join('')
+  // ---- ساکنین ----
+  const ch = d.charge
+  const chargeKpi = ch ? `<div class="kpi"><div class="lbl">وصولِ شارژِ ${escFa(d.monthFa)}</div>
+      <div class="val num">${faDigit(ch.paidUnits)} <span class="r">از ${faDigit(ch.units)} واحد</span></div>
+      <div class="dbar"><span style="width:${ch.units ? Math.round(ch.paidUnits / ch.units * 100) : 0}%"></span></div>
+      <div class="d">وصول ${money(ch.collected)} از ${money(ch.committed)}</div></div>`
+    : kpiN('وصولِ شارژِ ' + d.monthFa, '—', 'شارژ این ماه صادر نشده')
+  // ---- آخرین‌ها ----
+  const moves = (d.recentMoves || []).map(t => `<tr class="${t.dtype ? 'clickable' : ''}" ${t.dtype ? `data-voucher="${t.dtype}:${t.refid}"` : ''}>
+      <td class="num">${faDigit(t.j)}</td><td>${esc(t.title)}<br><span class="hint">${esc(t.fund || '')}</span></td>
+      <td class="num ${t.isIn ? 'amt-in' : 'amt-out'}">${t.isIn ? '+' : '−'}${money(t.amount)}</td></tr>`).join('')
+  const K = { charge: 'شارژ', bill: 'قبوض', proj: 'پروژه', exp: 'جاری', pay: 'دریافتی', ci: 'پیمانکار' }
+  const docs = (d.recentDocs || []).map(r => `<tr class="clickable" data-voucher="${r.dtype}:${r.id}">
+      <td class="num">${esc(r.no)}</td><td><span class="catpill">${K[r.kind] || ''}</span></td><td>${esc(r.title)}</td><td class="num">${money(r.debit)}</td></tr>`).join('')
+  const ciRows = (d.ciOpen || []).map(c => `<tr class="clickable" data-voucher="contractor:${c.id}"><td>${esc(c.title || '—')}<br><span class="hint">${esc(c.vendor || '')}</span></td><td class="num amt-out">${money(c.rem)}</td></tr>`).join('')
+
+  $('#view').innerHTML = head('داشبورد', `${META.buildingName || ''} · ${d.monthFa} · ${d.unitCount} واحد فعال`,
+    adminOnly(`<button class="btn primary" id="qInvoice">＋ فاکتور</button><button class="btn" id="qPayment">＋ دریافتی</button>`)) + rcBanner + alertsHtml +
+    `<div class="dsec">نقدینگی صندوق‌ها</div>
+    <div class="kpis dfunds">
+      <div class="kpi"><div class="lbl">موجودی کل صندوق‌ها</div><div class="val num">${bal(d.fundTotal)}<span class="r"> ${curFa()}</span></div>
+        <div class="d">طلب صندوق‌ها از ساکنین: <b class="num">${money(totalFundDebt)}</b></div></div>
+      ${fundCards}
+    </div>
+    <div class="dsec">وضعیت ساکنین</div>
+    <div class="kpis">
       ${kpi('کل بدهی ساکنین', money(d.totalDebt), '', 'bad')}
-      ${kpi('کل بستانکاری', money(d.totalCredit), 'علی‌الحساب واحدها', 'good')}
-      ${kpi('طلب مدیر از صندوق', money(d.managerDebt), 'پرداخت‌شده از جیب مدیر', d.managerDebt > 0 ? 'warn' : '')}
-      ${kpi('دریافتی ' + faDigit(d.monthFa), money(d.monthIn), '', 'good')}
-      ${kpi('شارژ صادرشده ' + faDigit(d.monthFa), money(d.monthCharge ?? 0), 'تعهد شارژ ساکنین این ماه')}
-      ${kpi('هزینه ' + faDigit(d.monthFa), money(d.monthExpense ?? d.monthOut), 'بدون شارژ ماهانه', 'bad')}
-      ${kpi('خالص ماه', signed(d.monthIn - (d.monthExpense ?? d.monthOut)), 'دریافتی منهای هزینه')}
-      ${kpi('هزینه‌های پرداخت‌نشده', money(d.unpaidExpenses ?? 0), 'بدهی صندوق به فاکتورها', (d.unpaidExpenses ?? 0) > 0 ? 'warn' : '')}
+      ${chargeKpi}
+      ${kpi('بدهیِ معوق (بیش از ۹۰ روز)', money(d.overdue ? d.overdue.total : 0), faDigit(d.overdue ? d.overdue.count : 0) + ' واحد', d.overdue && d.overdue.count ? 'bad' : '')}
+      ${d.totalCredit > 0 ? kpi('کل بستانکاری واحدها', money(d.totalCredit), 'علی‌الحساب', 'good') : kpi('شکافِ وصولِ شارژ ماه', money(ch ? Math.max(0, ch.gap) : 0), 'تعهد منهای وصول', ch && ch.gap > 0 ? 'bad' : '')}
     </div>
-    ${(d.interFund && d.interFund.length) ? `<div class="notice printhide">↔️ بدهی بین صندوق‌ها: ${d.interFund.map(x => `${escFa(x.fromName)} به ${escFa(x.toName)} ${money(x.amount)} ${curFa()}`).join('، ')} — از صفحه‌ی صندوق‌ها تسویه کنید</div>` : ''}
+    <div class="dsec">جریانِ ${escFa(d.monthFa)}</div>
+    <div class="kpis">
+      ${kpi('دریافتیِ ماه', money(d.monthIn), '', 'good')}
+      ${kpi('هزینهٔ ماه', money(d.monthExpense ?? d.monthOut), 'بدون شارژ ماهانه', 'bad')}
+      ${kpi('خالصِ ماه', signed(d.monthIn - (d.monthExpense ?? d.monthOut)), 'دریافتی منهای هزینه')}
+      ${kpi('شارژِ صادرشدهٔ ماه', money(d.monthCharge ?? 0), 'تعهد ساکنین')}
+    </div>
+    ${d.managerDebt > 0 ? `<div class="notice printhide">طلبِ مدیر از صندوق (پرداخت از جیب): <b class="num">${money(d.managerDebt)}</b> ${curFa()} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
+    ${(d.interFund && d.interFund.length) ? `<div class="notice printhide">بدهی بین صندوق‌ها: ${d.interFund.map(x => `${escFa(x.fromName)} به ${escFa(x.toName)} ${money(x.amount)} ${curFa()}`).join('، ')} — از صفحهٔ صندوق‌ها تسویه کنید.</div>` : ''}
     <div class="grid2">
-      <div class="panel"><div class="phead"><b>۵ بدهکار بزرگ</b><button class="link" data-go="reports">گزارش بدهکاران</button></div>
-        <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
-        ${d.topDebtors.length ? d.topDebtors.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
-          <td class="num amt-out">${money(u.debt)}</td><td>${u.aging ? `<span class="badge b-open">${u.aging.bucket}</span>` : '—'}</td></tr>`).join('')
-        : emptyRow(4, 'هیچ بدهکاری وجود ندارد 🎉')}
-        </tbody></table></div></div>
-      <div class="panel"><div class="phead"><b>فاکتورهای باز اخیر</b><button class="link" data-go="invoices">همه‌ی فاکتورها</button></div>
-        <div class="tablewrap"><table class="tx"><thead><tr><th>عنوان</th><th>تاریخ</th><th>مبلغ</th><th>مانده</th></tr></thead><tbody>
-        ${d.openInvoices.length ? d.openInvoices.map(i => `<tr class="clickable" data-inv="${i.id}"><td><b>${esc(i.title)}</b><br><span class="catpill">${esc(i.categoryName)}</span></td>
-          <td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td><td class="num amt-out">${money(i.remaining)}</td></tr>`).join('')
-        : emptyRow(4, 'فاکتور بازی نیست')}
-        </tbody></table></div></div>
+      <div>
+        <div class="panel"><div class="phead"><b>بدهکاران اصلی</b><button class="link" data-go="reports">گزارش بدهکاران</button></div>
+          <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>بدهی</th><th>قدمت</th></tr></thead><tbody>
+          ${d.topDebtors.length ? d.topDebtors.map(u => `<tr class="clickable" data-unit="${u.id}"><td><b>${escFa(u.number)}</b></td><td>${esc(u.resident_name || '—')}</td>
+            <td class="num amt-out">${money(u.debt)}</td><td class="hint">${u.aging ? (u.aging.days > 9000 ? 'انتقالی' : u.aging.bucket + ' روز') : '—'}</td></tr>`).join('')
+          : emptyRow(4, 'هیچ بدهکاری وجود ندارد')}
+          </tbody></table></div></div>
+        <div class="panel"><div class="phead"><b>پیمانکار — پرداخت‌نشده</b><span class="hint">${d.unpaidCI && d.unpaidCI.count ? 'جمع ' + money(d.unpaidCI.total) : ''}</span></div>
+          <div class="tablewrap"><table class="tx"><tbody>${ciRows || emptyRow(2, 'فاکتور پیمانکارِ پرداخت‌نشده‌ای نیست')}</tbody></table></div></div>
+      </div>
+      <div>
+        <div class="panel"><div class="phead"><b>آخرین گردش صندوق‌ها</b><button class="link" data-go="funds">صندوق‌ها</button></div>
+          <div class="tablewrap"><table class="tx"><tbody>${moves || emptyRow(3, 'گردشی ثبت نشده')}</tbody></table></div></div>
+        <div class="panel"><div class="phead"><b>آخرین اسنادِ دفتر روزنامه</b><button class="link" id="dJournal">دفتر روزنامه</button></div>
+          <div class="tablewrap"><table class="tx"><thead><tr><th>سند</th><th>نوع</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>${docs || emptyRow(4, 'سندی نیست')}</tbody></table></div></div>
+      </div>
     </div>
-    <div class="panel"><div class="phead"><b>تفکیک صندوق‌ها</b><span class="hint">ورودی و خرج‌شده از هر صندوق</span><button class="link" data-go="funds">مدیریت صندوق‌ها</button></div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>صندوق</th><th>موجودی فعلی</th><th>جمع ورودی</th><th>جمع خرج‌شده</th></tr></thead><tbody>
-      ${(d.fundStats || []).map(x => `<tr><td><b>${esc(x.name)}</b>${x.kindFa ? ` <span class="catpill">${esc(x.kindFa)}</span>` : ''}</td>
-        <td class="num ${x.balance < 0 ? 'amt-out' : 'amt-in'}">${money(x.balance)}</td><td class="num amt-in">${money(x.received)}</td><td class="num amt-out">${money(x.spent)}</td></tr>`).join('') || emptyRow(4, 'صندوقی ثبت نشده')}
-      </tbody></table></div></div>
-    ${(d.projectSummaries && d.projectSummaries.length) ? `<div class="panel"><div class="phead"><b>خلاصهٔ پروژه‌ها — یک نگاه</b><button class="link" data-go="projects">همهٔ پروژه‌ها</button></div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>پروژه</th><th>برآورد مصوب</th><th>هزینهٔ واقعی</th><th>وصول از ساکنین</th><th>بدهی ساکنین</th><th>سهم واقعی هر واحد</th><th>مازاد/کسری صندوق</th></tr></thead><tbody>
-      ${d.projectSummaries.map(s => `<tr class="clickable" data-proj="${s.id}"><td><b>${esc(s.title)}</b> <span class="badge ${projStatusCls(s.status)}">${esc(s.statusFa)}</span></td>
-        <td class="num">${money(s.budget)}</td><td class="num">${money(s.netCost)}</td><td class="num amt-in">${money(s.collected)}</td>
-        <td class="num ${s.debt > 0 ? 'amt-out' : ''}">${money(s.debt)}</td><td class="num">${money(s.perUnitFinal)}</td>
-        <td class="num">${s.fundBalance >= 0 ? `<span class="amt-in">مازاد ${money(s.fundBalance)}</span>` : `<span class="amt-out">کسری ${money(-s.fundBalance)}</span>`}</td></tr>`).join('')}
+    ${(d.projectSummaries && d.projectSummaries.length) ? `<div class="panel"><div class="phead"><b>پروژه‌های عمرانی</b><button class="link" data-go="projects">همهٔ پروژه‌ها</button></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>پروژه</th><th>برآورد مصوب</th><th>هزینهٔ واقعی</th><th>وصول از ساکنین</th><th>بدهی ساکنین</th><th>مازاد/کسری صندوق</th></tr></thead><tbody>
+      ${d.projectSummaries.map(s => `<tr class="clickable" data-proj="${s.id}"><td><b>${esc(s.title)}</b> <span class="hint">${esc(s.statusFa)}</span></td>
+        <td class="num">${money(s.budget)}</td><td class="num">${money(s.netCost)}</td><td class="num">${money(s.collected)}</td>
+        <td class="num ${s.debt > 0 ? 'amt-out' : ''}">${money(s.debt)}</td>
+        <td class="num">${s.fundBalance >= 0 ? `مازاد ${money(s.fundBalance)}` : `<span class="amt-out">کسری ${money(-s.fundBalance)}</span>`}</td></tr>`).join('')}
       </tbody></table></div></div>` : ''}`
   wireCommon()
   document.querySelectorAll('[data-proj]').forEach(c => c.onclick = () => showProject(+c.dataset.proj))
+  document.querySelectorAll('[data-fundcard]').forEach(c => c.onclick = () => { VIEW = 'funds'; $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === 'funds')); showFund(+c.dataset.fundcard) })
+  document.querySelectorAll('#view [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
+  if ($('#dJournal')) $('#dJournal').onclick = () => { VIEW = 'reports'; repTab = 'journal'; $('#nav').querySelectorAll('.nav-i').forEach(x => x.classList.toggle('on', x.dataset.view === 'reports')); render() }
+  if ($('#dPayExp')) $('#dPayExp').onclick = () => payExpensePicker()
   if ($('#issueAll')) $('#issueAll').onclick = guard(async () => {
     for (const m of missing) await post('/api/charge/issue', { period: m.period })
     toast('شارژ ماه‌های جامانده صادر شد'); refresh()
@@ -361,6 +468,7 @@ VIEWS.dashboard = async () => {
     showRecoveryCode(r.code, { isNew: false, onDone: () => refresh() })
   })
 }
+
 function wireCommon() {
   document.querySelectorAll('[data-go]').forEach(b => b.onclick = () => {
     VIEW = b.dataset.go
@@ -384,8 +492,9 @@ VIEWS.invoices = async () => {
       <div class="chips">${[['', 'همه'], ['open', 'باز'], ['settled', 'تسویه']].map(([v, t]) => `<button class="chip ${invFilter.status === v ? 'on' : ''}" data-st="${v}">${t}</button>`).join('')}</div>
     </div>
     <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تسهیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
+      <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>تسهیم</th><th>مبلغ</th><th>پرداخت‌شده</th><th>مانده</th><th>وضعیت</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}">
+        <td class="num"><b>${faDigit(i.id)}</b></td>
         <td><b>${esc(i.title)}</b>${i.is_charge ? ' <span class="badge b-charge">شارژ</span>' : ''}${i.from_fund ? ' <span class="badge b-charge">جاری — از صندوق</span>' : ''}${i.paid_by_manager ? ' <span class="badge b-mgr">جیب مدیر</span>' : ''}${(i.payable && i.fundUnpaid > 0) ? ' <span class="badge b-open">از صندوق پرداخت‌نشده</span>' : (i.payable && i.fundPaid > 0 ? ' <span class="badge b-settled">از صندوق پرداخت‌شده</span>' : '')}${i.vendor ? `<br><span class="dim" style="font-size:11px;color:var(--faint)">${esc(i.vendor)}</span>` : ''}</td>
         <td><span class="catpill">${esc(i.categoryName)}</span></td>
         <td class="num">${faDigit(i.j_date)}</td>
@@ -395,8 +504,8 @@ VIEWS.invoices = async () => {
         <td class="num ${(i.payable ? i.fundUnpaid : i.remaining) > 0 ? 'amt-out' : ''}">${money(i.payable ? i.fundUnpaid : i.remaining)}</td>
         <td>${statusBadge(i.status)}</td>
         ${adminOnly(`<td class="rowact"><button class="btn tiny" data-editinv="${i.id}" title="ویرایش">✏️</button> <button class="del" data-delinv="${i.id}" title="حذف">🗑</button></td>`)}</tr>`).join('')
-      : emptyRow(isAdmin() ? 9 : 8, 'هنوز فاکتوری ثبت نشده است')}</tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="3">جمع (${faDigit(rows.length)} فاکتور)</td><td></td><td class="num">${money(totals.amount)}</td>
+      : emptyRow(isAdmin() ? 10 : 9, 'هنوز فاکتوری ثبت نشده است')}</tbody>
+      ${rows.length ? `<tfoot><tr><td colspan="4">جمع (${faDigit(rows.length)} فاکتور)</td><td></td><td class="num">${money(totals.amount)}</td>
         <td class="num">${money(totals.collected)}</td><td class="num">${money(totals.remaining)}</td><td colspan="${isAdmin() ? 2 : 1}"></td></tr></tfoot>` : ''}
     </table></div></div>`
   wireCommon()
@@ -588,6 +697,7 @@ const showInvoice = guard(async id => {
         : kpi('وصول‌شده', money(i.collected), '', 'good') + kpi('مانده', money(i.remaining), '', i.remaining > 0 ? 'bad' : '')}
     </div>
     ${i.from_fund ? `<div class="notice" style="margin:0 0 12px">💡 هزینهٔ جاری: از صندوق «${esc(i.fundName)}» پرداخت می‌شود و بین واحدها تقسیم نمی‌شود (از محل شارژِ ماهانه).</div>` : ''}
+    <div class="pline"><span>شمارهٔ سند (سیستمی)</span><b class="num">${faDigit(i.id)}</b></div>
     <div class="pline"><span>دسته</span><b>${esc(i.categoryName)}</b></div>
     <div class="pline"><span>تاریخ</span><b class="num">${faDigit(i.j_date)}</b></div>
     ${i.from_fund ? '' : `<div class="pline"><span>روش تسهیم</span><b>${esc(i.methodFa)}</b></div>`}
@@ -656,15 +766,15 @@ VIEWS.payments = async () => {
   $('#view').innerHTML = head('دریافتی‌ها', 'واریز ساکنین به صندوق‌ها',
     adminOnly(`<button class="btn primary" id="newPay">＋ ثبت دریافتی</button><button class="btn" id="bulkPay">👥 دریافت گروهی</button>`) + `<a class="btn" href="/api/export/payments">⬇️ CSV</a>`) +
     `<div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th>${adminOnly('<th></th>')}</tr></thead>
+      <thead><tr><th>شماره رسید</th><th>واحد</th><th>ساکن</th><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th>${adminOnly('<th></th>')}</tr></thead>
       <tbody>${rows.length ? rows.map(p => `<tr>
-        <td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
+        <td class="num"><b>${faDigit(p.id)}</b></td><td><b>${escFa(p.number)}</b></td><td>${esc(p.resident_name || '—')}</td><td class="num">${faDigit(p.j_date)}</td>
         <td class="num amt-in">${money(p.amount)}</td><td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td>
         <td class="num">${money(p.allocated)}</td><td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
         <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
         ${adminOnly(`<td class="actcell"><button class="mini-btn" data-editpay="${p.id}">ویرایش</button><button class="del" data-delpay="${p.id}">🗑</button></td>`)}</tr>`).join('')
-      : emptyRow(isAdmin() ? 10 : 9, 'هنوز دریافتی ثبت نشده است')}</tbody>
-      ${rows.length ? `<tfoot><tr><td colspan="3">جمع (${faDigit(rows.length)} فقره)</td><td class="num">${money(total)}</td><td colspan="${isAdmin() ? 6 : 5}"></td></tr></tfoot>` : ''}
+      : emptyRow(isAdmin() ? 11 : 10, 'هنوز دریافتی ثبت نشده است')}</tbody>
+      ${rows.length ? `<tfoot><tr><td colspan="4">جمع (${faDigit(rows.length)} فقره)</td><td class="num">${money(total)}</td><td colspan="${isAdmin() ? 6 : 5}"></td></tr></tfoot>` : ''}
     </table></div></div>`
   document.querySelectorAll('[data-delpay]').forEach(b => b.onclick = () =>
     confirmBox('این دریافتی حذف شود؟ تخصیص‌هایش آزاد می‌شود و بدهی واحد برمی‌گردد.',
@@ -684,13 +794,16 @@ function bulkPaymentForm() {
       <td><b>${escFa(num)}</b>${resident ? ` <span class="hint">${esc(resident)}</span>` : ''}</td>
       <td class="num ${ref > 0 ? 'amt-out' : ''}">${ref > 0 ? money(ref) : '—'}</td>
       <td><input class="inp num bpAmt" data-money="" inputmode="numeric" value="${prefill > 0 ? sep(Math.round(r2d(prefill))) : ''}"></td></tr>`
-  const body = openModal('👥 دریافت گروهی شارژ', `<div class="form">
+  const fundCat = fid => { const f = META.funds.find(x => x.id === fid) || {}; return /شارژ|جاری/.test(f.name) ? 'charge' : /قبوض|متفرقه/.test(f.name) ? 'omrani' : 'project' }
+  const catField = { charge: 'charge', omrani: 'omrani', project: 'projectDue' }
+  let ledger = {} // unitId -> {charge, omrani, projectDue}
+  const body = openModal('👥 دریافت گروهی', `<div class="form">
     <div class="frow">
       <label class="f">صندوق مقصد<select class="inp" id="bpFund">${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
       <label class="f">تاریخ${dateBoxHtml('bp')}</label>
     </div>
     <div class="frow">
-      <label class="f">بابت<select class="inp" id="bpInvoice"><option value="0">بدهی کلی (خودکار از قدیمی‌ترین)</option></select></label>
+      <label class="f">بابت<select class="inp" id="bpInvoice"><option value="0">بدهیِ همان صندوقِ مقصد (خودکار)</option></select></label>
       <label class="f">روش پرداخت<select class="inp" id="bpMethod"><option value="">—</option>${META.payMethods.map(m => `<option>${esc(m)}</option>`).join('')}</select></label>
     </div>
     <div class="frow" style="align-items:end">
@@ -719,29 +832,57 @@ function bulkPaymentForm() {
       amt.addEventListener('input', updateSum)
     })
   }
+  let allInvoices = []
+  const catLabel = { charge: 'شارژ', omrani: 'قبوض و متفرقه', project: 'عمرانی' }
+  // بدهیِ همان صندوقِ مقصد برای هر واحد (از گزارش تفکیکی)
+  const bucketDebt = uid => {
+    const L = ledger[uid]; if (!L) return 0
+    const cat = fundCat(+$('#bpFund').value)
+    return Math.max(0, L[catField[cat]] || 0)
+  }
   const renderList = guard(async () => {
     const invId = +$('#bpInvoice').value
-    let rowsHtml
+    let rowsHtml, col
     if (invId) {
+      col = 'سهم مانده'
       const d = await api('/api/invoice/' + invId)
       const debtors = d.shares.filter(s => s.remaining > 0)
       rowsHtml = debtors.length ? debtors.map(s => bpRow(s.unit_id, s.number, s.resident_name, s.remaining, s.remaining, true)).join('')
         : `<tr><td colspan="4"><div class="empty">همه‌ی واحدهای این فاکتور تسویه‌اند</div></td></tr>`
     } else {
-      rowsHtml = META.units.filter(u => u.active).map(u => bpRow(u.id, u.number, u.resident_name, u.debt, 0, false)).join('')
+      const cat = fundCat(+$('#bpFund').value)
+      col = `بدهی به صندوقِ ${catLabel[cat] || ''}`
+      rowsHtml = META.units.filter(u => u.active).map(u => { const d = bucketDebt(u.id); return bpRow(u.id, u.number, u.resident_name, d, 0, false) }).join('')
     }
-    $('#bpList').innerHTML = `<table class="tx"><thead><tr><th></th><th>واحد</th><th>${invId ? 'سهم مانده' : 'بدهی فعلی'}</th><th>مبلغ دریافتی</th></tr></thead><tbody>${rowsHtml}</tbody></table>`
+    $('#bpList').innerHTML = `<table class="tx"><thead><tr><th></th><th>واحد</th><th>${col}</th><th>مبلغ دریافتی</th></tr></thead><tbody>${rowsHtml}</tbody></table>`
     wireMoney($('#bpList')); bindRows(); $('#bpAll').checked = false; updateSum()
   })
 
+  // گزینه‌های «بابت» را بر اساس صندوقِ مقصد بساز؛ برای صندوق شارژ غیرفعال (فقط خودکار)
+  const refreshBabat = () => {
+    const fid = +$('#bpFund').value, cat = fundCat(fid), sel = $('#bpInvoice')
+    const wrap = sel.closest('label.f')
+    sel.innerHTML = `<option value="0">بدهیِ همان صندوقِ مقصد (خودکار، از قدیمی‌ترین)</option>`
+    if (cat === 'charge') {
+      // شارژ فقط از خود صندوق پرداخت می‌شود و بابتِ تک‌فاکتور معنا ندارد
+      sel.value = '0'; sel.disabled = true
+      if (wrap) wrap.style.opacity = '.5'
+    } else {
+      sel.disabled = false
+      if (wrap) wrap.style.opacity = ''
+      allInvoices.filter(i => i.fund_id === fid && i.remaining > 0 && i.shareCount > 0 && !i.from_fund).forEach(i => {
+        const o = document.createElement('option'); o.value = i.id
+        o.textContent = `${i.title} — ${faDigit(i.j_date)} (مانده ${money(i.remaining)})`; sel.appendChild(o)
+      })
+    }
+  }
   ;(async () => {
-    const rows = await api('/api/invoices')
-    const sel = $('#bpInvoice')
-    rows.filter(i => i.remaining > 0).forEach(i => {
-      const o = document.createElement('option'); o.value = i.id
-      o.textContent = `${i.title} — ${faDigit(i.j_date)} (مانده ${money(i.remaining)})`; sel.appendChild(o)
-    })
+    const [rep, invs] = await Promise.all([api('/api/report/unit-ledger'), api('/api/invoices')])
+    ;(rep.units || rep.rows || rep || []).forEach(u => { ledger[u.unitId || u.id] = u })
+    allInvoices = invs
+    refreshBabat(); renderList()
   })()
+  $('#bpFund').onchange = () => { refreshBabat(); renderList() }
   $('#bpInvoice').onchange = renderList
   $('#bpAll').onchange = () => { const on = $('#bpAll').checked; body.querySelectorAll('.bpChk').forEach(c => { c.checked = on; c.dispatchEvent(new Event('change')) }) }
   $('#bpApplyAll').onclick = () => {
@@ -933,6 +1074,28 @@ function unitForm(u) {
 const showUnitCard = guard(async id => {
   const d = await api(`/api/unit/${id}`)
   const u = d.unit
+  // دفتر معین واحد: سهم‌ها (بدهکار) + پرداخت‌ها (بستانکار) به‌ترتیب تاریخ، با ماندهٔ دونده
+  const moeinEntries = []
+  d.shares.forEach(s => moeinEntries.push({ g: s.g_date || '', j: s.is_opening ? '—' : s.j_date, no: s.invoice_id, title: s.title, cat: s.category || '—', isOpen: s.is_opening, inv: s.invoice_id, debit: s.share_amount, credit: 0, k: 0 }))
+  d.payments.forEach(p => moeinEntries.push({ g: p.g_date || '', j: p.is_opening ? '—' : p.j_date, no: p.id, pid: p.id, title: 'دریافتی' + (p.fund_name ? ' — ' + p.fund_name : '') + (p.note ? ' · ' + p.note : ''), cat: 'دریافتی', inv: 0, debit: 0, credit: p.amount, k: 1 }))
+  moeinEntries.sort((a, b) => (a.g < b.g ? -1 : a.g > b.g ? 1 : a.k - b.k))
+  let _bal = 0
+  const moeinRows = moeinEntries.map(e => {
+    _bal += e.debit - e.credit
+    const balTxt = _bal > 0 ? money(_bal) : _bal < 0 ? '(' + money(-_bal) + ')' : '۰'
+    const balCls = _bal > 0 ? 'amt-out' : _bal < 0 ? 'amt-in' : ''
+    return `<tr class="${e.inv || e.pid ? 'clickable' : ''}" ${e.inv ? `data-inv="${e.inv}"` : e.pid ? `data-voucher="payment:${e.pid}"` : ''}>
+      <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td>
+      <td class="num">${e.k ? 'رسید ' : 'سند '}${faDigit(e.no)}</td>
+      <td><b>${esc(e.title)}</b>${e.isOpen ? ' <span class="badge b-open">انتقالی</span>' : ''}</td>
+      <td><span class="catpill">${esc(e.cat)}</span></td>
+      <td class="num ${e.debit ? 'amt-out' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
+      <td class="num ${e.credit ? 'amt-in' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
+      <td class="num ${balCls}">${balTxt}</td>
+      <td class="printhide rowact">${e.inv ? docActs('invoice', e.inv) : e.pid ? docActs('payment', e.pid) : ''}</td></tr>`
+  }).join('')
+  const mTotD = moeinEntries.reduce((a, e) => a + e.debit, 0), mTotC = moeinEntries.reduce((a, e) => a + e.credit, 0)
+  const mFinal = mTotD - mTotC
   $('#view').innerHTML =
     `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
     head(`کارت واحد ${faDigit(u.number)}`, `${u.resident_name || 'بدون ساکن'} · ${faDigit(u.area || 0)} متر · ${faDigit(u.occupants || 0)} نفر${u.occupied ? '' : ' · خالی'}`,
@@ -945,23 +1108,38 @@ const showUnitCard = guard(async id => {
       ${kpi('شارژ ماهانه', money(u.chargeAmount), u.monthly_charge != null ? 'اختصاصی این واحد' : 'مبلغ سراسری')}
     </div>
     ${u.phone ? `<div class="panel printhide" style="padding:12px 16px">📞 تلفن: <b class="num">${faDigit(u.phone)}</b></div>` : ''}
-    <div class="panel printhide"><div class="phead"><b>سهم‌ها و بدهی‌ها</b><span class="hint">${d.aging ? 'قدمت قدیمی‌ترین بدهی: ' + d.aging.bucket + ' روز' : ''}</span></div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>فاکتور</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
-      ${d.shares.length ? d.shares.map(s => `<tr class="clickable" data-inv="${s.invoice_id}">
-        <td><b>${esc(s.title)}</b>${s.is_opening ? ' <span class="badge b-open">انتقالی</span>' : ''}</td>
-        <td><span class="catpill">${esc(s.category || '—')}</span></td><td class="num">${s.is_opening ? '—' : faDigit(s.j_date)}</td>
-        <td class="num">${money(s.share_amount)}</td><td class="num amt-in">${money(s.paid)}</td>
-        <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${money(s.remaining)}</td></tr>`).join('') : emptyRow(6, 'سهمی ثبت نشده')}
-      </tbody><tfoot><tr><td colspan="3">جمع</td>
-        <td class="num">${money(d.shares.reduce((a, s) => a + s.share_amount, 0))}</td>
-        <td class="num amt-in">${money(d.shares.reduce((a, s) => a + s.paid, 0))}</td>
-        <td class="num amt-out">${money(d.shares.reduce((a, s) => a + Math.max(0, s.remaining), 0))}</td></tr></tfoot></table></div></div>
+    <div class="panel printhide"><div class="phead"><b>سهم‌ها و بدهی‌ها</b>
+      <span class="chips" style="margin:0"><button class="chip on" data-ucview="inv">نمای فاکتوری</button><button class="chip" data-ucview="moein">دفتر معین</button></span></div>
+      <div id="ucInvView">
+        <div class="hint" style="padding:2px 4px 6px">هر فاکتور: سهمِ این واحد، چقدر پرداخت شده و چقدر مانده${d.aging ? ' · قدمت قدیمی‌ترین بدهی: ' + d.aging.bucket + ' روز' : ''}</div>
+        <div class="tablewrap"><table class="tx"><thead><tr><th>فاکتور</th><th>دسته</th><th>تاریخ</th><th>سهم</th><th>پرداخت‌شده</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
+        ${d.shares.length ? d.shares.map(s => `<tr class="clickable" data-inv="${s.invoice_id}">
+          <td><b>${esc(s.title)}</b>${s.is_opening ? ' <span class="badge b-open">انتقالی</span>' : ''}</td>
+          <td><span class="catpill">${esc(s.category || '—')}</span></td><td class="num">${s.is_opening ? '—' : faDigit(s.j_date)}</td>
+          <td class="num">${money(s.share_amount)}</td><td class="num amt-in">${money(s.paid)}</td>
+          <td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${money(s.remaining)}</td>
+          <td class="printhide rowact">${docActs('invoice', s.invoice_id)}</td></tr>`).join('') : emptyRow(7, 'سهمی ثبت نشده')}
+        </tbody><tfoot><tr><td colspan="3">جمع</td>
+          <td class="num">${money(d.shares.reduce((a, s) => a + s.share_amount, 0))}</td>
+          <td class="num amt-in">${money(d.shares.reduce((a, s) => a + s.paid, 0))}</td>
+          <td class="num amt-out">${money(d.shares.reduce((a, s) => a + Math.max(0, s.remaining), 0))}</td><td class="printhide"></td></tr></tfoot></table></div>
+      </div>
+      <div id="ucMoeinView" class="hidden">
+        <div class="hint" style="padding:2px 4px 6px">بدهکار (سهم/شارژ) · بستانکار (دریافتی) · ماندهٔ دونده؛ ماندهٔ بستانکار داخل پرانتز</div>
+        <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>دسته</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
+        ${moeinRows || emptyRow(8, 'تراکنشی ثبت نشده')}
+        </tbody><tfoot><tr><td colspan="4">جمع</td>
+          <td class="num amt-out">${money(mTotD)}</td>
+          <td class="num amt-in">${money(mTotC)}</td>
+          <td class="num ${mFinal > 0 ? 'amt-out' : mFinal < 0 ? 'amt-in' : ''}">${mFinal > 0 ? money(mFinal) : mFinal < 0 ? '(' + money(-mFinal) + ')' : '۰'}</td><td class="printhide"></td></tr></tfoot></table></div>
+      </div></div>
     <div class="panel printhide"><div class="phead"><b>پرداخت‌ها</b></div>
-      <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th></tr></thead><tbody>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>صندوق</th><th>روش</th><th>تخصیص‌یافته</th><th>علی‌الحساب</th><th>سند</th><th class="printhide">عملیات</th></tr></thead><tbody>
       ${d.payments.length ? d.payments.map(p => `<tr><td class="num">${p.is_opening ? 'انتقالی' : faDigit(p.j_date)}</td><td class="num amt-in">${money(p.amount)}</td>
         <td>${esc(p.fund_name || '—')}</td><td>${esc(p.method || '—')}</td><td class="num">${money(p.allocated)}</td>
         <td class="num ${p.leftover > 0 ? 'pos' : ''}">${money(p.leftover)}</td>
-        <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td></tr>`).join('') : emptyRow(7, 'پرداختی ثبت نشده')}
+        <td>${p.doc_file ? `<a class="doclink" href="/uploads/${encodeURI(p.doc_file)}" target="_blank">📎</a>` : '—'}</td>
+        <td class="printhide rowact">${p.is_opening ? '' : docActs('payment', p.id)}</td></tr>`).join('') : emptyRow(8, 'پرداختی ثبت نشده')}
       </tbody></table></div></div>
     ${d.creditUses && d.creditUses.length ? `<div class="panel printhide"><div class="phead"><b>پرداخت از محل طلب</b><span class="hint">استفاده از بستانکاریِ واحد بابت بدهی‌های دیگر (بدون ورود نقدینگی)</span></div>
       <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>مبلغ</th><th>بابت</th><th>توضیح</th></tr></thead><tbody>
@@ -974,6 +1152,13 @@ const showUnitCard = guard(async id => {
   if ($('#ucPay')) $('#ucPay').onclick = () => paymentForm(u.id)
   $('#ucStmt').onclick = () => { $('#stmtArea').innerHTML = statementHtml(d); print() }
   $('#ucPdf').onclick = () => saveUnitPdf(u)
+  document.querySelectorAll('[data-ucview]').forEach(b => b.onclick = () => {
+    document.querySelectorAll('[data-ucview]').forEach(x => x.classList.toggle('on', x === b))
+    const inv = b.dataset.ucview === 'inv'
+    $('#ucInvView').classList.toggle('hidden', !inv)
+    $('#ucMoeinView').classList.toggle('hidden', inv)
+  })
+  document.querySelectorAll('#ucMoeinView [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
 })
 
 // خروجی PDF صورت‌حساب واحد: در اپ نصبی مستقیم فایل ذخیره می‌شود؛ در مرورگر صفحه‌ی چاپی باز می‌شود.
@@ -1043,17 +1228,60 @@ const TXN_FA = { in: 'واریز ساکن', out: 'پرداخت فاکتور', tr
 const isIn = t => t === 'in' || t === 'transfer_in'
 const showFund = guard(async id => {
   const d = await api(`/api/funds/${id}/txns`)
+  // دفتر معین صندوق: ورودی=بدهکار · خروجی=بستانکار · ماندهٔ دونده (موجودی)
+  const asc = [...d.rows].reverse()   // از قدیمی به جدید برای ماندهٔ دونده
+  const opening = d.fund.opening_balance || 0
+  const docNoOf = t => t.ref_payment_id ? 'رسید ' + faDigit(t.ref_payment_id)
+    : t.ref_invoice_id ? 'سند ' + faDigit(t.ref_invoice_id)
+      : t.ref_cinvoice_id ? 'پیمانکار ' + faDigit(t.ref_cinvoice_id)
+        : /transfer/.test(t.type) ? 'انتقال' : t.type === 'manager_settle' ? 'تسویه مدیر' : '—'
+  const balCell = v => v > 0 ? money(v) : v < 0 ? '(' + money(-v) + ')' : '۰'
+  let bal = opening
+  const rows = asc.map(t => {
+    const inAmt = isIn(t.type) ? t.amount : 0, outAmt = isIn(t.type) ? 0 : t.amount
+    bal += inAmt - outAmt
+    const va = t.ref_payment_id ? `payment:${t.ref_payment_id}` : t.ref_invoice_id ? `invoice:${t.ref_invoice_id}` : t.ref_cinvoice_id ? `contractor:${t.ref_cinvoice_id}` : ''
+    return `<tr class="${va ? 'clickable' : ''}" ${va ? `data-voucher="${va}"` : ''}><td class="num">${faDigit(t.j_date)}</td><td class="num">${docNoOf(t)}</td>
+      <td><b>${esc(TXN_FA[t.type] || t.type)}</b>${(t.note || t.inv_title || t.unit_number) ? `<br><span class="hint">${esc(t.note || t.inv_title || ('واحد ' + t.unit_number))}</span>` : ''}</td>
+      <td class="num ${inAmt ? 'amt-in' : 'muted'}">${inAmt ? money(inAmt) : '—'}</td>
+      <td class="num ${outAmt ? 'amt-out' : 'muted'}">${outAmt ? money(outAmt) : '—'}</td>
+      <td class="num ${bal < 0 ? 'amt-out' : ''}">${balCell(bal)}</td>
+      <td class="printhide rowact">${va ? docActs(va.split(':')[0], +va.split(':')[1]) : ''}</td></tr>`
+  }).join('')
+  const totIn = asc.reduce((a, t) => a + (isIn(t.type) ? t.amount : 0), 0)
+  const totOut = asc.reduce((a, t) => a + (isIn(t.type) ? 0 : t.amount), 0)
+  // نمای ساده: ورودی/خروجی به‌ترتیب جدید به قدیم، بدون ماندهٔ دونده
+  const simpleRows = d.rows.length ? d.rows.map(t => `<tr><td class="num">${faDigit(t.j_date)}</td><td><span class="catpill">${esc(TXN_FA[t.type] || t.type)}</span></td>
+      <td>${esc(t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : '—'))}</td>
+      <td class="num ${isIn(t.type) ? 'amt-in' : 'muted'}">${isIn(t.type) ? money(t.amount) : '—'}</td>
+      <td class="num ${isIn(t.type) ? 'muted' : 'amt-out'}">${isIn(t.type) ? '—' : money(t.amount)}</td></tr>`).join('') : emptyRow(5, 'گردشی ثبت نشده')
   $('#view').innerHTML = `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
-    head(d.fund.name, `${d.fund.kindFa} · موجودی فعلی: ${moneyU(d.fund.balance)}`) +
-    `<div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>تاریخ</th><th>نوع</th><th>شرح</th><th>ورودی</th><th>خروجی</th></tr></thead><tbody>
-      ${d.rows.length ? d.rows.map(t => `<tr><td class="num">${faDigit(t.j_date)}</td><td><span class="catpill">${esc(TXN_FA[t.type] || t.type)}</span></td>
-        <td>${esc(t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : '—'))}</td>
-        <td class="num amt-in">${isIn(t.type) ? money(t.amount) : ''}</td>
-        <td class="num amt-out">${isIn(t.type) ? '' : money(t.amount)}</td></tr>`).join('') : emptyRow(5, 'گردشی ثبت نشده')}
-      </tbody><tfoot><tr><td colspan="2">موجودی اولیه ${money(d.fund.opening_balance)}</td><td>موجودی فعلی</td>
-        <td colspan="2" class="num">${money(d.fund.balance)}</td></tr></tfoot></table></div></div>`
+    head(d.fund.name, `${d.fund.kindFa} · موجودی فعلی: ${moneyU(d.fund.balance)}`,
+      `<button class="btn small" onclick="printAs('دفتر صندوق ${esc(d.fund.name)}')">🖨 چاپ</button>`) +
+    `<div class="panel"><div class="phead"><b>گردش صندوق</b>
+      <span class="chips" style="margin:0"><button class="chip on" data-fview="simple">نمای ساده</button><button class="chip" data-fview="moein">دفتر معین</button></span></div>
+      <div id="fSimpleView">
+        <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>نوع</th><th>شرح</th><th>ورودی</th><th>خروجی</th></tr></thead><tbody>
+        ${simpleRows}
+        </tbody><tfoot><tr><td colspan="2">موجودی اولیه ${money(opening)}</td><td>موجودی فعلی</td><td colspan="2" class="num ${d.fund.balance < 0 ? 'amt-out' : ''}">${balCell(d.fund.balance)}</td></tr></tfoot></table></div>
+      </div>
+      <div id="fMoeinView" class="hidden">
+        <div class="hint" style="padding:2px 4px 6px">ورودی = بدهکار · خروجی = بستانکار · ماندهٔ دونده (موجودی)؛ کسری داخل پرانتز</div>
+        <div class="tablewrap"><table class="tx">
+        <thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>بدهکار (ورودی)</th><th>بستانکار (خروجی)</th><th>مانده (موجودی)</th><th class="printhide">عملیات</th></tr></thead><tbody>
+        <tr><td class="num">—</td><td class="num">—</td><td><b>موجودی اولیهٔ دوره</b></td><td class="num muted">—</td><td class="num muted">—</td><td class="num ${opening < 0 ? 'amt-out' : ''}">${balCell(opening)}</td><td class="printhide"></td></tr>
+        ${rows || emptyRow(7, 'گردشی ثبت نشده')}
+        </tbody><tfoot><tr><td colspan="3">جمع</td><td class="num amt-in">${money(totIn)}</td><td class="num amt-out">${money(totOut)}</td>
+          <td class="num ${d.fund.balance < 0 ? 'amt-out' : ''}">${balCell(d.fund.balance)}</td><td class="printhide"></td></tr></tfoot></table></div>
+      </div></div>`
   $('#backBtn').onclick = () => { VIEW = 'funds'; render() }
+  document.querySelectorAll('[data-fview]').forEach(b => b.onclick = () => {
+    document.querySelectorAll('[data-fview]').forEach(x => x.classList.toggle('on', x === b))
+    const simple = b.dataset.fview === 'simple'
+    $('#fSimpleView').classList.toggle('hidden', !simple)
+    $('#fMoeinView').classList.toggle('hidden', simple)
+  })
+  document.querySelectorAll('#fMoeinView [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
 })
 function transferForm(funds, preset) {
   const body = openModal('انتقال بین صندوق‌ها', `<div class="form">
@@ -1088,7 +1316,7 @@ function settleForm(funds, debt) {
 // ==================== گزارش‌ها ====================
 let repTab = 'manager', repRange = null
 VIEWS.reports = async () => {
-  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['ledger', 'بدهی تفکیکی واحدها'], ['fund', 'گزارش صندوق'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'صورت‌حساب واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
+  const tabs = [['manager', 'عملکرد مدیر مالی'], ['expenses', 'هزینه‌کرد و شفاف‌سازی'], ['debtors', 'بدهکاران'], ['gl', 'دفتر کل'], ['journal', 'دفتر روزنامه'], ['ledger', 'بدهی تفکیکی واحدها'], ['fund', 'گزارش صندوق'], ['invoices', 'فاکتوری'], ['fundpay', 'پرداخت صندوق‌ها'], ['unit', 'صورت‌حساب واحد'], ['balance', 'تراز کل'], ['projects', 'پروژه‌ها'], ['vendors', 'پیمانکاران']]
   $('#view').innerHTML = head('گزارش‌ها', 'خروجی قابل ارائه به هیئت مدیره و اهالی') +
     `<div class="filters printhide"><div class="chips">${tabs.map(([v, t]) => `<button class="chip ${repTab === v ? 'on' : ''}" data-rt="${v}">${t}</button>`).join('')}</div></div>
      <div id="repBody"><div class="empty">در حال بارگذاری…</div></div>`
@@ -1173,7 +1401,7 @@ REPORTS.manager = async () => {
         <option value="all" ${repRange.label === 'از ابتدا تا امروز' ? 'selected' : ''}>از ابتدا تا امروز</option>
         <option value="custom" ${repRange.custom ? 'selected' : ''}>بازه‌ی دلخواه…</option></select>
       <a class="btn small" href="/api/export/manager?from=${repRange.from}&to=${repRange.to}">⬇️ CSV</a>
-      <button class="btn small" onclick="print()">🖨 چاپ</button>
+      <button class="btn small" onclick="printAs('گزارش عملکرد مدیر مالی')">🖨 چاپ</button>
       <button class="btn small" id="repSummary">📄 خلاصه‌ی هیئت‌مدیره${IS_DESKTOP ? ' (PDF)' : ''}</button>
       <label class="chkline"><input type="checkbox" id="repNames"> نمایش نام بدهکاران</label>
     </div>
@@ -1299,7 +1527,7 @@ REPORTS.debtors = async () => {
   const batchBtn = IS_DESKTOP && r.rows.length
     ? `<button class="btn small" id="dbBatchPdf">📄 صورت‌حساب همه (PDF)</button>` : ''
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><a class="btn small" href="/api/export/debtors">⬇️ CSV</a>${batchBtn}<button class="btn small" onclick="printAs('گزارش بدهکاران')">🖨 چاپ</button></div>
     <div class="kpis">${kpi('جمع کل بدهی', money(r.total), faDigit(r.rows.length) + ' واحد بدهکار', 'hero bad')}
       ${Object.entries(r.buckets).map(([b, v]) => kpi('قدمت ' + b + ' روز', money(v))).join('')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
@@ -1335,11 +1563,12 @@ const saveDebtorsBatchPdf = guard(async rows => {
 REPORTS.ledger = async () => {
   const r = await api('/api/report/unit-ledger')
   const bal = v => v > 0 ? `<span class="amt-out">بدهکار ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبکار ${money(-v)}</span>` : '۰'
+  const ownerBal = v => v > 0 ? `<span class="amt-out">بدهی مالکین ${money(v)}</span>` : v < 0 ? `<span class="amt-in">طلبِ مالکین ${money(-v)}</span>` : '۰'
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><button class="btn small" onclick="printAs('بدهی تفکیکی واحدها')">🖨 چاپ</button></div>
     <p class="hint">بدهیِ هر واحد در سه سبدِ جدا: <b>شارژ ماهانه (جاری)</b> · <b>فیش‌ها و هزینه‌های صندوق عمرانی</b> · <b>پروژه‌ها (بدهی یا طلب)</b>.</p>
     <div class="kpis">
-      ${kpi('جمع کل (خالص)', bal(r.total.net), 'شارژ + قبوض + ماندهٔ پروژه', 'hero bad')}
+      ${kpi('جمع کل (خالص)', ownerBal(r.total.net), 'شارژ + قبوض + ماندهٔ پروژه', 'hero bad')}
       ${kpi('جمع بدهی شارژ', money(r.total.charge), 'جاری', 'bad')}
       ${kpi('جمع بدهی قبوض و متفرقه', money(r.total.omrani), 'آب/برق/گاز و هزینه‌های جزئی', 'bad')}
       ${kpi('تعهدِ پروژه‌ها', bal(r.total.projectDue), 'باقی‌ماندهٔ مصوبه', '')}
@@ -1357,7 +1586,7 @@ REPORTS.ledger = async () => {
         <td class="num">${bal(u.projectBal)}</td>
         <td class="num ${u.net > 0 ? 'amt-out' : u.net < 0 ? 'amt-in' : ''}">${u.net > 0 ? money(u.net) : u.net < 0 ? 'طلبکار ' + money(-u.net) : '۰'}</td></tr>`).join('')
       : emptyRow(7, 'واحدی ثبت نشده')}
-      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.projectDue)}</td><td class="num">${bal(r.total.projectBal)}</td><td class="num">${bal(r.total.net)}</td></tr></tfoot>
+      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num amt-out">${money(r.total.charge)}</td><td class="num amt-out">${money(r.total.omrani)}</td><td class="num">${bal(r.total.projectDue)}</td><td class="num">${bal(r.total.projectBal)}</td><td class="num">${ownerBal(r.total.net)}</td></tr></tfoot>
     </table></div></div>`
   wireCommon()
 }
@@ -1391,32 +1620,288 @@ REPORTS.fund = async () => {
       </div>`
     wireCommon()
   }
-  $('#repBody').innerHTML = `<div class="filters printhide"><select class="inp" id="rfSel"><option value="">— صندوق را انتخاب کنید —</option>
-      ${funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select>
-      <button class="btn small" onclick="print()">🖨 چاپ</button></div>
-    <div id="rfBox"><div class="panel"><div class="empty">یک صندوق را انتخاب کنید</div></div></div>`
+  const ov = await api('/api/report/funds-overview')
+  const t = ov.total
+  $('#repBody').innerHTML = `
+    <div class="filters printhide">
+      <button class="btn small" onclick="printAs('گزارش کامل صندوق‌ها')">🖨 چاپ گزارش کامل</button></div>
+    <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق.</p>
+    <div class="kpis">
+      ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : 'good')}
+      ${kpi('جمع دریافتی', money(t.received), 'از ابتدا', 'good')}
+      ${kpi('جمع مخارج', money(t.spent), 'از ابتدا', 'bad')}
+      ${kpi('جمع بدهیِ واحدها', money(t.unitDebt), 'به همهٔ صندوق‌ها', t.unitDebt > 0 ? 'bad' : 'good')}
+    </div>
+    <div class="panel"><div class="phead"><b>همهٔ صندوق‌ها — یک نگاه</b></div><div class="tablewrap"><table class="tx">
+      <thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>موجودی فعلی</th><th>بدهکارِ واحدها</th></tr></thead><tbody>
+      ${ov.funds.map(f => `<tr class="clickable" data-fund="${f.id}"><td><b>${esc(f.name)}</b></td>
+        <td class="num">${money(f.opening)}</td><td class="num amt-in">${money(f.received)}</td>
+        <td class="num amt-out">${money(f.spent)}</td>
+        <td class="num ${f.balance < 0 ? 'amt-out' : ''}"><b>${money(f.balance)}</b></td>
+        <td class="num ${f.unitDebt > 0 ? 'amt-out' : ''}">${f.unitDebt > 0 ? money(f.unitDebt) : '۰'}</td></tr>`).join('')}
+      </tbody><tfoot><tr><td>جمع کل</td><td class="num">${money(t.opening)}</td><td class="num">${money(t.received)}</td>
+        <td class="num">${money(t.spent)}</td><td class="num"><b>${money(t.balance)}</b></td><td class="num">${money(t.unitDebt)}</td></tr></tfoot>
+    </table></div></div>
+    <div class="filters printhide" style="margin-top:12px"><label class="f" style="max-width:280px">ریزِ یک صندوق<select class="inp" id="rfSel"><option value="">— انتخاب صندوق برای دیدن ریز —</option>
+      ${funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label></div>
+    <div id="rfBox"></div>`
+  wireCommon()
   $('#rfSel').onchange = guard(() => draw(+$('#rfSel').value || 0))
+  document.querySelectorAll('[data-fund]').forEach(tr => tr.onclick = () => { $('#rfSel').value = tr.dataset.fund; draw(+tr.dataset.fund) })
+}
+// ---- برگهٔ سندِ دوطرفه (مودال) ----
+// ویرایش/حذفِ یک سند از هر گزارشی (دفتر کل/روزنامه/کارت‌ها)
+async function editDoc(dtype, id) {
+  if (dtype === 'invoice') { const d = await api('/api/invoice/' + id); invoiceForm(d.invoice) }
+  else if (dtype === 'payment') { const v = await api(`/api/report/voucher?dtype=payment&id=${id}`); paymentForm(null, v.raw) }
+  else if (dtype === 'contractor') { const v = await api(`/api/report/voucher?dtype=contractor&id=${id}`); cInvoiceForm(v.raw.project_id, v.raw, refresh) }
+}
+function deleteDoc(dtype, id) {
+  const ep = dtype === 'invoice' ? '/api/invoices/' : dtype === 'payment' ? '/api/payments/' : '/api/contractor-invoices/'
+  const what = dtype === 'invoice' ? 'این فاکتور' : dtype === 'payment' ? 'این دریافتی' : 'این فاکتور پیمانکار'
+  confirmBox(`${what} حذف شود؟ اثرش روی بدهیِ واحدها و موجودیِ صندوق‌ها برگشت می‌خورد.`,
+    async () => { await api(ep + id, { method: 'DELETE' }); toast('سند حذف شد'); refresh() })
+}
+const docActs = (dtype, id) => isAdmin() ? `<button class="btn tiny" data-dedit="${dtype}:${id}" title="ویرایش">✏️</button> <button class="btn tiny del" data-ddel="${dtype}:${id}" title="حذف">🗑</button>` : ''
+// شنوندهٔ سراسری (یک‌بار): دکمه‌های ✏️/🗑 در همهٔ جدول‌ها
+if (!window.__docActsWired) {
+  window.__docActsWired = true
+  document.addEventListener('click', e => {
+    const ed = e.target.closest('[data-dedit]'); if (ed) { e.stopPropagation(); const [dt, id] = ed.dataset.dedit.split(':'); editDoc(dt, +id); return }
+    const dl = e.target.closest('[data-ddel]'); if (dl) { e.stopPropagation(); const [dt, id] = dl.dataset.ddel.split(':'); deleteDoc(dt, +id); return }
+  })
+}
+async function showVoucher(dtype, id) {
+  const v = await api(`/api/report/voucher?dtype=${dtype}&id=${id}`).catch(() => null)
+  if (!v) return toast('سند یافت نشد', true)
+  openModal(`🧾 ${esc(v.head.no)} — ${esc(v.head.title)}`, `<div class="form">
+    <p class="hint">${esc(v.head.typeFa)} · تاریخ ${faDigit(v.head.j)} · مبلغ ${money(v.head.amount)} · ${esc(v.head.meta)}</p>
+    <div class="tablewrap"><table class="tx"><thead><tr><th>طرف‌حساب</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th></tr></thead><tbody>
+    ${v.lines.map(l => `<tr><td><b>${esc(l.acc)}</b></td><td class="hint">${esc(l.desc)}</td>
+      <td class="num ${l.debit ? 'amt-out' : 'muted'}">${l.debit ? money(l.debit) : '—'}</td>
+      <td class="num ${l.credit ? 'amt-in' : 'muted'}">${l.credit ? money(l.credit) : '—'}</td></tr>`).join('')}
+    </tbody><tfoot><tr><td colspan="2">جمع ${v.balanced ? '<span class="amt-in">متوازن ✓</span>' : '<span class="amt-out">نامتوازن!</span>'}</td>
+      <td class="num">${money(v.totalDebit)}</td><td class="num">${money(v.totalCredit)}</td></tr></tfoot></table></div></div>`,
+    `${isAdmin() ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}<button class="btn" id="vCancel">بستن</button>`)
+  $('#vCancel').onclick = closeModal
+  if ($('#vEdit')) $('#vEdit').onclick = () => { closeModal(); editDoc(dtype, id) }
+  if ($('#vDel')) $('#vDel').onclick = () => { closeModal(); deleteDoc(dtype, id) }
+}
+const voucherAttr = e => e.inv ? `data-voucher="invoice:${e.inv}"` : e.pid ? `data-voucher="payment:${e.pid}"` : e.cid ? `data-voucher="contractor:${e.cid}"` : (e.refid && e.dtype) ? `data-voucher="${e.dtype}:${e.refid}"` : ''
+
+// ---- دفتر کل (معین هر حساب: واحد/صندوق/پروژه/پیمانکار) ----
+REPORTS.gl = async () => {
+  const accs = await api('/api/report/ledger-accounts')
+  const TYPE_FA = { unit: 'واحد (ساکن)', fund: 'صندوق', project: 'پروژه', contractor: 'پیمانکار' }
+  const balCell = v => v > 0 ? `<span class="amt-out">${money(v)}</span>` : v < 0 ? `<span class="amt-in">(${money(-v)})</span>` : '۰'
+  const draw = guard(async (type, id, from, to) => {
+    const box = $('#glBox')
+    if (!id) { box.innerHTML = '<div class="panel"><div class="empty">یک حساب را انتخاب کنید</div></div>'; return }
+    box.innerHTML = '<div class="empty">در حال بارگذاری…</div>'
+    const d = await api(`/api/report/ledger?type=${type}&id=${encodeURIComponent(id)}&from=${encodeURIComponent(from || '')}&to=${encodeURIComponent(to || '')}`)
+    box.innerHTML = `
+      <p class="hint">دفتر کل — ${esc(TYPE_FA[type])}: <b>${esc(d.name)}</b> · تاریخ گزارش‌گیری: ${faDigit(jStamp())}${(from || to) ? ' · بازه: ' + (from ? faDigit(from) : '…') + ' تا ' + (to ? faDigit(to) : '…') : ''}</p>
+      <div class="kpis">
+        ${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}
+        ${kpi('جمع بستانکار', money(d.totalCredit), '', 'good')}
+        ${kpi('ماندهٔ نهایی', balCell(d.finalBalance), d.finalBalance > 0 ? 'بدهکار' : d.finalBalance < 0 ? 'بستانکار' : 'تسویه', d.finalBalance > 0 ? 'bad' : '')}
+      </div>
+      <div class="panel"><div class="tablewrap"><table class="tx">
+        <thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>دسته</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
+        <tr><td class="num">—</td><td class="num">—</td><td><b>ماندهٔ اول دوره</b></td><td class="hint">—</td><td class="num muted">—</td><td class="num muted">—</td><td class="num">${balCell(d.opening)}</td><td class="printhide"></td></tr>
+        ${d.rows.length ? d.rows.map(e => { const da = e.inv ? ['invoice', e.inv] : e.pid ? ['payment', e.pid] : e.cid ? ['contractor', e.cid] : (e.refid && e.dtype) ? [e.dtype, e.refid] : null; return `<tr class="${voucherAttr(e) ? 'clickable' : ''}" ${voucherAttr(e)}>
+          <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td><td class="num">${esc(e.no)}</td>
+          <td><b>${esc(e.title)}</b></td><td><span class="catpill">${esc(e.cat)}</span></td>
+          <td class="num ${e.debit ? 'amt-out' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
+          <td class="num ${e.credit ? 'amt-in' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
+          <td class="num">${balCell(e.balance)}</td><td class="printhide rowact">${da ? docActs(da[0], da[1]) : ''}</td></tr>` }).join('') : emptyRow(8, 'تراکنشی در این بازه نیست')}
+        </tbody><tfoot><tr><td colspan="4">جمع</td><td class="num amt-out">${money(d.totalDebit)}</td><td class="num amt-in">${money(d.totalCredit)}</td><td class="num">${balCell(d.finalBalance)}</td><td class="printhide"></td></tr></tfoot>
+      </table></div></div>`
+    wireCommon()
+    box.querySelectorAll('[data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
+  })
+  const accOpts = type => (accs[type] || []).map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('')
+  $('#repBody').innerHTML = `
+    <div class="filters printhide">
+      <label class="f" style="max-width:170px">نوع حساب<select class="inp" id="glType">${Object.keys(TYPE_FA).map(t => `<option value="${t}">${TYPE_FA[t]}</option>`).join('')}</select></label>
+      <label class="f" style="max-width:260px">حساب<select class="inp" id="glAcc"><option value="">— انتخاب —</option>${accOpts('unit')}</select></label>
+      <label class="f" style="max-width:140px">از تاریخ<input class="inp" id="glFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
+      <label class="f" style="max-width:140px">تا تاریخ<input class="inp" id="glTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
+      <button class="btn small" id="glPrint">🖨 چاپ</button>
+    </div>
+    <div id="glBox"><div class="panel"><div class="empty">یک حساب را انتخاب کنید</div></div></div>`
+  const cur = () => ({ t: $('#glType').value, id: $('#glAcc').value, f: $('#glFrom').value, to: $('#glTo').value })
+  $('#glType').onchange = () => { $('#glAcc').innerHTML = `<option value="">— انتخاب —</option>` + accOpts($('#glType').value); $('#glBox').innerHTML = '<div class="panel"><div class="empty">یک حساب را انتخاب کنید</div></div>' }
+  $('#glAcc').onchange = () => { const c = cur(); draw(c.t, c.id, c.f, c.to) }
+  $('#glFrom').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
+  $('#glTo').onchange = () => { const c = cur(); if (c.id) draw(c.t, c.id, c.f, c.to) }
+  $('#glPrint').onclick = () => { const c = cur(); if (!c.id) return toast('اول حساب را انتخاب کنید', true); printAs('دفتر کل') }
+}
+
+// ---- دفتر روزنامه ----
+REPORTS.journal = async () => {
+  const draw = guard(async (f, to, type, fundId, unitId, q) => {
+    const d = await api(`/api/report/journal?from=${encodeURIComponent(f || '')}&to=${encodeURIComponent(to || '')}&type=${type || ''}&fundId=${fundId || ''}&unitId=${unitId || ''}&q=${encodeURIComponent(q || '')}`)
+    const K = d.kindFa || {}
+    const pillCls = { charge: 'b-charge', bill: 'b-open', proj: 'b-settled', exp: 'b-no', pay: 'b-ok', ci: 'b-mgr' }
+    $('#jnRows').innerHTML = d.rows.length ? d.rows.map(r => `<tr class="clickable" data-voucher="${r.dtype}:${r.id}">
+      <td class="num">${faDigit(r.row)}</td><td class="num">${esc(r.no)}</td><td class="num">${faDigit(r.j)}</td>
+      <td><span class="badge ${pillCls[r.kind] || 'b-open'}">${esc(K[r.kind] || r.kind)}</span></td>
+      <td>${esc(r.debitAcc)}<br><span class="hint">${esc(r.title)}</span></td>
+      <td>${esc(r.creditAcc)}</td>
+      <td class="num amt-out">${money(r.debit)}</td>
+      <td class="num amt-in">${money(r.credit)}</td>
+      <td class="printhide rowact">${docActs(r.dtype, r.id)}</td></tr>`).join('')
+      : emptyRow(9, 'سندی با این فیلتر نیست')
+    const trz = d.balanced ? '<span class="amt-in"> · تراز ✓</span>' : '<span class="amt-out"> · نامتوازن!</span>'
+    $('#jnFoot').innerHTML = `<tr><td colspan="6">جمع (${faDigit(d.rows.length)} سند)${trz}</td><td class="num amt-out">${money(d.totalDebit)}</td><td class="num amt-in">${money(d.totalCredit)}</td><td class="printhide"></td></tr>`
+    $('#jnKpis').innerHTML = `${kpi('تعداد اسناد', faDigit(d.rows.length))}${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}${kpi('جمع بستانکار', money(d.totalCredit), d.balanced ? 'تراز ✓' : 'نامتوازن', d.balanced ? 'good' : 'bad')}`
+    $('#repBody').querySelectorAll('#jnRows [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
+  })
+  const typeOpts = [['', 'همه'], ['charge', 'شارژ ماهانه'], ['bill', 'قبوض و متفرقه'], ['exp', 'هزینهٔ جاری'], ['proj', 'پروژه (عمرانی)'], ['pay', 'دریافتی'], ['ci', 'فاکتور پیمانکار']]
+  $('#repBody').innerHTML = `
+    <div class="filters printhide">
+      <label class="f" style="max-width:130px">از تاریخ<input class="inp" id="jnFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
+      <label class="f" style="max-width:130px">تا تاریخ<input class="inp" id="jnTo" placeholder="۱۴۰۵/۱۲/۲۹"></label>
+      <label class="f" style="max-width:170px">نوع سند<select class="inp" id="jnType">${typeOpts.map(([v, t]) => `<option value="${v}">${t}</option>`).join('')}</select></label>
+      <label class="f" style="max-width:190px">صندوق<select class="inp" id="jnFund"><option value="">همه</option>${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label>
+      <label class="f" style="max-width:190px">واحد<select class="inp" id="jnUnit"><option value="">همه</option>${META.units.filter(u => u.active).map(u => `<option value="${u.id}">واحد ${escFa(u.number)}</option>`).join('')}</select></label>
+      <label class="f" style="max-width:160px">جستجو در شرح<input class="inp" id="jnQ" placeholder="مثلاً آب"></label>
+      <button class="btn small" id="jnApply">اعمال</button><button class="btn small" onclick="printAs('دفتر روزنامه')">🖨 چاپ</button>
+    </div>
+    <p class="hint">هر سند دوطرفه و متوازن است؛ با کلیک، برگهٔ سند با همهٔ طرف‌حساب‌ها باز می‌شود.</p>
+    <div class="kpis" id="jnKpis"></div>
+    <div class="panel"><div class="tablewrap"><table class="tx">
+      <thead><tr><th>ردیف</th><th>شماره سند</th><th>تاریخ</th><th>نوع</th><th>طرف‌حسابِ بدهکار</th><th>طرف‌حسابِ بستانکار</th><th>بدهکار</th><th>بستانکار</th><th class="printhide">عملیات</th></tr></thead>
+      <tbody id="jnRows"></tbody><tfoot id="jnFoot"></tfoot>
+    </table></div></div>`
+  const run = () => draw($('#jnFrom').value, $('#jnTo').value, $('#jnType').value, $('#jnFund').value, $('#jnUnit').value, $('#jnQ').value)
+  $('#jnApply').onclick = run
+  ;['jnType', 'jnFund', 'jnUnit'].forEach(idd => $('#' + idd).onchange = run)
+  $('#jnQ').addEventListener('keydown', e => { if (e.key === 'Enter') run() })
+  run()
 }
 REPORTS.invoices = async () => {
-  const rows = await api('/api/invoices')
-  const t = rows.reduce((a, i) => ({ a: a.a + i.amount, c: a.c + i.collected, r: a.r + i.remaining }), { a: 0, c: 0, r: 0 })
-  $('#repBody').innerHTML = `
-    <div class="filters printhide"><a class="btn small" href="/api/export/invoices">⬇️ CSV</a><button class="btn small" onclick="print()">🖨 چاپ</button></div>
-    <div class="kpis">${kpi('جمع فاکتورها', money(t.a), faDigit(rows.length) + ' فاکتور')}${kpi('وصول‌شده', money(t.c), '', 'good')}${kpi('مانده', money(t.r), '', 'bad')}
-      ${kpi('نرخ وصول', faDigit(t.a ? Math.round(t.c / t.a * 100) : 0) + '٪', '', 'good')}</div>
-    <div class="panel"><div class="tablewrap"><table class="tx">
-      <thead><tr><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>مبلغ</th><th>روش تسهیم</th><th>وصول‌شده</th><th>مانده</th><th>وضعیت</th></tr></thead><tbody>
-      ${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}"><td><b>${esc(i.title)}</b></td><td><span class="catpill">${esc(i.categoryName)}</span></td>
-        <td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td><td><span class="catpill">${esc(i.methodFa)}</span></td>
-        <td class="num amt-in">${money(i.collected)}</td><td class="num ${i.remaining > 0 ? 'amt-out' : ''}">${money(i.remaining)}</td>
-        <td>${statusBadge(i.status)}</td></tr>`).join('') : emptyRow(8, 'فاکتوری ثبت نشده')}
-      </tbody></table></div></div>`
-  wireCommon()
+  const all = await api('/api/invoices')
+  // نوعِ هر فاکتور بر اساس ماهیت، نه فقط صندوق:
+  //  - payable (قابل‌پرداخت): هزینه‌ای که از صندوق به فروشنده پرداخت می‌شود (جاری/قبوض/متفرقه)
+  //  - billing (صورتحسابِ ساکنین): شارژ ماهانه یا سهمِ مصوبهٔ پروژه؛ اینجا «وصول از ساکنین» معنا دارد
+  const fundOpts = `<option value="">همهٔ صندوق‌ها</option>${META.funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}`
+  const statusCell = i => {
+    if (i.payable) {
+      if (i.fundUnpaid <= 0) return '<span class="badge b-settled">پرداخت‌شده از صندوق</span>'
+      if (i.fundPaid > 0) return '<span class="badge b-open">بخشی پرداخت‌شده</span>'
+      return '<span class="badge b-open">پرداخت‌نشده از صندوق</span>'
+    }
+    return i.remaining > 0 ? '<span class="badge b-open">در حال وصول</span>' : '<span class="badge b-settled">وصول‌شده</span>'
+  }
+  const fundCell = i => i.payable
+    ? `<span class="num ${i.fundUnpaid > 0 ? 'amt-out' : 'amt-in'}">${money(i.fundPaid)}</span>${i.fundUnpaid > 0 ? `<br><span class="hint amt-out">مانده ${money(i.fundUnpaid)}</span>` : ''}`
+    : '<span class="hint">—</span>'
+  const resCell = i => (i.shareCount > 0 && !i.from_fund)
+    ? `<span class="num amt-in">${money(i.collected)}</span>${i.remaining > 0 ? `<br><span class="hint amt-out">بدهی ${money(i.remaining)}</span>` : ''}`
+    : '<span class="hint">—</span>'
+  // آیا فاکتور تسویه شده؟ هزینهٔ قابل‌پرداخت → پرداخت کاملِ صندوق؛ صورتحسابِ ساکنین → وصولِ کامل
+  const isSettled = i => i.payable ? (i.fundUnpaid <= 0) : (i.remaining <= 0)
+  const norm = s => enDigit(String(s || '').trim()).replace(/-/g, '/')
+  const draw = (fundId, st, detail, from, to) => {
+    from = norm(from); to = norm(to)
+    let rows = fundId ? all.filter(i => i.fund_id === fundId) : all
+    if (st === 'settled') rows = rows.filter(isSettled)
+    else if (st === 'open') rows = rows.filter(i => !isSettled(i))
+    if (from) rows = rows.filter(i => norm(i.j_date) >= from)
+    if (to) rows = rows.filter(i => norm(i.j_date) <= to)
+    const amountSum = rows.reduce((a, i) => a + i.amount, 0)
+    const fundPaidSum = rows.reduce((a, i) => a + (i.payable ? i.fundPaid : 0), 0)
+    const fundUnpaidSum = rows.reduce((a, i) => a + (i.payable ? i.fundUnpaid : 0), 0)
+    const resDue = rows.reduce((a, i) => a + ((i.shareCount > 0 && !i.from_fund) ? Math.max(0, i.remaining) : 0), 0)
+    $('#repBody').innerHTML = `
+      <div class="filters printhide">
+        <label class="f" style="max-width:240px">تفکیک بر اساس صندوق<select class="inp" id="invFund">${fundOpts}</select></label>
+        <label class="f" style="max-width:200px">وضعیت<select class="inp" id="invStatus">
+          <option value="">همه</option><option value="settled">تسویه‌شده</option><option value="open">تسویه‌نشده</option></select></label>
+        <label class="f" style="max-width:150px">از تاریخ<input class="inp" id="invFrom" placeholder="۱۴۰۵/۰۱/۰۱" value="${from ? faDigit(from) : ''}"></label>
+        <label class="f" style="max-width:150px">تا تاریخ<input class="inp" id="invTo" placeholder="۱۴۰۵/۱۲/۲۹" value="${to ? faDigit(to) : ''}"></label>
+        <label class="check" style="margin:0 6px"><input type="checkbox" id="invDetail" ${detail ? 'checked' : ''}> نمایش ریز بدهیِ واحدها</label>
+        <a class="btn small" href="/api/export/invoices">⬇️ CSV</a>
+        <button class="btn small" id="invPrint">🖨 چاپ / PDF (با فیلترها)</button></div>
+      <p class="hint">تاریخ گزارش‌گیری: <b>${faDigit(jStamp())}</b>${(from || to) ? ' · بازه: <b>' + (from ? faDigit(from) : '…') + ' تا ' + (to ? faDigit(to) : '…') + '</b>' : ''}${fundId ? ' · صندوق: <b>' + esc((META.funds.find(f => f.id === fundId) || {}).name || '') + '</b>' : ''}${st ? ' · وضعیت: <b>' + (st === 'settled' ? 'تسویه‌شده' : 'تسویه‌نشده') + '</b>' : ''}</p>
+      <div class="kpis">
+        ${kpi('جمع فاکتورها', money(amountSum), faDigit(rows.length) + ' فاکتور')}
+        ${kpi('پرداخت‌شده از صندوق', money(fundPaidSum), 'هزینه‌هایی که صندوق پرداخته', 'good')}
+        ${kpi('بدهی به فروشنده', money(fundUnpaidSum), 'مانده‌ی پرداخت از صندوق', fundUnpaidSum > 0 ? 'bad' : 'good')}
+        ${kpi('بدهی ساکنین', money(resDue), 'قبوض/پروژه‌ی وصول‌نشده', resDue > 0 ? 'bad' : 'good')}</div>
+      <div class="panel"><div class="tablewrap"><table class="tx">
+        <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>صندوق</th><th>تاریخ</th><th>مبلغ</th><th>پرداخت از صندوق</th><th>وصول از ساکنین</th><th>وضعیت</th></tr></thead><tbody>
+        ${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}"><td class="num"><b>${faDigit(i.id)}</b></td><td><b>${esc(i.title)}</b>${i.from_fund ? ' <span class="badge b-charge">جاری</span>' : ''}</td>
+          <td><span class="catpill">${esc(i.categoryName)}</span></td><td class="hint">${esc(i.fundName)}</td>
+          <td class="num">${faDigit(i.j_date)}</td><td class="num">${money(i.amount)}</td>
+          <td class="num">${fundCell(i)}</td><td class="num">${resCell(i)}</td>
+          <td>${statusCell(i)}</td></tr>`).join('') : emptyRow(9, 'فاکتوری با این فیلتر نیست')}
+        </tbody></table></div></div>
+      <div id="invDetailZone" style="margin-top:12px">${detail ? '<div class="empty">در حال بارگذاری ریز…</div>' : ''}</div>`
+    wireCommon()
+    $('#invFund').value = fundId || ''
+    $('#invStatus').value = st || ''
+    const cur = () => ({ f: +$('#invFund').value || 0, s: $('#invStatus').value, d: $('#invDetail').checked, from: $('#invFrom').value, to: $('#invTo').value })
+    $('#invFund').onchange = () => { const c = cur(); draw(c.f, c.s, c.d, c.from, c.to) }
+    $('#invStatus').onchange = () => { const c = cur(); draw(c.f, c.s, c.d, c.from, c.to) }
+    $('#invDetail').onchange = () => { const c = cur(); draw(c.f, c.s, c.d, c.from, c.to) }
+    $('#invFrom').onchange = () => { const c = cur(); draw(c.f, c.s, c.d, c.from, c.to) }
+    $('#invTo').onchange = () => { const c = cur(); draw(c.f, c.s, c.d, c.from, c.to) }
+    $('#invPrint').onclick = () => {
+      const qs = `fund=${fundId || 0}&status=${st || ''}&from=${encodeURIComponent(from || '')}&to=${encodeURIComponent(to || '')}`
+      const url = `/print/report/invoices?${qs}`
+      if (IS_DESKTOP && window.hesabdar && window.hesabdar.savePdf) {
+        toast('در حال ساخت PDF…')
+        window.hesabdar.savePdf(url, 'گزارش فاکتوری — ریز بدهی واحدها').then(x => toast(x && x.ok ? 'PDF در پوشه‌ی «اسناد صادرشده» ذخیره شد' : 'ناموفق', !(x && x.ok)))
+      } else window.open(url + '&print=1', '_blank')
+    }
+    if (detail) renderDetailZone(rows, fundId)
+  }
+  // ناحیهٔ ریز: (۱) فهرست فاکتورها بالاست · (۲) بدهیِ هر واحد در یک لیست · (۳) ریزِ فاکتور‌به‌فاکتور
+  const renderDetailZone = async (rows, fundId) => {
+    const zone = $('#invDetailZone'); if (!zone) return
+    const dist = rows.filter(i => i.shareCount > 0 && !i.from_fund)
+    const details = await Promise.all(dist.map(async i => { try { return { i, sh: (await api('/api/invoice/' + i.id)).shares || [] } } catch { return { i, sh: [] } } }))
+    const occ = s => s.occupied ? (+s.occupants || 0) : 0, com = s => +s.common_units || 0
+    // بخش ۲: جمعِ بدهیِ هر واحد به این صندوق (مجموعِ ماندهٔ همهٔ فاکتورهای فیلترشده)
+    const byUnit = new Map()
+    for (const { sh } of details) for (const s of sh) {
+      const u = byUnit.get(s.unit_id) || { number: s.number, name: s.resident_name, share: 0, paid: 0, rem: 0 }
+      u.share += s.share_amount; u.paid += s.paid; u.rem += Math.max(0, s.remaining); byUnit.set(s.unit_id, u)
+    }
+    const units = [...byUnit.values()].sort((a, b) => (parseInt(enDigit(a.number)) || 0) - (parseInt(enDigit(b.number)) || 0))
+    const tU = units.reduce((a, u) => ({ share: a.share + u.share, paid: a.paid + u.paid, rem: a.rem + u.rem }), { share: 0, paid: 0, rem: 0 })
+    const fundName = fundId ? ((META.funds.find(f => f.id === fundId) || {}).name || '') : 'همهٔ صندوق‌ها'
+    const unitList = `<div class="panel"><div class="phead"><b>۲) بدهیِ هر واحد به ${esc(fundName)}</b><span class="hint">مجموعِ ماندهٔ فاکتورهای این فیلتر</span></div>
+      <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th><th>جمع سهم</th><th>پرداخت‌شده</th><th>بدهیِ مانده</th></tr></thead><tbody>
+      ${units.length ? units.map(u => `<tr><td><b>${escFa(u.number)}</b></td><td>${esc(u.name || '—')}</td><td class="num">${money(u.share)}</td>
+        <td class="num amt-in">${money(u.paid)}</td><td class="num ${u.rem > 0 ? 'amt-out' : ''}">${u.rem > 0 ? money(u.rem) : '۰'}</td></tr>`).join('') : emptyRow(5, 'واحدی نیست')}
+      </tbody><tfoot><tr><td colspan="2">جمع کل</td><td class="num">${money(tU.share)}</td><td class="num">${money(tU.paid)}</td><td class="num">${money(tU.rem)}</td></tr></tfoot></table></div></div>`
+    // بخش ۳: ریزِ فاکتور‌به‌فاکتور با ستون‌های مبنای محاسبه
+    const blocks = details.map(({ i, sh }) => {
+      let mc = { head: '', cell: () => '', note: '' }
+      if (i.method === 'occ_common') { const w = sh.reduce((a, s) => a + occ(s) + com(s), 0); mc = { head: '<th>نفرات</th><th>مشاعات</th><th>ضریب</th>', note: ` · هر سهم = مبلغ × (نفرات+مشاعات) ÷ ${faDigit(w)}`, cell: s => `<td class="num">${faDigit(occ(s))}</td><td class="num">${faDigit(com(s))}</td><td class="num">${faDigit(occ(s) + com(s))}</td>` } }
+      else if (i.method === 'occupants') { const w = sh.reduce((a, s) => a + occ(s), 0); mc = { head: '<th>نفرات</th>', note: ` · هر سهم = مبلغ × نفرات ÷ ${faDigit(w)}`, cell: s => `<td class="num">${faDigit(occ(s))}</td>` } }
+      else if (i.method === 'area') { const w = sh.reduce((a, s) => a + (+s.area || 0), 0); mc = { head: '<th>متراژ</th>', note: ` · هر سهم = مبلغ × متراژ ÷ ${faDigit(w)}`, cell: s => `<td class="num">${faDigit(s.area || 0)}</td>` } }
+      else if (i.method === 'equal') mc = { head: '', note: ` · هر سهم = مبلغ ÷ ${faDigit(sh.length)}`, cell: () => '' }
+      return `<div class="panel"><div class="phead"><b>سند ${faDigit(i.id)} — ${esc(i.title)}</b> <span class="hint">${money(i.amount)} · ${faDigit(i.j_date)}</span></div>
+        <div style="padding:0 12px 10px"><div class="hint" style="margin:4px 0">روشِ محاسبه: <b>${esc(i.methodFa)}</b> · بین ${faDigit(sh.length)} واحد${mc.note}</div>
+        <div class="tablewrap"><table class="tx"><thead><tr><th>واحد</th><th>ساکن</th>${mc.head}<th>سهم</th><th>پرداخت‌شده</th><th>مانده</th></tr></thead><tbody>
+        ${sh.map(s => `<tr><td><b>${escFa(s.number)}</b></td><td>${esc(s.resident_name || '—')}</td>${mc.cell(s)}<td class="num">${money(s.share_amount)}</td>
+          <td class="num amt-in">${money(s.paid)}</td><td class="num ${s.remaining > 0 ? 'amt-out' : ''}">${s.remaining > 0 ? money(s.remaining) : '۰'}</td></tr>`).join('')}
+        </tbody></table></div></div></div>`
+    }).join('')
+    zone.innerHTML = unitList + `<h3 style="margin:14px 0 6px">۳) ریزِ فاکتور‌به‌فاکتور</h3>` + (blocks || '<div class="empty">فاکتورِ تسهیمی‌ای نیست</div>')
+  }
+  const defFund = (META.funds.find(f => /قبوض|متفرقه/.test(f.name)) || {}).id || 0
+  draw(defFund, '', false, '', '')
 }
 REPORTS.fundpay = async () => {
   const r = await api('/api/report/fundpay')
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><button class="btn small" onclick="printAs('گزارش پرداخت صندوق‌ها')">🖨 چاپ</button></div>
     <div class="kpis">${kpi('جمع پرداخت از صندوق‌ها', money(r.total), faDigit(r.rows.length) + ' پرداخت', 'good')}
       ${kpi('هزینه‌های پرداخت‌نشده', money(r.unpaidTotal), 'بدهی صندوق به فاکتورها', r.unpaidTotal > 0 ? 'bad' : 'good')}</div>
     ${r.interFund.length ? `<div class="panel"><div class="phead"><b>بدهی بین صندوق‌ها</b></div><div class="tablewrap"><table class="tx">
@@ -1469,7 +1954,7 @@ REPORTS.unit = async () => {
   }
   $('#repBody').innerHTML = `<div class="filters printhide"><select class="inp" id="ruSel"><option value="">— واحد را انتخاب کنید —</option>
       ${units.map(u => `<option value="${u.id}">واحد ${escFa(u.number)}${u.resident_name ? ' — ' + esc(u.resident_name) : ''}</option>`).join('')}</select>
-      <button class="btn small" onclick="print()">🖨 چاپ</button>
+      <button class="btn small" onclick="printAs('صورت‌حساب واحد')">🖨 چاپ</button>
       <button class="btn small" id="ruFull">کارت کامل واحد</button></div>
     <div id="ruBox"><div class="panel"><div class="empty">یک واحد را انتخاب کنید</div></div></div>`
   $('#ruSel').onchange = guard(() => draw(+$('#ruSel').value || 0))
@@ -1489,7 +1974,7 @@ REPORTS.projects = async () => {
   const rows = await api('/api/report/projects')
   const t = rows.reduce((a, p) => ({ budget: a.budget + p.budget, sel: a.sel + p.selectedAmount, inv: a.inv + p.invoiceTotal, paid: a.paid + p.invoicePaid }), { budget: 0, sel: 0, inv: 0, paid: 0 })
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><button class="btn small" onclick="printAs('گزارش پروژه‌ها')">🖨 چاپ</button></div>
     <div class="kpis">${kpiN('پروژه‌ها', faDigit(rows.length))}${kpi('جمع بودجه مصوب', money(t.budget))}
       ${kpi('جمع فاکتور پیمانکار', money(t.inv), '', 'bad')}${kpi('پرداخت‌شده', money(t.paid), '', 'good')}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
@@ -1503,7 +1988,7 @@ REPORTS.projects = async () => {
 REPORTS.vendors = async () => {
   const rows = await api('/api/report/vendors')
   $('#repBody').innerHTML = `
-    <div class="filters printhide"><button class="btn small" onclick="print()">🖨 چاپ</button></div>
+    <div class="filters printhide"><button class="btn small" onclick="printAs('گزارش پیمانکاران')">🖨 چاپ</button></div>
     <div class="panel"><div class="phead"><b>عملکرد پیمانکاران</b><span class="hint">مجموع استعلام‌ها و فاکتورهای بایگانی‌شده‌ی هر پیمانکار</span></div>
       <div class="tablewrap"><table class="tx">
       <thead><tr><th>پیمانکار</th><th>زمینه</th><th>تلفن</th><th>استعلام</th><th>جمع استعلام</th><th>فاکتور</th><th>جمع فاکتور</th><th>پرداخت‌نشده</th></tr></thead><tbody>
@@ -2320,16 +2805,20 @@ async function quoteForm(projectId, q = null, after) {
 }
 
 function cInvoiceRow(ci) {
-  const paid = ci.paid ? '<span class="badge b-ok">تسویه</span>' : '<span class="badge b-open">تسویه‌نشده</span>'
+  const paidAmt = ci.paid_amount != null ? ci.paid_amount : (ci.paid ? ci.amount : 0)
+  const rem = ci.amount - paidAmt
+  const paid = paidAmt <= 0 ? '<span class="badge b-open">تسویه‌نشده</span>'
+    : rem <= 0 ? '<span class="badge b-ok">تسویه</span>'
+      : `<span class="badge b-open">جزئی</span><br><span class="hint">پرداخت ${money(paidAmt)} · مانده ${money(rem)}</span>`
   const kindBadge = ci.kind === 'sale' ? '<span class="badge b-done">فروش</span>' : '<span class="badge b-no">خرید</span>'
   const files = (ci.attachments || []).map(a => `<a class="attmini" href="/uploads/${encodeURI(a.file)}" target="_blank" rel="noopener" title="${esc(a.display_name || 'سند')}">📎</a>`).join('')
   return `<tr>
-    <td><b>${esc(ci.vendorLabel)}</b> ${kindBadge}${ci.title ? `<br><span class="hint">${esc(ci.title)}</span>` : ''}</td>
+    <td><span class="hint">سند ${faDigit(ci.id)}</span><br><b>${esc(ci.vendorLabel)}</b> ${kindBadge}${ci.title ? `<br><span class="hint">${esc(ci.title)}</span>` : ''}</td>
     <td class="num ${ci.kind === 'sale' ? 'amt-in' : ''}">${ci.kind === 'sale' ? '−' : ''}${money(ci.amount)} ${curFa()}</td>
     <td class="num">${ci.j_date ? faDigit(ci.j_date) : '—'}</td>
     <td>${paid}</td>
     <td>${files}${adminOnly(`<button class="btn tiny" data-ci-att="${ci.id}" title="افزودن سند">＋</button>`)}</td>
-    <td class="rowact">${adminOnly(`<button class="btn tiny" data-ci-paid="${ci.id}" data-ci-paid-on="${ci.paid ? 1 : 0}" title="تغییر وضعیت پرداخت">${ci.paid ? '✓' : '○'}</button><button class="btn tiny" data-ci-edit="${ci.id}">✏️</button><button class="btn tiny" data-ci-del="${ci.id}">🗑</button>`)}</td></tr>`
+    <td class="rowact">${adminOnly(`${rem > 0 ? `<button class="btn tiny primary" data-ci-edit="${ci.id}" title="ثبت مبلغ پرداخت/دریافت">💸 پرداخت</button>` : ''}<button class="btn tiny" data-ci-edit="${ci.id}" title="ویرایش">✏️</button><button class="btn tiny" data-ci-del="${ci.id}">🗑</button>`)}</td></tr>`
 }
 async function cInvoiceForm(projectId, ci = null, after) {
   const vendors = await api('/api/vendors')
@@ -2344,16 +2833,35 @@ async function cInvoiceForm(projectId, ci = null, after) {
       <label class="f">تاریخ${dateBoxHtml('cid', j)}</label>
     </div>
     <label class="f">نوع<select class="inp" id="ciKind"><option value="purchase" ${!ci || ci.kind !== 'sale' ? 'selected' : ''}>خرید / هزینه (به هزینه اضافه می‌شود)</option><option value="sale" ${ci && ci.kind === 'sale' ? 'selected' : ''}>فروش / درآمد (از هزینه کم می‌شود)</option></select></label>
-    <label class="check"><input type="checkbox" id="ciPaid" ${ci && ci.paid ? 'checked' : ''}> تسویه‌شده (پرداخت/دریافت شد)</label>
+    <div class="frow" style="align-items:end">
+      <label class="f">مبلغ پرداخت/دریافت‌شده (${curFa()})<input class="inp num" id="ciPaidAmount" data-money="ciPaidHint" inputmode="numeric" value="${ci ? sep(Math.round(r2d(ci.paid_amount || 0))) : ''}"><span class="hint" id="ciPaidHint"></span></label>
+      <button type="button" class="btn" id="ciPaidFull">= کل مبلغ</button>
+    </div>
+    <p class="hint" id="ciRemHint"></p>
     <label class="f">توضیح<input class="inp" id="ciNote" value="${ci ? esc(ci.note || '') : ''}"></label>
     ${!ci ? `<p class="hint">مثال فروش: فروش داغیِ منبع قدیمی. پس از ثبت، از ستون «سند» فایل فاکتور را پیوست کنید.</p>` : ''}
   </div>`, `<button class="btn primary" id="ciSave">ذخیره</button><button class="btn" id="ciCancel">انصراف</button>`)
   wireToday($('#modalBody')); wireMoney($('#modalBody'))
   $('#ciCancel').onclick = closeModal
+  // مبلغ پرداختی تا وقتی کاربر دستی نزده، با مبلغِ فاکتور هم‌گام می‌ماند (پیش‌فرض: پرداخت کامل)
+  const store = { paidEdited: !!ci }
+  const refreshRem = () => {
+    const amt = readMoney($('#ciAmount')), paid = readMoney($('#ciPaidAmount')), rem = amt - paid
+    $('#ciRemHint').innerHTML = amt > 0
+      ? (rem > 0 ? `مانده بدهی به پیمانکار: <b class="amt-out">${moneyU(rem)}</b>` : rem < 0 ? `<b class="amt-out">مبلغ پرداختی از فاکتور بیشتر است!</b>` : '<b class="amt-in">تسویهٔ کامل ✓</b>')
+      : ''
+  }
+  $('#ciAmount').addEventListener('input', () => { if (!store.paidEdited) { $('#ciPaidAmount').value = $('#ciAmount').value } refreshRem() })
+  $('#ciPaidAmount').addEventListener('input', () => { store.paidEdited = true; refreshRem() })
+  $('#ciPaidFull').onclick = () => { $('#ciPaidAmount').value = $('#ciAmount').value; store.paidEdited = true; refreshRem() }
+  if (!ci) { $('#ciPaidAmount').value = $('#ciAmount').value } // فاکتور جدید: پیش‌فرض پرداخت کامل
+  refreshRem()
   $('#ciSave').onclick = guard(async () => {
     const amount = readMoney($('#ciAmount')); if (!amount) throw new Error('مبلغ فاکتور لازم است')
+    const paidAmount = readMoney($('#ciPaidAmount'))
+    if (paidAmount > amount) throw new Error('مبلغ پرداختی از مبلغ فاکتور بیشتر است')
     const dt = readDate('cid')
-    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, paid: $('#ciPaid').checked, note: $('#ciNote').value.trim() }
+    const payload = { projectId, vendorId: +$('#ciVendor').value, vendorName: $('#ciVendorName').value.trim(), title: $('#ciTitle').value.trim(), amount, kind: $('#ciKind').value, jy: dt.jy, jm: dt.jm, jd: dt.jd, paidAmount, note: $('#ciNote').value.trim() }
     if (ci) await post('/api/contractor-invoices/' + ci.id, payload, 'PUT'); else await post('/api/contractor-invoices', payload)
     closeModal(); toast('ذخیره شد'); after ? after() : render()
   })
