@@ -890,8 +890,8 @@ const showInvoice = guard(async id => {
   openModal(i.title, `
     <div class="kpis" style="grid-template-columns:repeat(3,1fr);margin-bottom:14px">
       ${kpi('مبلغ کل', money(i.amount))}${i.from_fund
-        ? kpi('پرداخت‌شده از صندوق', money(i.fundPaid), '', 'good') + kpi('بدهی صندوق به فاکتور', money(i.fundUnpaid), '', i.fundUnpaid > 0 ? 'bad' : '')
-        : kpi('وصول‌شده', money(i.collected), '', 'good') + kpi('مانده', money(i.remaining), '', i.remaining > 0 ? 'bad' : '')}
+        ? kpi('پرداخت‌شده از صندوق', money(i.fundPaid)) + kpi('بدهی صندوق به فاکتور', money(i.fundUnpaid), '', i.fundUnpaid > 0 ? 'bad' : '')
+        : kpi('وصول‌شده', money(i.collected)) + kpi('مانده', money(i.remaining), '', i.remaining > 0 ? 'bad' : '')}
     </div>
     ${i.from_fund ? `<div class="notice info" style="margin:0 0 12px">هزینهٔ جاری: از صندوق «${esc(i.fundName)}» پرداخت می‌شود و بین واحدها تقسیم نمی‌شود (از محل شارژِ ماهانه).</div>` : ''}
     <div class="pline"><span>شمارهٔ سند (سیستمی)</span><b class="num">${faDigit(i.id)}</b></div>
@@ -1284,14 +1284,14 @@ const showUnitCard = guard(async id => {
   const moeinRows = moeinEntries.map(e => {
     _bal += e.debit - e.credit
     const balTxt = _bal > 0 ? money(_bal) : _bal < 0 ? '(' + money(-_bal) + ')' : '۰'
-    const balCls = _bal > 0 ? 'amt-out' : _bal < 0 ? 'amt-in' : ''
+    const balCls = _bal > 0 ? 'amt-out' : _bal < 0 ? 'pos' : ''
     return `<tr class="${e.inv || e.pid ? 'clickable' : ''}" ${e.inv ? `data-inv="${e.inv}"` : e.pid ? `data-voucher="payment:${e.pid}"` : ''}>
       <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td>
       <td class="num">${e.k ? 'رسید ' : 'سند '}${faDigit(e.no)}</td>
       <td><b>${esc(e.title)}</b>${e.isOpen ? ' <span class="badge b-open">انتقالی</span>' : ''}</td>
       <td><span class="catpill">${esc(e.cat)}</span></td>
-      <td class="num ${e.debit ? 'amt-out' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
-      <td class="num ${e.credit ? 'amt-in' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
+      <td class="num ${e.debit ? '' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
+      <td class="num ${e.credit ? '' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
       <td class="num ${balCls}">${balTxt}</td>
       <td class="printhide rowact">${e.inv ? docActs('invoice', e.inv) : e.pid ? docActs('payment', e.pid) : ''}</td></tr>`
   }).join('')
@@ -1305,7 +1305,7 @@ const showUnitCard = guard(async id => {
     `<div class="kpis printhide">
       ${kpi(d.debt >= 0 ? 'بدهی کل' : TERMS.credit, money(Math.abs(d.debt)), '', d.debt > 0 ? 'bad' : d.debt < 0 ? 'good' : '')}
       ${kpi('جمع سهم‌ها', money(d.totalShares))}
-      ${kpi('جمع پرداخت‌ها', money(d.totalPaid), '', 'good')}
+      ${kpi('جمع پرداخت‌ها', money(d.totalPaid))}
       ${kpi('شارژ ماهانه', money(u.chargeAmount), u.monthly_charge != null ? 'اختصاصی این واحد' : 'مبلغ سراسری')}
     </div>
     ${u.phone ? `<div class="panel printhide" style="padding:12px 16px">📞 تلفن: <b class="num">${faDigit(u.phone)}</b></div>` : ''}
@@ -1330,8 +1330,8 @@ const showUnitCard = guard(async id => {
         <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>شماره سند</th><th>شرح</th><th>دسته</th><th>بدهکار</th><th>بستانکار</th><th>مانده</th><th class="printhide">عملیات</th></tr></thead><tbody>
         ${moeinRows || emptyRow(8, 'تراکنشی ثبت نشده')}
         </tbody><tfoot><tr><td colspan="4">جمع</td>
-          <td class="num amt-out">${money(mTotD)}</td>
-          <td class="num amt-in">${money(mTotC)}</td>
+          <td class="num">${money(mTotD)}</td>
+          <td class="num">${money(mTotC)}</td>
           <td class="num ${mFinal > 0 ? 'amt-out' : mFinal < 0 ? 'amt-in' : ''}">${mFinal > 0 ? money(mFinal) : mFinal < 0 ? '(' + money(-mFinal) + ')' : '۰'}</td><td class="printhide"></td></tr></tfoot></table></div>
       </div></div>
     <div class="panel printhide"><div class="phead"><b>پرداخت‌ها</b></div>
@@ -1433,8 +1433,8 @@ const showFund = guard(async id => {
     const va = t.ref_payment_id ? `payment:${t.ref_payment_id}` : t.ref_invoice_id ? `invoice:${t.ref_invoice_id}` : t.ref_cinvoice_id ? `contractor:${t.ref_cinvoice_id}` : ''
     return `<tr class="${va ? 'clickable' : ''}" ${va ? `data-voucher="${va}"` : ''}><td class="num">${faDigit(t.j_date)}</td><td class="num">${docNoOf(t)}</td>
       <td><b>${esc(TXN_FA[t.type] || t.type)}</b>${(t.note || t.inv_title || t.unit_number) ? `<br><span class="hint">${esc(t.note || t.inv_title || ('واحد ' + t.unit_number))}</span>` : ''}</td>
-      <td class="num ${inAmt ? 'amt-in' : 'muted'}">${inAmt ? money(inAmt) : '—'}</td>
-      <td class="num ${outAmt ? 'amt-out' : 'muted'}">${outAmt ? money(outAmt) : '—'}</td>
+      <td class="num ${inAmt ? '' : 'muted'}">${inAmt ? money(inAmt) : '—'}</td>
+      <td class="num ${outAmt ? '' : 'muted'}">${outAmt ? money(outAmt) : '—'}</td>
       <td class="num ${bal < 0 ? 'amt-out' : ''}">${balCell(bal)}</td>
       <td class="printhide rowact">${va ? docActs(va.split(':')[0], +va.split(':')[1]) : ''}</td></tr>`
   }).join('')
@@ -1443,7 +1443,7 @@ const showFund = guard(async id => {
   // نمای ساده: ورودی/خروجی به‌ترتیب جدید به قدیم، بدون ماندهٔ دونده
   const simpleRows = d.rows.length ? d.rows.map(t => `<tr><td class="num">${faDigit(t.j_date)}</td><td><span class="catpill">${esc(TXN_FA[t.type] || t.type)}</span></td>
       <td>${esc(t.note || t.inv_title || (t.unit_number ? 'واحد ' + t.unit_number : '—'))}</td>
-      <td class="num ${isIn(t.type) ? 'amt-in' : 'muted'}">${isIn(t.type) ? money(t.amount) : '—'}</td>
+      <td class="num ${isIn(t.type) ? '' : 'muted'}">${isIn(t.type) ? money(t.amount) : '—'}</td>
       <td class="num ${isIn(t.type) ? 'muted' : 'amt-out'}">${isIn(t.type) ? '—' : money(t.amount)}</td></tr>`).join('') : emptyRow(5, 'گردشی ثبت نشده')
   $('#view').innerHTML = `<button class="btn small back printhide" id="backBtn">→ بازگشت</button>` +
     head(d.fund.name, `${d.fund.kindFa} · موجودی فعلی: ${moneyU(d.fund.balance)}`,
@@ -1553,8 +1553,8 @@ REPORTS.expenses = async () => {
     <div class="panel"><h3 style="margin:0 0 4px">${esc(META.buildingName)} — گزارش هزینه‌کرد</h3><p class="sub">${esc(r.scopeLabel)}</p></div>
     <div class="kpis">
       ${kpi('جمع هزینه‌ها', money(r.totals.amount))}
-      ${kpi('وصول از ساکنین', money(r.totals.collected), '', 'good')}
-      ${kpi('مانده بدهی ساکنین', money(r.unitDebt), '', r.unitDebt > 0 ? 'bad' : 'good')}
+      ${kpi('وصول از ساکنین', money(r.totals.collected))}
+      ${kpi('مانده بدهی ساکنین', money(r.unitDebt), '', r.unitDebt > 0 ? 'bad' : '')}
       ${r.unitCredit ? kpi(TERMS.residentCredit, money(r.unitCredit)) : ''}
       ${r.contractor ? kpi('پرداخت به پیمانکار', money(r.contractor.paid)) : ''}
       ${r.contractor ? kpi('طلب باقی‌ماندهٔ پیمانکار', money(r.contractor.outstanding), '', r.contractor.outstanding > 0 ? 'warn' : 'good') : ''}
@@ -1866,7 +1866,7 @@ REPORTS.fund = async () => {
     const d = await api('/api/report/fund?fundId=' + id)
     box.innerHTML = `
       <div class="kpis">
-        ${kpi('موجودی فعلی', money(d.fund.balance), d.fund.kindFa, d.fund.balance < 0 ? 'bad' : 'good')}
+        ${kpi('موجودی فعلی', money(d.fund.balance), d.fund.kindFa, d.fund.balance < 0 ? 'bad' : '')}
         ${kpi('دریافتی', money(d.fund.received), 'از ساکنین ' + money(d.fund.residents) + (d.fund.otherIn ? ' · سایر ' + money(d.fund.otherIn) : ''))}
         ${kpi('مخارج', money(d.fund.spent), 'پرداخت هزینه ' + money(d.fund.expenses) + (d.fund.managerSettle ? ' · تسویه با مدیر ' + money(d.fund.managerSettle) : ''))}
         ${d.fund.transferIn || d.fund.transferOut ? kpi('انتقال بین صندوق‌ها', signed(d.fund.transferNet), 'ورودی ' + money(d.fund.transferIn) + ' · خروجی ' + money(d.fund.transferOut)) : ''}
@@ -1894,10 +1894,10 @@ REPORTS.fund = async () => {
       <button class="btn small" onclick="printOfficial('/print/report/funds', 'گزارش کامل صندوق‌ها')">🖨 چاپ رسمی</button><a class="btn small" href="/api/export/funds">⬇️ اکسل</a></div>
     <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج ± انتقال بین صندوق‌ها = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق. انتقال‌ها جزو دریافتی و مخارج نیستند.</p>
     <div class="kpis">
-      ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : 'good')}
+      ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : '')}
       ${kpi('جمع دریافتی', money(t.received), 'از ابتدا · بدون انتقال‌ها')}
       ${kpi('جمع مخارج', money(t.spent), 'از ابتدا · بدون انتقال‌ها')}
-      ${kpi('جمع بدهیِ واحدها', money(t.unitDebt), 'به همهٔ صندوق‌ها', t.unitDebt > 0 ? 'bad' : 'good')}
+      ${kpi('جمع بدهیِ واحدها', money(t.unitDebt), 'به همهٔ صندوق‌ها', t.unitDebt > 0 ? 'bad' : '')}
     </div>
     <div class="panel"><div class="phead"><b>همهٔ صندوق‌ها — یک نگاه</b></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>انتقال (±)</th><th>موجودی فعلی</th><th>بدهکارِ واحدها</th></tr></thead><tbody>
@@ -1945,8 +1945,8 @@ async function showVoucher(dtype, id) {
     <p class="hint">${esc(v.head.typeFa)} · تاریخ ${faDigit(v.head.j)} · مبلغ ${money(v.head.amount)} · ${esc(v.head.meta)}</p>
     <div class="tablewrap"><table class="tx"><thead><tr><th>طرف‌حساب</th><th>شرح</th><th>بدهکار</th><th>بستانکار</th></tr></thead><tbody>
     ${v.lines.map(l => `<tr><td><b>${esc(l.acc)}</b></td><td class="hint">${esc(l.desc)}</td>
-      <td class="num ${l.debit ? 'amt-out' : 'muted'}">${l.debit ? money(l.debit) : '—'}</td>
-      <td class="num ${l.credit ? 'amt-in' : 'muted'}">${l.credit ? money(l.credit) : '—'}</td></tr>`).join('')}
+      <td class="num ${l.debit ? '' : 'muted'}">${l.debit ? money(l.debit) : '—'}</td>
+      <td class="num ${l.credit ? '' : 'muted'}">${l.credit ? money(l.credit) : '—'}</td></tr>`).join('')}
     </tbody><tfoot><tr><td colspan="2">جمع ${v.balanced ? '<span class="amt-in">دو طرف برابر ✓</span>' : '<span class="amt-out">دو طرف برابر نیست!</span>'}</td>
       <td class="num">${money(v.totalDebit)}</td><td class="num">${money(v.totalCredit)}</td></tr></tfoot></table></div></div>`,
     `${isAdmin() && dtype !== 'ftxn' ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}${dtype === 'payment' ? `<button class="btn" data-rcpt="${id}">رسید PDF</button>` : ''}<button class="btn" id="vHist">سابقه</button><button class="btn" id="vCancel">بستن</button>`)
@@ -1970,8 +1970,8 @@ REPORTS.gl = async () => {
     box.innerHTML = `
       <p class="hint">دفتر کل — ${esc(TYPE_FA[type])}: <b>${esc(d.name)}</b> · تاریخ گزارش‌گیری: ${faDigit(jStamp())}${(from || to) ? ' · بازه: ' + (from ? faDigit(from) : '…') + ' تا ' + (to ? faDigit(to) : '…') : ''}</p>
       <div class="kpis">
-        ${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}
-        ${kpi('جمع بستانکار', money(d.totalCredit), '', 'good')}
+        ${kpi('جمع بدهکار', money(d.totalDebit))}
+        ${kpi('جمع بستانکار', money(d.totalCredit))}
         ${kpi('ماندهٔ نهایی', balCell(d.finalBalance), d.finalBalance > 0 ? 'بدهکار' : d.finalBalance < 0 ? 'بستانکار' : 'تسویه', d.finalBalance > 0 ? 'bad' : '')}
       </div>
       <div class="panel"><div class="tablewrap"><table class="tx">
@@ -1980,10 +1980,10 @@ REPORTS.gl = async () => {
         ${d.rows.length ? d.rows.map(e => { const da = e.inv ? ['invoice', e.inv] : e.pid ? ['payment', e.pid] : e.cid ? ['contractor', e.cid] : (e.refid && e.dtype) ? [e.dtype, e.refid] : null; return `<tr class="${voucherAttr(e) ? 'clickable' : ''}" ${voucherAttr(e)}>
           <td class="num">${e.j === '—' ? 'انتقالی' : faDigit(e.j)}</td><td class="num">${esc(e.no)}</td>
           <td><b>${esc(e.title)}</b></td><td><span class="catpill">${esc(e.cat)}</span></td>
-          <td class="num ${e.debit ? 'amt-out' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
-          <td class="num ${e.credit ? 'amt-in' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
+          <td class="num ${e.debit ? '' : 'muted'}">${e.debit ? money(e.debit) : '—'}</td>
+          <td class="num ${e.credit ? '' : 'muted'}">${e.credit ? money(e.credit) : '—'}</td>
           <td class="num">${balCell(e.balance)}</td><td class="printhide rowact">${da ? docActs(da[0], da[1]) : ''}</td></tr>` }).join('') : emptyRow(8, 'تراکنشی در این بازه نیست')}
-        </tbody><tfoot><tr><td colspan="4">جمع</td><td class="num amt-out">${money(d.totalDebit)}</td><td class="num amt-in">${money(d.totalCredit)}</td><td class="num">${balCell(d.finalBalance)}</td><td class="printhide"></td></tr></tfoot>
+        </tbody><tfoot><tr><td colspan="4">جمع</td><td class="num">${money(d.totalDebit)}</td><td class="num">${money(d.totalCredit)}</td><td class="num">${balCell(d.finalBalance)}</td><td class="printhide"></td></tr></tfoot>
       </table></div></div>`
     wireCommon()
     box.querySelectorAll('[data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
@@ -2018,14 +2018,14 @@ REPORTS.journal = async () => {
       <td><span class="badge ${pillCls[r.kind] || 'b-open'}">${esc(K[r.kind] || r.kind)}</span></td>
       <td>${esc(r.debitAcc)}<br><span class="hint">${esc(r.title)}</span></td>
       <td>${esc(r.creditAcc)}</td>
-      <td class="num amt-out">${money(r.debit)}</td>
-      <td class="num amt-in">${money(r.credit)}</td>
+      <td class="num">${money(r.debit)}</td>
+      <td class="num">${money(r.credit)}</td>
       <td class="printhide rowact">${r.dtype === 'ftxn' ? '' : docActs(r.dtype, r.id)}</td></tr>`).join('')
       : emptyRow(9, 'سندی با این فیلتر نیست')
     const c = d.control || { ok: true, funds: [] }
     const trz = c.ok ? '<span class="amt-in"> · خطوط صندوق با موجودی واقعی می‌خواند ✓</span>' : '<span class="amt-out"> · اختلاف با موجودی صندوق‌ها!</span>'
-    $('#jnFoot').innerHTML = `<tr><td colspan="6">جمع (${faDigit(d.rows.length)} سند)${trz}</td><td class="num amt-out">${money(d.totalDebit)}</td><td class="num amt-in">${money(d.totalCredit)}</td><td class="printhide"></td></tr>`
-    $('#jnKpis').innerHTML = `${kpi('تعداد اسناد', faDigit(d.rows.length))}${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}${kpi('جمع بستانکار', money(d.totalCredit))}${kpi('کنترل با صندوق‌ها', c.ok ? 'می‌خواند' : 'اختلاف دارد', c.funds.map(f => f.name + ': ' + (f.diff ? 'اختلاف ' + money(Math.abs(f.diff)) : '✓')).join(' · '), c.ok ? '' : 'bad')}`
+    $('#jnFoot').innerHTML = `<tr><td colspan="6">جمع (${faDigit(d.rows.length)} سند)${trz}</td><td class="num">${money(d.totalDebit)}</td><td class="num">${money(d.totalCredit)}</td><td class="printhide"></td></tr>`
+    $('#jnKpis').innerHTML = `${kpi('تعداد اسناد', faDigit(d.rows.length))}${kpi('جمع بدهکار', money(d.totalDebit))}${kpi('جمع بستانکار', money(d.totalCredit))}${kpi('کنترل با صندوق‌ها', c.ok ? 'می‌خواند' : 'اختلاف دارد', c.funds.map(f => f.name + ': ' + (f.diff ? 'اختلاف ' + money(Math.abs(f.diff)) : '✓')).join(' · '), c.ok ? '' : 'bad')}`
     $('#repBody').querySelectorAll('#jnRows [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
   })
   const typeOpts = [['', 'همه'], ['charge', 'شارژ ماهانه'], ['bill', 'قبوض و متفرقه'], ['exp', 'هزینهٔ جاری'], ['proj', 'پروژه (عمرانی)'], ['pay', 'دریافتی'], ['ci', 'فاکتور پیمانکار'], ['ftxn', 'انتقال/تسویه/تعدیل صندوق']]
@@ -2100,9 +2100,9 @@ REPORTS.invoices = async () => {
       <p class="hint">تاریخ گزارش‌گیری: <b>${faDigit(jStamp())}</b>${(from || to) ? ' · بازه: <b>' + (from ? faDigit(from) : '…') + ' تا ' + (to ? faDigit(to) : '…') + '</b>' : ''}${fundId ? ' · صندوق: <b>' + esc((META.funds.find(f => f.id === fundId) || {}).name || '') + '</b>' : ''}${st ? ' · وضعیت: <b>' + (st === 'settled' ? 'تسویه‌شده' : 'تسویه‌نشده') + '</b>' : ''}</p>
       <div class="kpis">
         ${kpi('جمع فاکتورها', money(amountSum), faDigit(rows.length) + ' فاکتور')}
-        ${kpi('پرداخت‌شده از صندوق', money(fundPaidSum), 'هزینه‌هایی که صندوق پرداخته', 'good')}
-        ${kpi('بدهی به فروشنده', money(fundUnpaidSum), 'مانده‌ی پرداخت از صندوق', fundUnpaidSum > 0 ? 'bad' : 'good')}
-        ${kpi('بدهی ساکنین', money(resDue), 'قبوض/پروژه‌ی وصول‌نشده', resDue > 0 ? 'bad' : 'good')}</div>
+        ${kpi('پرداخت‌شده از صندوق', money(fundPaidSum), 'هزینه‌هایی که صندوق پرداخته')}
+        ${kpi('بدهی به فروشنده', money(fundUnpaidSum), 'مانده‌ی پرداخت از صندوق', fundUnpaidSum > 0 ? 'bad' : '')}
+        ${kpi('بدهی ساکنین', money(resDue), 'قبوض/پروژه‌ی وصول‌نشده', resDue > 0 ? 'bad' : '')}</div>
       <div class="panel"><div class="tablewrap"><table class="tx">
         <thead><tr><th>شماره سند</th><th>عنوان</th><th>دسته</th><th>صندوق</th><th>تاریخ</th><th>مبلغ</th><th>پرداخت از صندوق</th><th>وصول از ساکنین</th><th>وضعیت</th></tr></thead><tbody>
         ${rows.length ? rows.map(i => `<tr class="clickable" data-inv="${i.id}"><td class="num"><b>${faDigit(i.id)}</b></td><td><b>${esc(i.title)}</b>${i.from_fund ? ' <span class="badge b-charge">جاری</span>' : ''}</td>
@@ -2174,8 +2174,8 @@ REPORTS.fundpay = async () => {
   const r = await api('/api/report/fundpay')
   $('#repBody').innerHTML = `
     <div class="filters printhide"><button class="btn small" onclick="printAs('گزارش پرداخت صندوق‌ها')">🖨 چاپ</button></div>
-    <div class="kpis">${kpi('جمع پرداخت از صندوق‌ها', money(r.total), faDigit(r.rows.length) + ' پرداخت', 'good')}
-      ${kpi('هزینه‌های پرداخت‌نشده', money(r.unpaidTotal), 'بدهی صندوق به فاکتورها', r.unpaidTotal > 0 ? 'bad' : 'good')}</div>
+    <div class="kpis">${kpi('جمع پرداخت از صندوق‌ها', money(r.total), faDigit(r.rows.length) + ' پرداخت')}
+      ${kpi('هزینه‌های پرداخت‌نشده', money(r.unpaidTotal), 'بدهی صندوق به فاکتورها', r.unpaidTotal > 0 ? 'bad' : '')}</div>
     ${r.interFund.length ? `<div class="panel"><div class="phead"><b>بدهی بین صندوق‌ها</b></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>صندوق بدهکار</th><th>صندوق بستانکار</th><th>مبلغ</th></tr></thead><tbody>
       ${r.interFund.map(x => `<tr><td><b>${esc(x.fromName)}</b></td><td>${esc(x.toName)}</td><td class="num amt-out">${money(x.amount)}</td></tr>`).join('')}
@@ -2215,8 +2215,8 @@ REPORTS.unit = async () => {
     const net = d.charge.total + d.omrani.total + d.projects.total
     box.innerHTML = `
       <div class="kpis">
-        ${kpi('بدهی شارژ (جاری)', money(d.charge.total), '', d.charge.total > 0 ? 'bad' : 'good')}
-        ${kpi('بدهی قبوض و متفرقه', money(d.omrani.total), 'آب/برق/گاز و جزئی', d.omrani.total > 0 ? 'bad' : 'good')}
+        ${kpi('بدهی شارژ (جاری)', money(d.charge.total), '', d.charge.total > 0 ? 'bad' : '')}
+        ${kpi('بدهی قبوض و متفرقه', money(d.omrani.total), 'آب/برق/گاز و جزئی', d.omrani.total > 0 ? 'bad' : '')}
         ${kpi('پروژه‌ها (عمرانی)', bal(d.projects.total), 'بدهی/طلب', '')}
         ${kpi('جمع خالص', bal(net), '', net > 0 ? 'bad' : '')}
       </div>
@@ -2280,7 +2280,7 @@ REPORTS.projects = async () => {
   $('#repBody').innerHTML = `
     <div class="filters printhide"><button class="btn small" onclick="printAs('گزارش پروژه‌ها')">🖨 چاپ</button></div>
     <div class="kpis">${kpiN('پروژه‌ها', faDigit(rows.length))}${kpi('جمع بودجه مصوب', money(t.budget))}
-      ${kpi('جمع فاکتور پیمانکار', money(t.inv), '', 'bad')}${kpi('پرداخت‌شده', money(t.paid), '', 'good')}</div>
+      ${kpi('جمع فاکتور پیمانکار', money(t.inv))}${kpi('پرداخت‌شده', money(t.paid))}</div>
     <div class="panel"><div class="tablewrap"><table class="tx">
       <thead><tr><th>پروژه</th><th>وضعیت</th><th>بودجه مصوب</th><th>استعلام</th><th>مبلغ انتخابی</th><th>فاکتور</th><th>جمع فاکتور</th><th>پرداخت‌شده</th></tr></thead><tbody>
       ${rows.length ? rows.map(p => `<tr class="clickable" data-proj="${p.id}"><td><b>${esc(p.title)}</b></td><td><span class="badge ${projStatusCls(p.status)}">${esc(p.statusFa)}</span></td>
@@ -3047,7 +3047,7 @@ const showProject = guard(async id => {
     `<div class="panel"><div class="phead"><b>وضعیت مالی پروژه</b><span class="hint">روش تقسیم: ${d.charge ? d.charge.methodFa : '—'}${d.charge ? ' · بر عهدهٔ ' + (d.charge.payer === 'owner' ? 'مالک' : 'مستاجر') : ''}</span></div>
       ${d.charge ? `<div class="kpis">
         ${kpi('برآورد اولیه', money(d.box.estimate.total), 'سهم هر واحد: ' + money(d.box.estimate.perUnit))}
-        ${kpi('وصول از ساکنین', money(d.box.collection.collected), 'مانده بدهی ساکنین: ' + money(d.box.collection.debt), 'good')}
+        ${kpi('وصول از ساکنین', money(d.box.collection.collected), 'مانده بدهی ساکنین: ' + money(d.box.collection.debt))}
         ${kpi('مخارج کلی پروژه', money(d.box.expenses.total), 'پرداخت به پیمانکار: ' + money(d.box.expenses.paid) + ' · مانده طلب: ' + money(d.box.expenses.outstanding), 'bad')}
         ${d.reconciled ? kpi('مبلغ نهایی مخارج', money(d.box.final.total), 'انحراف از برآورد: ' + signed(d.box.final.deviation) + ' · سهم نهایی هر واحد: ' + money(d.box.final.perUnit), d.box.final.deviation > 0 ? 'warn' : 'good') : ''}
       </div>
@@ -3265,7 +3265,7 @@ async function ciPayForm(ci, after) {
   const paid = pays.reduce((s, p) => s + p.amount, 0), rem = ci.amount - paid, sale = ci.kind === 'sale'
   const defFund = ci.fund_id || (META.funds.find(f => f.bucket === 'project') || META.funds[0] || {}).id
   const body = openModal(`${sale ? 'دریافت‌های' : 'پرداخت‌های'} فاکتور «${ci.title || ci.vendorLabel || ''}»`, `<div class="form">
-    <div class="kpis" style="margin-bottom:6px">${kpi('مبلغ فاکتور', money(ci.amount))}${kpi(sale ? 'دریافت‌شده' : 'پرداخت‌شده', money(paid), '', 'good')}${kpi('مانده', money(rem), '', rem > 0 ? 'bad' : '')}</div>
+    <div class="kpis" style="margin-bottom:6px">${kpi('مبلغ فاکتور', money(ci.amount))}${kpi(sale ? 'دریافت‌شده' : 'پرداخت‌شده', money(paid))}${kpi('مانده', money(rem), '', rem > 0 ? 'bad' : '')}</div>
     <div class="tablewrap"><table class="tx"><thead><tr><th>تاریخ</th><th>صندوق</th><th>مبلغ</th><th>توضیح</th><th></th></tr></thead><tbody>
       ${pays.length ? pays.map(p => `<tr><td class="num">${faDigit(p.j_date)}</td><td>${esc(p.fund_name || '—')}</td><td class="num">${money(p.amount)}</td><td class="hint">${esc(p.note || '')}</td>
         <td>${isAdmin() ? `<button class="btn tiny del" data-cpdel="${p.id}" title="حذف">🗑</button>` : ''}</td></tr>`).join('') : emptyRow(5, 'هنوز پرداختی ثبت نشده')}

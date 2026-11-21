@@ -98,7 +98,8 @@ table.tx tfoot td{font-weight:800;border-top:2px solid var(--line);border-bottom
 table.tx tr:last-child td{border-bottom:none}
 table.tx tbody tr.clickable{cursor:pointer}
 table.tx tbody tr:hover{background:var(--panel-2)}
-.amt-in{color:var(--in);font-weight:700}
+/* مورد ۳۴: مبالغ پیش‌فرض خنثی؛ سبز فقط برای «پیش‌پرداخت/مازاد/تسویه» (.pos)، قرمز برای بدهی باز، کسری و منفی */
+.amt-in{color:inherit;font-weight:600}
 .amt-out{color:var(--out);font-weight:700}
 .pos{color:var(--in)}.neg{color:var(--out)}
 .badge{font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:6px;white-space:nowrap;display:inline-block}
