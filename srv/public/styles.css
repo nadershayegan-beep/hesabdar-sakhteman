@@ -437,3 +437,9 @@ table.tx tr.tot td{font-weight:700;border-top:1px solid var(--line)}
 .ivmore summary{cursor:pointer;color:var(--muted);font-size:13px;padding:4px 0}
 .ivmore[open] summary{margin-bottom:8px}
 @media (max-width:600px){ .ivtypes{grid-template-columns:1fr} }
+
+/* مورد ۵۵: حلقهٔ فوکوسِ کیبورد در همهٔ اجزا */
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+tr.clickable:focus-visible{outline-offset:-2px}
+.btn:focus:not(:focus-visible),tr.clickable:focus:not(:focus-visible){outline:none}
+.mbox:focus{outline:none}

@@ -145,12 +145,16 @@ function openModal(title, bodyHtml, footHtml) {
   $('#modalBody').innerHTML = bodyHtml
   const f = $('#modalFoot')
   if (footHtml) { f.innerHTML = footHtml; f.classList.remove('hidden') } else { f.innerHTML = ''; f.classList.add('hidden') }
+  if ($('#modal').classList.contains('hidden')) modalReturnFocus = document.activeElement
   $('#modal').classList.remove('hidden')
   const mb = $('#modalBody')
   mb.oninput = mb.onchange = e => { if (e.target.matches('input,select,textarea')) modalDirty = true }
+  // فوکوس روی اولین فیلدِ قابل‌ویرایش (یا اولین دکمه)
+  setTimeout(() => { if ($('#modal').contains(document.activeElement)) return; const el = [...$('#modal').querySelectorAll('input:not([type=hidden]):not([disabled]):not([readonly]),select,textarea')].find(x => x.offsetParent); const box = $('#modal .mbox'); if (el) el.focus(); else if (box) { box.tabIndex = -1; box.focus() } }, 30)
   return mb
 }
-const closeModal = () => { modalDirty = false; $('#modal').classList.add('hidden') }
+let modalReturnFocus = null
+const closeModal = () => { modalDirty = false; $('#modal').classList.add('hidden'); if (modalReturnFocus && document.contains(modalReturnFocus)) try { modalReturnFocus.focus() } catch { } modalReturnFocus = null }
 // بستن با ✕ / کلیک بیرون / Esc: اگر فرم تغییر کرده، اول می‌پرسد
 const tryCloseModal = () => {
   if (!modalDirty) return closeModal()
@@ -158,6 +162,25 @@ const tryCloseModal = () => {
 }
 $('#modalX').onclick = tryCloseModal
 $('#modal').onclick = e => { if (e.target.id === 'modal') tryCloseModal() }
+// تله‌ی Tab داخلِ مودال و Enter/Space روی ردیف‌های قابل‌کلیک
+document.addEventListener('keydown', e => {
+  if (e.key === 'Tab' && !$('#modal').classList.contains('hidden') && !document.querySelector('.cfm')) {
+    const f = [...$('#modal').querySelectorAll('a[href],button:not([disabled]),input:not([type=hidden]):not([disabled]),select,textarea,[tabindex="0"]')].filter(x => x.offsetParent)
+    if (f.length) { const first = f[0], last = f[f.length - 1]
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
+      else if (!$('#modal').contains(document.activeElement)) { e.preventDefault(); first.focus() } }
+  }
+  if ((e.key === 'Enter' || e.key === ' ') && e.target.matches && e.target.matches('tr.clickable,[role=button][tabindex]')) { e.preventDefault(); e.target.click() }
+})
+// برچسب‌گذاریِ خودکار: ردیف‌های قابل‌کلیک با Tab در دسترس، دکمه‌های آیکونی با aria-label از title
+function a11yEnhance(root) {
+  root.querySelectorAll('tr.clickable:not([tabindex])').forEach(tr => { tr.tabIndex = 0; tr.setAttribute('role', 'button') })
+  root.querySelectorAll('button[title]:not([aria-label])').forEach(b => b.setAttribute('aria-label', b.title))
+  root.querySelectorAll('button.del:not([aria-label]):not([title])').forEach(b => b.setAttribute('aria-label', 'حذف'))
+}
+const a11yObs = new MutationObserver(ms => { for (const m of ms) if (m.target && m.target.querySelectorAll) a11yEnhance(m.target) })
+for (const id of ['view', 'modalBody', 'modalFoot']) { const el = document.getElementById(id); if (el) a11yObs.observe(el, { childList: true, subtree: true }) }
 document.addEventListener('keydown', e => {
   if (e.key !== 'Escape') return
   const c = document.querySelector('.cfm'); if (c) return c.remove()

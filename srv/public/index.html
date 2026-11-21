@@ -90,8 +90,8 @@
 
 <div class="toast" id="toast"></div>
 <div class="modal hidden" id="modal">
-  <div class="mbox">
-    <div class="mhead"><span id="modalTitle">—</span><button class="mx" id="modalX">✕</button></div>
+  <div class="mbox" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="mhead"><span id="modalTitle">—</span><button class="mx" id="modalX" aria-label="بستن">✕</button></div>
     <div class="mbody" id="modalBody"></div>
     <div class="mfoot hidden" id="modalFoot"></div>
   </div>
