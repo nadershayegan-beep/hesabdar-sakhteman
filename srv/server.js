@@ -1219,7 +1219,7 @@ function fundReport(fundId) {
 const jnorm = s => String(s || '').replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/-/g, '/').trim()
 // نوعِ ماهیتِ فاکتور
 function invKind(i) { return i.from_fund ? 'exp' : i.is_charge ? 'charge' : (i.is_billing && i.project_id) ? 'proj' : 'bill' }
-const JKIND_FA = { charge: 'شارژ ماهانه', bill: 'قبوض و متفرقه', proj: 'پروژه (عمرانی)', exp: 'هزینهٔ جاری', pay: 'دریافتی', ci: 'فاکتور پیمانکار', transfer: 'انتقال صندوق' }
+const JKIND_FA = { charge: 'شارژ ماهانه', bill: 'قبوض و متفرقه', proj: 'پروژه (عمرانی)', exp: 'هزینهٔ جاری', pay: 'دریافتی', ci: 'فاکتور پیمانکار', ftxn: 'انتقال/تسویه/تعدیل صندوق' }
 
 // خلاصهٔ یک سمتِ سند (چند حساب → یک برچسب)
 function sideLabel(lines) {
@@ -1262,6 +1262,14 @@ function journalReport(q = {}) {
       refs.push({ g: c.g_date, j: c.j_date, dtype: 'contractor', id: c.id, kind: 'ci' })
     }
   }
+  if ((!typ || typ === 'ftxn') && !unitId) {
+    for (const t of db.prepare(`SELECT * FROM fund_txns WHERE type IN ('transfer_out','manager_settle','adjust_in','adjust_out')`).all()) {
+      if (!inR(t.j_date)) continue
+      if (fundId && t.fund_id !== fundId && t.peer_fund_id !== fundId) continue
+      if (search && !(t.note || '').includes(search)) continue
+      refs.push({ g: t.g_date, j: t.j_date, dtype: 'ftxn', id: t.id, kind: 'ftxn' })
+    }
+  }
   refs.sort((a, b) => a.g < b.g ? -1 : a.g > b.g ? 1 : a.id - b.id)
   const rows = refs.map((r, k) => {
     const v = voucherOf(r.dtype, r.id)
@@ -1273,7 +1281,8 @@ function journalReport(q = {}) {
     }
   }).filter(Boolean)
   const totalDebit = rows.reduce((s, d) => s + d.debit, 0), totalCredit = rows.reduce((s, d) => s + d.credit, 0)
-  return { rows, totalDebit, totalCredit, balanced: totalDebit === totalCredit, kindFa: JKIND_FA }
+  // «متوازن» فقط یعنی هر سند دوطرفه است؛ کنترلِ واقعی، تطبیقِ خطوطِ صندوق با موجودیِ واقعی است
+  return { rows, totalDebit, totalCredit, balanced: totalDebit === totalCredit, kindFa: JKIND_FA, control: journalFundControl() }
 }
 
 // برگهٔ سندِ دوطرفه: خطوطِ بدهکار/بستانکار که همیشه متوازن‌اند
@@ -1284,16 +1293,28 @@ function voucherOf(dtype, id) {
     if (!i) return null
     const kind = invKind(i)
     const head = { no: String(i.id), j: i.j_date, typeFa: JKIND_FA[kind], title: i.title, amount: i.amount, meta: `دسته: ${i.category || '—'} · صندوق: ${i.fund_name || '—'}${i.from_fund ? '' : ' · روش: ' + (METHOD_FA[i.method] || i.method)}` }
-    if (i.from_fund) {
-      const fp = invoiceFundPaid(i.id), un = i.amount - fp
+    if (i.from_fund || !(i.is_charge || i.is_billing)) {
+      // بخشِ هزینه: هزینه در برابرِ پولی که واقعاً از هر صندوق رفته + باقیِ پرداخت‌نشده (به مدیر یا فروشنده)
+      if (!i.from_fund) {
+        // هزینهٔ تقسیمی: اول سهمِ واحدها در برابرِ «بازیافت هزینه از ساکنین»
+        const shares = db.prepare(`SELECT s.share_amount, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY CAST(u.number AS INTEGER)`).all(i.id)
+        for (const s of shares) lines.push({ acc: 'واحد ' + s.number + (s.resident_name ? ' — ' + s.resident_name : ''), desc: 'سهمِ این سند', debit: s.share_amount, credit: 0 })
+        const shTot = shares.reduce((a, s) => a + s.share_amount, 0)
+        if (shTot) lines.push({ acc: 'بازیافت هزینه از ساکنین', desc: 'تقسیمِ هزینه بین واحدها', debit: 0, credit: shTot })
+      }
       lines.push({ acc: 'هزینه: ' + (i.category || i.title), desc: i.title, debit: i.amount, credit: 0 })
-      if (fp > 0) lines.push({ acc: 'صندوق ' + (i.fund_name || ''), desc: 'پرداخت از صندوق', debit: 0, credit: fp })
-      if (un > 0) lines.push({ acc: 'بدهی به فروشنده', desc: 'پرداخت‌نشده', debit: 0, credit: un })
+      let fp = 0
+      for (const ep of db.prepare(`SELECT ep.fund_id, f.name, SUM(ep.amount) s FROM expense_payments ep LEFT JOIN funds f ON f.id=ep.fund_id WHERE ep.invoice_id=? GROUP BY ep.fund_id`).all(i.id)) {
+        fp += ep.s; lines.push({ acc: fundAcc(ep.name), fund: ep.fund_id, desc: 'پرداخت از صندوق', debit: 0, credit: ep.s })
+      }
+      const un = i.amount - fp
+      if (un > 0) lines.push({ acc: i.paid_by_manager ? 'پرداختنی به مدیر' : 'پرداختنی به فروشنده', desc: i.paid_by_manager ? 'مدیر از جیب پرداخته' : 'هنوز پرداخت نشده', debit: 0, credit: un })
     } else {
       const shares = db.prepare(`SELECT s.share_amount, u.number, u.resident_name FROM invoice_shares s JOIN units u ON u.id=s.unit_id WHERE s.invoice_id=? ORDER BY CAST(u.number AS INTEGER)`).all(i.id)
       for (const s of shares) lines.push({ acc: 'واحد ' + s.number + (s.resident_name ? ' — ' + s.resident_name : ''), desc: 'سهمِ این سند', debit: s.share_amount, credit: 0 })
-      const credAcc = kind === 'charge' ? 'درآمد شارژ ماهانه' : kind === 'proj' ? 'تعهد پروژه (عمرانی)' : 'صندوق ' + (i.fund_name || '')
-      lines.push({ acc: credAcc, desc: kind === 'bill' ? 'پرداخت از صندوق / طلب از واحدها' : 'در مقابلِ سهمِ واحدها', debit: 0, credit: i.amount })
+      const shTot = shares.reduce((a, s) => a + s.share_amount, 0)
+      const credAcc = kind === 'charge' ? 'درآمد شارژ ماهانه' : kind === 'proj' ? 'تعهد پروژه (عمرانی)' : 'درآمد: ' + (i.category || i.title)
+      lines.push({ acc: credAcc, desc: 'در مقابلِ سهمِ واحدها', debit: 0, credit: shTot })
     }
     return { head, lines, ...balance(lines), raw: i }
   }
@@ -1301,7 +1322,7 @@ function voucherOf(dtype, id) {
     const p = db.prepare(`SELECT p.*, u.number, u.resident_name, f.name fund_name FROM payments p LEFT JOIN units u ON u.id=p.unit_id LEFT JOIN funds f ON f.id=p.fund_id WHERE p.id=?`).get(id)
     if (!p) return null
     const head = { no: 'رسید ' + p.id, j: p.j_date, typeFa: 'دریافتی', title: 'دریافتی واحد ' + p.number, amount: p.amount, meta: `صندوق: ${p.fund_name || '—'}${p.method ? ' · روش: ' + p.method : ''}${p.note ? ' · ' + p.note : ''}` }
-    lines.push({ acc: 'صندوق ' + (p.fund_name || ''), desc: 'دریافت نقدی به صندوق', debit: p.amount, credit: 0 })
+    lines.push({ acc: fundAcc(p.fund_name), fund: p.fund_id, desc: 'دریافت نقدی به صندوق', debit: p.amount, credit: 0 })
     lines.push({ acc: 'واحد ' + p.number + (p.resident_name ? ' — ' + p.resident_name : ''), desc: 'کسر از بدهیِ واحد', debit: 0, credit: p.amount })
     return { head, lines, ...balance(lines), raw: p }
   }
@@ -1311,19 +1332,51 @@ function voucherOf(dtype, id) {
     const fund = db.prepare(`SELECT name FROM funds WHERE id=?`).get(c.fund_id || omraniFundId())
     const paid = c.paid_amount != null ? c.paid_amount : (c.paid ? c.amount : 0), rem = c.amount - paid
     const head = { no: 'ci-' + c.id, j: c.j_date, typeFa: (c.kind === 'sale' ? 'فروش' : 'خرید') + ' پروژه', title: (c.title || '') + ' (' + (c.vendor_name || '') + ')', amount: c.amount, meta: `پروژه: ${c.proj || '—'} · صندوق: ${fund ? fund.name : '—'}` }
+    const cps = db.prepare(`SELECT cp.fund_id, f.name, SUM(cp.amount) s FROM contractor_payments cp LEFT JOIN funds f ON f.id=cp.fund_id WHERE cp.cinvoice_id=? GROUP BY cp.fund_id`).all(c.id)
+    const cpSum = cps.reduce((a, x) => a + x.s, 0)
     if (c.kind === 'sale') {
-      if (paid > 0) lines.push({ acc: 'صندوق ' + (fund ? fund.name : ''), desc: 'دریافت از فروش', debit: paid, credit: 0 })
+      for (const x of cps) lines.push({ acc: fundAcc(x.name), fund: x.fund_id, desc: 'دریافت از فروش', debit: x.s, credit: 0 })
+      if (paid > cpSum) lines.push({ acc: fundAcc(fund ? fund.name : ''), desc: 'دریافت از فروش (بی‌قسط)', debit: paid - cpSum, credit: 0 })
       if (rem > 0) lines.push({ acc: 'دریافتنی از ' + (c.vendor_name || 'خریدار'), desc: 'دریافت‌نشده', debit: rem, credit: 0 })
       lines.push({ acc: 'درآمد فروش پروژه', desc: c.title || '', debit: 0, credit: c.amount })
     } else {
       lines.push({ acc: 'هزینهٔ پروژه', desc: c.title || '', debit: c.amount, credit: 0 })
-      if (paid > 0) lines.push({ acc: 'صندوق ' + (fund ? fund.name : ''), desc: 'پرداخت به پیمانکار', debit: 0, credit: paid })
+      for (const x of cps) lines.push({ acc: fundAcc(x.name), fund: x.fund_id, desc: 'پرداخت به پیمانکار', debit: 0, credit: x.s })
+      if (paid > cpSum) lines.push({ acc: fundAcc(fund ? fund.name : ''), desc: 'پرداخت به پیمانکار (بی‌قسط)', debit: 0, credit: paid - cpSum })
       if (rem > 0) lines.push({ acc: 'پرداختنی به ' + (c.vendor_name || 'پیمانکار'), desc: 'پرداخت‌نشده', debit: 0, credit: rem })
     }
     return { head, lines, ...balance(lines), raw: c }
   }
+  if (dtype === 'ftxn') {
+    const t = db.prepare(`SELECT t.*, f.name fund_name, pf.name peer_name FROM fund_txns t LEFT JOIN funds f ON f.id=t.fund_id LEFT JOIN funds pf ON pf.id=t.peer_fund_id WHERE t.id=?`).get(id)
+    if (!t || !['transfer_out', 'manager_settle', 'adjust_in', 'adjust_out'].includes(t.type)) return null
+    const F = { acc: fundAcc(t.fund_name), fund: t.fund_id }
+    const head = { no: 'ص-' + t.id, j: t.j_date, typeFa: TXN_LABEL[t.type], title: t.note || TXN_LABEL[t.type], amount: t.amount, meta: 'صندوق: ' + (t.fund_name || '—') + (t.peer_name ? ' → ' + t.peer_name : '') }
+    if (t.type === 'transfer_out') { lines.push({ acc: fundAcc(t.peer_name), fund: t.peer_fund_id, desc: 'انتقال ورودی', debit: t.amount, credit: 0 }); lines.push({ ...F, desc: 'انتقال خروجی', debit: 0, credit: t.amount }) }
+    else if (t.type === 'manager_settle') { lines.push({ acc: 'پرداختنی به مدیر', desc: 'بازپرداخت به مدیر', debit: t.amount, credit: 0 }); lines.push({ ...F, desc: 'پرداخت از صندوق', debit: 0, credit: t.amount }) }
+    else if (t.type === 'adjust_in') { lines.push({ ...F, desc: 'افزایش موجودی', debit: t.amount, credit: 0 }); lines.push({ acc: 'تعدیل صندوق', desc: t.note || '', debit: 0, credit: t.amount }) }
+    else { lines.push({ acc: 'تعدیل صندوق', desc: t.note || '', debit: t.amount, credit: 0 }); lines.push({ ...F, desc: 'کاهش موجودی', debit: 0, credit: t.amount }) }
+    return { head, lines, ...balance(lines), raw: t }
+  }
   return null
 }
+// کنترلِ واقعیِ دفتر روزنامه: گردشِ خطوطِ «صندوق» در همهٔ اسناد باید با موجودیِ واقعیِ هر صندوق بخواند
+function journalFundControl() {
+  const net = {}
+  const docs = [
+    ...db.prepare(`SELECT id FROM invoices WHERE is_opening=0`).all().map(r => ['invoice', r.id]),
+    ...db.prepare(`SELECT id FROM payments WHERE is_opening=0`).all().map(r => ['payment', r.id]),
+    ...db.prepare(`SELECT id FROM contractor_invoices`).all().map(r => ['contractor', r.id]),
+    ...db.prepare(`SELECT id FROM fund_txns WHERE type IN ('transfer_out','manager_settle','adjust_in','adjust_out')`).all().map(r => ['ftxn', r.id])]
+  let unmapped = 0
+  for (const [t, id] of docs) {
+    const v = voucherOf(t, id); if (!v) continue
+    for (const l of v.lines) if (l.fund || /^صندوق/.test(l.acc)) { if (l.fund) net[l.fund] = (net[l.fund] || 0) + l.debit - l.credit; else unmapped += l.debit - l.credit }
+  }
+  const funds = listFunds().map(f => { const journal = (f.opening_balance || 0) + (net[f.id] || 0); return { id: f.id, name: f.name, journal, actual: f.balance, diff: journal - f.balance } })
+  return { ok: funds.every(f => f.diff === 0) && unmapped === 0, funds, unmapped }
+}
+const fundAcc = n => /^صندوق/.test(n || '') ? n : 'صندوق ' + (n || '')
 function balance(lines) { const d = lines.reduce((a, l) => a + l.debit, 0), c = lines.reduce((a, l) => a + l.credit, 0); return { totalDebit: d, totalCredit: c, balanced: d === c } }
 
 // فهرستِ حساب‌های قابلِ انتخاب برای دفتر کل
@@ -1669,6 +1722,10 @@ function ledgerHealth() {
   const totalShares = db.prepare(`SELECT COALESCE(SUM(share_amount),0) s FROM invoice_shares`).get().s
   const totalPaid = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM payments`).get().s
   add('identity', 'جمعِ بدهیِ واحدها = جمعِ سهم‌ها منهای جمعِ دریافتی‌ها', netDebt === totalShares - totalPaid ? [] : [{ text: `بدهیِ واحدها ${netDebt} · سهم‌ها − دریافتی‌ها ${totalShares - totalPaid}` }], '')
+  try {
+    const jc = journalFundControl()
+    add('journal', 'دفتر روزنامه با موجودیِ واقعیِ صندوق‌ها می‌خواند', jc.funds.filter(f => f.diff).map(f => `${f.name}: دفتر ${f.journal} / واقعی ${f.actual}`).concat(jc.unmapped ? ['خطوط صندوقِ بی‌شناسه: ' + jc.unmapped] : []), 'جمعِ خطوطِ «صندوق» در همهٔ اسنادِ روزنامه به‌اضافهٔ موجودیِ اول، باید با موجودیِ واقعیِ هر صندوق برابر باشد.')
+  } catch { }
   return { ok: checks.every(c => c.ok), checks, totals: { netDebt, totalShares, totalPayments: totalPaid, funds: listFunds().map(f => ({ name: f.name, balance: f.balance })) } }
 }
 // سازگاری با نامِ قدیمی

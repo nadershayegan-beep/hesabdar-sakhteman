@@ -1833,9 +1833,9 @@ async function showVoucher(dtype, id) {
     ${v.lines.map(l => `<tr><td><b>${esc(l.acc)}</b></td><td class="hint">${esc(l.desc)}</td>
       <td class="num ${l.debit ? 'amt-out' : 'muted'}">${l.debit ? money(l.debit) : '—'}</td>
       <td class="num ${l.credit ? 'amt-in' : 'muted'}">${l.credit ? money(l.credit) : '—'}</td></tr>`).join('')}
-    </tbody><tfoot><tr><td colspan="2">جمع ${v.balanced ? '<span class="amt-in">متوازن ✓</span>' : '<span class="amt-out">نامتوازن!</span>'}</td>
+    </tbody><tfoot><tr><td colspan="2">جمع ${v.balanced ? '<span class="amt-in">دو طرف برابر ✓</span>' : '<span class="amt-out">دو طرف برابر نیست!</span>'}</td>
       <td class="num">${money(v.totalDebit)}</td><td class="num">${money(v.totalCredit)}</td></tr></tfoot></table></div></div>`,
-    `${isAdmin() ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}${dtype === 'payment' ? `<button class="btn" data-rcpt="${id}">رسید PDF</button>` : ''}<button class="btn" id="vHist">سابقه</button><button class="btn" id="vCancel">بستن</button>`)
+    `${isAdmin() && dtype !== 'ftxn' ? '<button class="btn primary" id="vEdit">✏️ ویرایش سند</button><button class="btn del" id="vDel">🗑 حذف سند</button>' : ''}${dtype === 'payment' ? `<button class="btn" data-rcpt="${id}">رسید PDF</button>` : ''}<button class="btn" id="vHist">سابقه</button><button class="btn" id="vCancel">بستن</button>`)
   $('#vCancel').onclick = closeModal
   if ($('#vEdit')) $('#vEdit').onclick = () => { closeModal(); editDoc(dtype, id) }
   if ($('#vDel')) $('#vDel').onclick = () => { closeModal(); deleteDoc(dtype, id) }
@@ -1897,7 +1897,7 @@ REPORTS.journal = async () => {
   const draw = guard(async (f, to, type, fundId, unitId, q) => {
     const d = await api(`/api/report/journal?from=${encodeURIComponent(f || '')}&to=${encodeURIComponent(to || '')}&type=${type || ''}&fundId=${fundId || ''}&unitId=${unitId || ''}&q=${encodeURIComponent(q || '')}`)
     const K = d.kindFa || {}
-    const pillCls = { charge: 'b-charge', bill: 'b-open', proj: 'b-settled', exp: 'b-no', pay: 'b-ok', ci: 'b-mgr' }
+    const pillCls = { charge: 'b-charge', bill: 'b-open', proj: 'b-settled', exp: 'b-no', pay: 'b-ok', ci: 'b-mgr', ftxn: 'b-open' }
     $('#jnRows').innerHTML = d.rows.length ? d.rows.map(r => `<tr class="clickable" data-voucher="${r.dtype}:${r.id}">
       <td class="num">${faDigit(r.row)}</td><td class="num">${esc(r.no)}</td><td class="num">${faDigit(r.j)}</td>
       <td><span class="badge ${pillCls[r.kind] || 'b-open'}">${esc(K[r.kind] || r.kind)}</span></td>
@@ -1905,14 +1905,15 @@ REPORTS.journal = async () => {
       <td>${esc(r.creditAcc)}</td>
       <td class="num amt-out">${money(r.debit)}</td>
       <td class="num amt-in">${money(r.credit)}</td>
-      <td class="printhide rowact">${docActs(r.dtype, r.id)}</td></tr>`).join('')
+      <td class="printhide rowact">${r.dtype === 'ftxn' ? '' : docActs(r.dtype, r.id)}</td></tr>`).join('')
       : emptyRow(9, 'سندی با این فیلتر نیست')
-    const trz = d.balanced ? '<span class="amt-in"> · تراز ✓</span>' : '<span class="amt-out"> · نامتوازن!</span>'
+    const c = d.control || { ok: true, funds: [] }
+    const trz = c.ok ? '<span class="amt-in"> · خطوط صندوق با موجودی واقعی می‌خواند ✓</span>' : '<span class="amt-out"> · اختلاف با موجودی صندوق‌ها!</span>'
     $('#jnFoot').innerHTML = `<tr><td colspan="6">جمع (${faDigit(d.rows.length)} سند)${trz}</td><td class="num amt-out">${money(d.totalDebit)}</td><td class="num amt-in">${money(d.totalCredit)}</td><td class="printhide"></td></tr>`
-    $('#jnKpis').innerHTML = `${kpi('تعداد اسناد', faDigit(d.rows.length))}${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}${kpi('جمع بستانکار', money(d.totalCredit), d.balanced ? 'تراز ✓' : 'نامتوازن', d.balanced ? 'good' : 'bad')}`
+    $('#jnKpis').innerHTML = `${kpi('تعداد اسناد', faDigit(d.rows.length))}${kpi('جمع بدهکار', money(d.totalDebit), '', 'bad')}${kpi('جمع بستانکار', money(d.totalCredit))}${kpi('کنترل با صندوق‌ها', c.ok ? 'می‌خواند' : 'اختلاف دارد', c.funds.map(f => f.name + ': ' + (f.diff ? 'اختلاف ' + money(Math.abs(f.diff)) : '✓')).join(' · '), c.ok ? '' : 'bad')}`
     $('#repBody').querySelectorAll('#jnRows [data-voucher]').forEach(tr => tr.onclick = () => { const [dt, vid] = tr.dataset.voucher.split(':'); showVoucher(dt, +vid) })
   })
-  const typeOpts = [['', 'همه'], ['charge', 'شارژ ماهانه'], ['bill', 'قبوض و متفرقه'], ['exp', 'هزینهٔ جاری'], ['proj', 'پروژه (عمرانی)'], ['pay', 'دریافتی'], ['ci', 'فاکتور پیمانکار']]
+  const typeOpts = [['', 'همه'], ['charge', 'شارژ ماهانه'], ['bill', 'قبوض و متفرقه'], ['exp', 'هزینهٔ جاری'], ['proj', 'پروژه (عمرانی)'], ['pay', 'دریافتی'], ['ci', 'فاکتور پیمانکار'], ['ftxn', 'انتقال/تسویه/تعدیل صندوق']]
   $('#repBody').innerHTML = `
     <div class="filters printhide">
       <label class="f" style="max-width:130px">از تاریخ<input class="inp" id="jnFrom" placeholder="۱۴۰۵/۰۱/۰۱"></label>
