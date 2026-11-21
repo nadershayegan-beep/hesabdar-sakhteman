@@ -1232,8 +1232,7 @@ function fundReport(fundId) {
   const txns = db.prepare(`SELECT t.*, i.title inv_title, u.number unit_number, pf.name peer_name FROM fund_txns t
     LEFT JOIN invoices i ON i.id=t.ref_invoice_id LEFT JOIN payments p ON p.id=t.ref_payment_id LEFT JOIN units u ON u.id=p.unit_id
     LEFT JOIN funds pf ON pf.id=t.peer_fund_id WHERE t.fund_id=? ORDER BY t.g_date DESC, t.id DESC`).all(fundId)
-  const received = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(fundId).s
-  const spent = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT}`).get(fundId).s
+  const fl = fundFlowBreakdown(fundId)
   // دستهٔ بدهیِ این صندوق بر اساس نامش: شارژ | قبوض/متفرقه | عمرانی(پروژه‌ها)
   const cat = bucketOfFund(f)
   const faToEn = s => parseInt(String(s).replace(/[۰-۹]/g, d => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d))) || 0
@@ -1242,7 +1241,7 @@ function fundReport(fundId) {
     .filter(r => r.debt > 0)
     .sort((a, b) => faToEn(a.number) - faToEn(b.number))
   return {
-    fund: { id: f.id, name: f.name, kindFa: FUND_KIND_FA[f.kind] || f.kind, balance: fundBalance(f.id), received, spent, opening: f.opening_balance || 0 },
+    fund: { id: f.id, name: f.name, kindFa: FUND_KIND_FA[f.kind] || f.kind, balance: fundBalance(f.id), ...fl, opening: f.opening_balance || 0 },
     txns, unitDebts, category: cat, basis: cat === 'project' ? 'تعهدِ مصوبهٔ باقی‌مانده (همان مبنای گزارش تفکیکی و داشبورد)' : 'سهم‌های پرداخت‌نشده',
     totalUnitDebt: unitDebts.reduce((s, r) => s + r.debt, 0)
   }
@@ -1484,12 +1483,12 @@ function fundsOverview() {
   const funds = fundStats().map(f => {
     const cat = bucketOfFund(f)
     const unitDebt = ledger.reduce((a, r) => a + Math.max(0, r[debtField[cat]] || 0), 0)
-    return { id: f.id, name: f.name, kindFa: f.kindFa, cat, opening: f.opening, received: f.received, spent: f.spent, balance: f.balance, unitDebt }
+    return { id: f.id, name: f.name, kindFa: f.kindFa, cat, opening: f.opening, received: f.received, spent: f.spent, residents: f.residents, otherIn: f.otherIn, expenses: f.expenses, managerSettle: f.managerSettle, transferNet: f.transferNet, adjust: f.adjust, balance: f.balance, unitDebt }
   })
   const total = funds.reduce((a, f) => ({
-    opening: a.opening + f.opening, received: a.received + f.received, spent: a.spent + f.spent,
+    opening: a.opening + f.opening, received: a.received + f.received, spent: a.spent + f.spent, transferNet: a.transferNet + f.transferNet, adjust: a.adjust + f.adjust,
     balance: a.balance + f.balance, unitDebt: a.unitDebt + f.unitDebt
-  }), { opening: 0, received: 0, spent: 0, balance: 0, unitDebt: 0 })
+  }), { opening: 0, received: 0, spent: 0, transferNet: 0, adjust: 0, balance: 0, unitDebt: 0 })
   return { funds, total }
 }
 
@@ -1638,10 +1637,10 @@ function managerReport(from, to) {
   const fundFlow = listFunds().map(f => {
     const before = db.prepare(`SELECT COALESCE(SUM(CASE WHEN type IN ${FUND_IN} THEN amount ELSE -amount END),0) s
       FROM fund_txns WHERE fund_id=? AND g_date<?`).get(f.id, from).s
-    const inn = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN} AND g_date>=? AND g_date<=?`).get(f.id, from, to).s
-    const out = db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT} AND g_date>=? AND g_date<=?`).get(f.id, from, to).s
+    const q = t => db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${t} AND g_date>=? AND g_date<=?`).get(f.id, from, to).s
+    const inn = q(`('in','adjust_in')`), out = q(`('out','manager_settle','adjust_out')`), trIn = q(`('transfer_in')`), trOut = q(`('transfer_out')`)
     const open = f.opening_balance + before
-    return { id: f.id, name: f.name, open, in: inn, out, close: open + inn - out }
+    return { id: f.id, name: f.name, open, in: inn, out, transfer: trIn - trOut, close: open + inn - out + trIn - trOut }
   })
   const invRows = invs.map(i => { const c = invoiceCollected(i.id); return { id: i.id, title: i.title, j_date: i.j_date, category: i.category, amount: i.amount, collected: c, remaining: i.amount - c, kindFa: EXPENSE_KIND_FA[i.expense_kind] || '' } })
     .sort((a, b) => b.id - a.id)
@@ -2022,11 +2021,23 @@ function projectSummary(p) {
   }
 }
 // آمارِ هر صندوق: موجودی، جمعِ ورودی، جمعِ خروجی
+function fundFlowBreakdown(fundId) {
+  const r = db.prepare(`SELECT
+      COALESCE(SUM(CASE WHEN type='in' AND ref_payment_id IS NOT NULL THEN amount END),0) residents,
+      COALESCE(SUM(CASE WHEN type='in' AND ref_payment_id IS NULL THEN amount END),0) otherIn,
+      COALESCE(SUM(CASE WHEN type='out' THEN amount END),0) expenses,
+      COALESCE(SUM(CASE WHEN type='manager_settle' THEN amount END),0) managerSettle,
+      COALESCE(SUM(CASE WHEN type='transfer_in' THEN amount END),0) transferIn,
+      COALESCE(SUM(CASE WHEN type='transfer_out' THEN amount END),0) transferOut,
+      COALESCE(SUM(CASE WHEN type='adjust_in' THEN amount ELSE 0 END),0) - COALESCE(SUM(CASE WHEN type='adjust_out' THEN amount ELSE 0 END),0) adjust
+    FROM fund_txns WHERE fund_id=?`).get(fundId)
+  // «دریافتی» و «مخارج» فقط پولِ واقعیِ ورودی/خروجی‌اند؛ انتقال بین صندوق‌ها و تعدیل جدا نمایش داده می‌شوند
+  return { ...r, received: r.residents + r.otherIn, spent: r.expenses + r.managerSettle, transferNet: r.transferIn - r.transferOut }
+}
 function fundStats() {
   return listFunds().map(f => ({
     id: f.id, name: f.name, bucket: f.bucket, kindFa: f.kindFa, balance: f.balance, opening: f.opening_balance || 0,
-    received: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_IN}`).get(f.id).s,
-    spent: db.prepare(`SELECT COALESCE(SUM(amount),0) s FROM fund_txns WHERE fund_id=? AND type IN ${FUND_OUT}`).get(f.id).s
+    ...fundFlowBreakdown(f.id)
   }))
 }
 // پولی که یک واحد بابت یک پروژه پرداخت کرده =
@@ -2376,12 +2387,12 @@ function printSummaryHtml(period, showNames) {
       ${kpi('طلب مدیر از صندوق', pMoney(mr.managerDebt) + ' ' + U, mr.managerDebt > 0 ? 'باید تسویه شود' : 'تسویه است', mr.managerDebt > 0 ? 'warn' : 'ok')}
     </div>
     <div class="sech">گردش صندوق‌ها</div>
-    <table><thead><tr><th>صندوق</th><th>مانده‌ی ابتدای دوره</th><th>ورودی</th><th>خروجی</th><th>مانده‌ی پایان دوره</th></tr></thead><tbody>
-    ${mr.fundFlow.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.open)}</td><td class="num amt-in">${pMoney(f.in)}</td>
-      <td class="num amt-out">${pMoney(f.out)}</td><td class="num"><b>${pMoney(f.close)}</b></td></tr>`).join('')}
+    <table><thead><tr><th>صندوق</th><th>مانده‌ی ابتدای دوره</th><th>ورودی</th><th>خروجی</th><th>انتقال (±)</th><th>مانده‌ی پایان دوره</th></tr></thead><tbody>
+    ${mr.fundFlow.map(f => `<tr><td>${hEsc(f.name)}</td><td class="num">${pMoney(f.open)}</td><td class="num">${pMoney(f.in)}</td>
+      <td class="num">${pMoney(f.out)}</td><td class="num">${f.transfer ? (f.transfer < 0 ? '−' : '+') + pMoney(Math.abs(f.transfer)) : '—'}</td><td class="num"><b>${pMoney(f.close)}</b></td></tr>`).join('')}
     <tr class="tot"><td>جمع</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.open, 0))}</td>
       <td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.in, 0))}</td><td class="num">${pMoney(mr.fundFlow.reduce((s, f) => s + f.out, 0))}</td>
-      <td class="num">${pMoney(fundTotal)}</td></tr>
+      <td class="num">—</td><td class="num">${pMoney(fundTotal)}</td></tr>
     </tbody></table>
     <div class="sech">درآمد و هزینه (نقدی)</div>
     <table><thead><tr><th>گروه</th><th>شرح</th><th>مبلغ</th></tr></thead><tbody>
@@ -3611,7 +3622,7 @@ async function handle(req, res) {
           ['دریافتی', 'جمع کل', r.payments.total, ''],
           ...r.expenses.byCategory.map(c => ['هزینه', c.name, c.total, `ثابت ${c.fixed} · متغیر ${c.variable} · پیش‌بینی‌نشده ${c.unexpected}`]),
           ['هزینه', 'جمع کل', r.expenses.total, ''],
-          ...r.fundFlow.map(f => ['صندوق', f.name, f.close, `اول ${f.open} · ورودی ${f.in} · خروجی ${f.out}`]),
+          ...r.fundFlow.map(f => ['صندوق', f.name, f.close, `اول ${f.open} · ورودی ${f.in} · خروجی ${f.out} · انتقال ${f.transfer}`]),
           ['مدیر', 'طلب مدیر از صندوق', r.managerDebt, '']
         ])
       } else if (kind === 'invoice') {

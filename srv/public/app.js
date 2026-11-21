@@ -1597,9 +1597,9 @@ REPORTS.manager = async () => {
         <td class="num">${money(r.expenses.byCategory.reduce((s, c) => s + c.variable, 0))}</td>
         <td class="num">${money(r.expenses.byCategory.reduce((s, c) => s + c.unexpected, 0))}</td><td class="num">${money(r.expenses.total)}</td></tr></tfoot></table></div></div>
     <div class="panel"><div class="phead"><b>گردش صندوق‌ها</b></div><div class="tablewrap"><table class="tx">
-      <thead><tr><th>صندوق</th><th>اول دوره</th><th>ورودی</th><th>خروجی</th><th>آخر دوره</th></tr></thead><tbody>
-      ${r.fundFlow.map(f => `<tr><td><b>${esc(f.name)}</b></td><td class="num">${money(f.open)}</td><td class="num amt-in">${money(f.in)}</td>
-        <td class="num amt-out">${money(f.out)}</td><td class="num"><b>${money(f.close)}</b></td></tr>`).join('')}
+      <thead><tr><th>صندوق</th><th>اول دوره</th><th>ورودی</th><th>خروجی</th><th>انتقال (±)</th><th>آخر دوره</th></tr></thead><tbody>
+      ${r.fundFlow.map(f => `<tr><td><b>${esc(f.name)}</b></td><td class="num">${money(f.open)}</td><td class="num">${money(f.in)}</td>
+        <td class="num">${money(f.out)}</td><td class="num">${f.transfer ? signed(f.transfer) : '—'}</td><td class="num ${f.close < 0 ? 'amt-out' : ''}"><b>${money(f.close)}</b></td></tr>`).join('')}
       </tbody></table></div></div>
     <div class="panel"><div class="phead"><b>مانده‌ی فاکتورهای دوره</b></div><div class="tablewrap"><table class="tx">
       <thead><tr><th>عنوان</th><th>دسته</th><th>تاریخ</th><th>مبلغ</th><th>وصول‌شده</th><th>مانده</th></tr></thead><tbody>
@@ -1753,8 +1753,9 @@ REPORTS.fund = async () => {
     box.innerHTML = `
       <div class="kpis">
         ${kpi('موجودی فعلی', money(d.fund.balance), d.fund.kindFa, d.fund.balance < 0 ? 'bad' : 'good')}
-        ${kpi('جمع ورودی', money(d.fund.received), '', 'good')}
-        ${kpi('جمع خرج‌شده', money(d.fund.spent), '', 'bad')}
+        ${kpi('دریافتی', money(d.fund.received), 'از ساکنین ' + money(d.fund.residents) + (d.fund.otherIn ? ' · سایر ' + money(d.fund.otherIn) : ''))}
+        ${kpi('مخارج', money(d.fund.spent), 'پرداخت هزینه ' + money(d.fund.expenses) + (d.fund.managerSettle ? ' · تسویه با مدیر ' + money(d.fund.managerSettle) : ''))}
+        ${d.fund.transferIn || d.fund.transferOut ? kpi('انتقال بین صندوق‌ها', signed(d.fund.transferNet), 'ورودی ' + money(d.fund.transferIn) + ' · خروجی ' + money(d.fund.transferOut)) : ''}
         ${kpi('بدهی واحدها به این صندوق', money(d.totalUnitDebt), d.basis ? 'مبنا: ' + d.basis : catFa(d.category), d.totalUnitDebt > 0 ? 'bad' : '')}
       </div>
       <div class="grid2">
@@ -1777,22 +1778,22 @@ REPORTS.fund = async () => {
   $('#repBody').innerHTML = `
     <div class="filters printhide">
       <button class="btn small" onclick="printAs('گزارش کامل صندوق‌ها')">🖨 چاپ گزارش کامل</button></div>
-    <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق.</p>
+    <p class="hint">گزارشِ کاملِ همهٔ صندوق‌ها از ابتدا تا امروز (${faDigit(jStamp())}): موجودیِ اولیه + دریافتی − مخارج ± انتقال بین صندوق‌ها = موجودیِ فعلی؛ و بدهیِ واحدها به هر صندوق. انتقال‌ها جزو دریافتی و مخارج نیستند.</p>
     <div class="kpis">
       ${kpi('موجودی کل صندوق‌ها', money(t.balance), 'مجموعِ ماندهٔ همه', t.balance < 0 ? 'bad' : 'good')}
-      ${kpi('جمع دریافتی', money(t.received), 'از ابتدا', 'good')}
-      ${kpi('جمع مخارج', money(t.spent), 'از ابتدا', 'bad')}
+      ${kpi('جمع دریافتی', money(t.received), 'از ابتدا · بدون انتقال‌ها')}
+      ${kpi('جمع مخارج', money(t.spent), 'از ابتدا · بدون انتقال‌ها')}
       ${kpi('جمع بدهیِ واحدها', money(t.unitDebt), 'به همهٔ صندوق‌ها', t.unitDebt > 0 ? 'bad' : 'good')}
     </div>
     <div class="panel"><div class="phead"><b>همهٔ صندوق‌ها — یک نگاه</b></div><div class="tablewrap"><table class="tx">
-      <thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>موجودی فعلی</th><th>بدهکارِ واحدها</th></tr></thead><tbody>
+      <thead><tr><th>صندوق</th><th>موجودی اولیه</th><th>دریافتی</th><th>مخارج</th><th>انتقال (±)</th><th>موجودی فعلی</th><th>بدهکارِ واحدها</th></tr></thead><tbody>
       ${ov.funds.map(f => `<tr class="clickable" data-fund="${f.id}"><td><b>${esc(f.name)}</b></td>
-        <td class="num">${money(f.opening)}</td><td class="num amt-in">${money(f.received)}</td>
-        <td class="num amt-out">${money(f.spent)}</td>
+        <td class="num">${money(f.opening)}</td><td class="num">${money(f.received)}</td>
+        <td class="num">${money(f.spent)}</td><td class="num">${f.transferNet ? signed(f.transferNet) : '—'}${f.adjust ? `<br><span class="hint">تعدیل ${signed(f.adjust)}</span>` : ''}</td>
         <td class="num ${f.balance < 0 ? 'amt-out' : ''}"><b>${money(f.balance)}</b></td>
         <td class="num ${f.unitDebt > 0 ? 'amt-out' : ''}">${f.unitDebt > 0 ? money(f.unitDebt) : '۰'}</td></tr>`).join('')}
       </tbody><tfoot><tr><td>جمع کل</td><td class="num">${money(t.opening)}</td><td class="num">${money(t.received)}</td>
-        <td class="num">${money(t.spent)}</td><td class="num"><b>${money(t.balance)}</b></td><td class="num">${money(t.unitDebt)}</td></tr></tfoot>
+        <td class="num">${money(t.spent)}</td><td class="num">${t.transferNet ? signed(t.transferNet) : '—'}</td><td class="num"><b>${money(t.balance)}</b></td><td class="num">${money(t.unitDebt)}</td></tr></tfoot>
     </table></div></div>
     <div class="filters printhide" style="margin-top:12px"><label class="f" style="max-width:280px">ریزِ یک صندوق<select class="inp" id="rfSel"><option value="">— انتخاب صندوق برای دیدن ریز —</option>
       ${funds.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select></label></div>
