@@ -316,7 +316,8 @@ const MIME = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
-  '.webp': 'image/webp', '.gif': 'image/gif', '.pdf': 'application/pdf', '.svg': 'image/svg+xml'
+  '.webp': 'image/webp', '.gif': 'image/gif', '.pdf': 'application/pdf', '.svg': 'image/svg+xml',
+  '.woff2': 'font/woff2', '.txt': 'text/plain; charset=utf-8'
 }
 const DEFAULT_CHARGE = 8000000   // ۸٬۰۰۰٬۰۰۰ ریال = ۸۰۰ هزار تومان
 
@@ -2438,9 +2439,10 @@ const pSep = n => faNum(String(Math.round(Math.abs(n))).replace(/\B(?=(\d{3})+(?
 const pMoney = r => pSep(isTomanDisp() ? (r || 0) / 10 : (r || 0))
 const printLayout = (title, inner) => `<!doctype html><html lang="fa" dir="rtl"><head><meta charset="utf-8"><title>${hEsc(title)}</title>
 <style>
+@font-face{font-family:'Vazirmatn';src:url('/fonts/Vazirmatn-VF.woff2') format('woff2');font-weight:100 900;font-display:swap}
 @page{size:A4;margin:13mm}
 *{box-sizing:border-box}
-body{font-family:Tahoma,'IRANSans','Vazirmatn',system-ui,sans-serif;color:#1a2230;margin:0;font-size:12.5px;line-height:1.75;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff}
+body{font-family:'Vazirmatn',Tahoma,system-ui,sans-serif;color:#1a2230;margin:0;font-size:12.5px;line-height:1.75;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:#fff}
 .stmt{max-width:182mm;margin:0 auto}
 h1{font-size:19px;margin:0 0 2px;color:#0f2847}
 .sub{color:#5b6472;font-size:11.5px;margin:0 0 10px}

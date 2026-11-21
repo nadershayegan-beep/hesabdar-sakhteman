@@ -1,3 +1,5 @@
+/* مورد ۴۹: فونت فارسیِ همراهِ برنامه (Vazirmatn، مجوز OFL — public/fonts/Vazirmatn-OFL.txt) */
+@font-face{font-family:"Vazirmatn";src:url("/fonts/Vazirmatn-VF.woff2") format("woff2");font-weight:100 900;font-display:swap}
 :root{
   /* مورد ۵۸: مقیاسِ ثابتِ تایپوگرافی (۶ اندازه) و گردیِ گوشه‌ها (۳ اندازه) */
   --fs-xs:11.5px; --fs-sm:12.5px; --fs-md:13.5px; --fs-lg:15px; --fs-xl:18px; --fs-xxl:21px;
@@ -10,7 +12,7 @@
   --out:#c0392b; --out-soft:#c0392b12;
   --warn:#b5792a; --warn-soft:#b5792a18;
   --radius:14px; --shadow:0 1px 2px #141c260a, 0 8px 24px #141c260d;
-  --fa:Tahoma,"Segoe UI","Vazirmatn",system-ui,sans-serif;
+  --fa:"Vazirmatn",Tahoma,"Segoe UI",system-ui,sans-serif;
 }
 [data-theme="dark"],
 :root:not([data-theme="light"]) [data-dark]{}
